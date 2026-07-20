@@ -1,28 +1,46 @@
-# Compiler security and residual risk
+# Compiler security and known limits
 
-The official Luau compiler executes as native code inside the Unity process.
-The package bounds request, queue, source, output, worker, and diagnostic sizes,
-and tests hostile inputs, determinism, cancellation edges, and sanitizer/fuzzer
-corpora.
+If you're accepting scripts from players, here's what the compiler does and
+doesn't protect you from.
 
-Those controls limit admission and resource retention. They do not turn an
-in-process native compiler call into a hard security boundary:
+## The short version
 
-- a native crash terminates the process;
-- a native hang cannot be preempted safely;
-- the wall-clock execution budget applies to VM execution, not a native compile
-  already in progress;
-- compiler intermediate allocations are not fully described by output limits;
-- cancellation discards output after the native call returns.
+The Luau compiler is hardened against malicious source. Upstream treats a crash
+during compilation as a security vulnerability with a bounty attached, the
+compiler is continuously fuzzed, and it runs against adversarial user scripts at
+Roblox scale. The usual ways to break a compiler — deeply nested source, files
+engineered to emit millions of errors — are explicitly capped. This package
+calls only the bytecode compiler, not Luau's type checker, which is the larger
+surface.
 
-Version 0.2.0 explicitly accepts this residual in-process compiler risk. The
-package does not add a second native product, desktop compiler CLI, filesystem
-resolver, or killable worker process. A future process-isolation feature needs
-a demonstrated supported-platform requirement, a reviewed IPC/artifact trust
-boundary, and separate performance/security evidence.
+What upstream does *not* promise is termination:
 
-Hosts receiving arbitrary remote content should still authenticate package
-structure, cap downloads and decompression, validate strict UTF-8, use the
-shared bounded compilation lane, isolate mutually untrusted mods in separate
-roots, expose minimal capabilities, and preserve an application-level watchdog
-outside the Unity process where availability is security-critical.
+> Luau does not provide termination guarantees - some code may exhaust CPU or
+> RAM resources on the system during compilation or execution.
+
+Compilation runs in-process, so a hang or crash takes the game with it. The
+execution time budget covers *running* a script, not compiling one, and
+cancelling a started compile only discards the result — it doesn't stop the
+work.
+
+In practice compile time is close to linear in source size, so the reachable
+version of this is "submit something huge, or a lot at once" — which the source
+size cap and the bounded compile queue already cover. Don't raise those limits
+for untrusted input without knowing why.
+
+## Why not a separate process
+
+Process isolation — a killable worker — is the real fix, and 0.2.0 knowingly
+skips it. It needs a demonstrated platform requirement, a reviewed IPC and
+artifact trust boundary, and its own performance and security evidence before
+it's worth shipping a second native product, a desktop compiler CLI, and a
+filesystem resolver.
+
+## Further reading
+
+- [Luau's security guarantees](https://github.com/luau-lang/luau/blob/master/SECURITY.md)
+  — the scope of what upstream promises, and how to report a vulnerability.
+- [execution and trust](execution-and-trust.md) — mechanics of the defenses
+  listed above.
+- [resource limits](resource-limits.md) — the caps this package applies and how
+  to configure them.

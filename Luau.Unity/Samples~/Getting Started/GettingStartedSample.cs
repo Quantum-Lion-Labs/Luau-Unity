@@ -7,7 +7,7 @@ namespace Luau.Unity.Samples.GettingStarted
     [LuauLibrary("sample")]
     public sealed partial class GettingStartedLibrary
     {
-        [LuauMember]
+        [LuauMember("double")]
         public static int Double(int value)
         {
             return checked(value * 2);
