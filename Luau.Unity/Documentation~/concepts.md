@@ -60,6 +60,17 @@ need a borrowed reference to survive, call `Retain()` to get an owned copy. The
 practical rule: values you pull out of a table getter are yours to dispose;
 values sitting directly in a result scope belong to the scope.
 
+**Script instance (`LuauScriptInstance`)** — one sandboxed thread plus one
+export table returned by its script. The instance caches named function
+entrypoints from that table and owns them until it is disposed. It does not
+decide that a function named `update` is a Unity lifecycle hook; hosts compose
+entrypoints into their own archetypes and schedules.
+
+**Script phase (`LuauScriptPhase`)** — a named, synchronous host dispatch list
+with per-call limits, an aggregate wall-clock budget, and an explicit failure
+policy. A `LuauScriptScheduler` groups phases for one root but does not own the
+instances registered with them.
+
 ### What values look like on each side
 
 Every value crossing the boundary is a `LuauValue`, which you unpack with
@@ -140,5 +151,7 @@ count. `ExecuteAsync` uses it; the synchronous `Execute` does not, which is why
 - [Getting started](getting-started.md) puts most of the above into one working
   scene.
 - [Capability bindings](capability-bindings.md) covers exposing C# in depth.
+- [Script instances](script-instances.md) covers reusable exports, schedulers,
+  and application archetypes.
 - [Execution and trust](execution-and-trust.md) covers running content you did
   not write.

@@ -70,10 +70,11 @@ content security boundary.
 - [Capability bindings](Documentation~/capability-bindings.md)
 - [Resource limits](Documentation~/resource-limits.md)
 - [Module trust domains](Documentation~/modules.md)
+- [Script instances and host archetypes](Documentation~/script-instances.md)
 - [Persistent artifacts](Documentation~/artifacts.md)
 - [Compiler residual risk](Documentation~/compiler-security.md)
 - [Changelog](CHANGELOG.md)
 - [Third-party notices](Third%20Party%20Notices.md)
 
-The Package Manager **Samples** tab offers two small importable examples. Only
+The Package Manager **Samples** tab offers three small importable examples. Only
 Windows x64 and Android ARM64/x86_64 are maintained targets.

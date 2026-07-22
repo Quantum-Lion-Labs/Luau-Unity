@@ -133,6 +133,7 @@ namespace Luau.Unity.Tests
                     .GetAwaiter()
                     .GetResult();
                 LuauUnity.ResetCompilationServiceAfterDrainForTests();
+                LuauUnity.ResetTrackedRootAdmissionAfterDrainForTests();
                 UnityEngine.Object.DestroyImmediate(asset);
             }
         }

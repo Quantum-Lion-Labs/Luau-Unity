@@ -11,6 +11,12 @@ API or ABI breaks.
 - A generated first-party bytecode manifest workflow, enabled per project and
   per asset, with fail-closed build validation and one runtime option that
   preserves existing state limits.
+- Sandboxed `LuauScriptInstance` asset loading and lifecycle-agnostic,
+  per-root script phases with deterministic ordering, aggregate budgets, and
+  configurable failure isolation.
+- An importable Luau Behaviour sample demonstrating explicit `self` and scene
+  object capabilities, controlled prefab spawning with owned cleanup, and a
+  shared bounded Unity Update phase.
 
 ## [0.2.0] - 2026-07-19
 

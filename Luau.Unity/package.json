@@ -38,6 +38,11 @@
             "displayName": "Capability Binding",
             "description": "Expose an explicit GameObject and Transform capability without ambient object discovery.",
             "path": "Samples~/Capability Binding"
+        },
+        {
+            "displayName": "Luau Behaviour",
+            "description": "Compose sandboxed script instances with explicit scene references and controlled prefab spawning in a shared, bounded Unity Update phase.",
+            "path": "Samples~/Luau Behaviour"
         }
     ]
 }

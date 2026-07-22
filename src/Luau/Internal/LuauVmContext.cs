@@ -53,12 +53,14 @@ internal sealed unsafe class LuauVmContext
 
     IntPtr mainPointer;
     WeakReference<LuauState>? rootEntry;
+    WeakReference<LuauVmContext>? globalContextEntry;
     ScriptOperation? activeOperation;
     int lifecycleState;
     int rootSandboxed;
     int bytecodeLoadDepth;
     int releasedReferenceCount;
     int closeCount;
+    int interruptInstallCount;
     LuauManagedCallbackRegistration? pendingManagedCallbackNativeReleases;
 
     LuauHostMemoryInfo finalMemoryInfo;
@@ -107,6 +109,7 @@ internal sealed unsafe class LuauVmContext
 
     internal int ReleasedReferenceCount => Volatile.Read(ref releasedReferenceCount);
     internal int CloseCount => Volatile.Read(ref closeCount);
+    internal int InterruptInstallCount => Volatile.Read(ref interruptInstallCount);
 
     internal int ManagedCallbackCount
     {
@@ -258,21 +261,6 @@ internal sealed unsafe class LuauVmContext
                     mode,
                     ambientOperation.Value);
 
-                var callbacks = new LuauHostCallbackTable
-                {
-                    struct_size = (uint)sizeof(LuauHostCallbackTable),
-                    version = 1,
-                    interrupt_poll = interruptPointer,
-                };
-                if (luau_host_interrupt_install(
-                        (LuauHostState*)mainPointer,
-                        &callbacks) != LuauHostStatus.Ok)
-                {
-                    operation.Dispose();
-                    throw new PlatformNotSupportedException(
-                        "The native Luau plugin could not install the managed execution interrupt trampoline.");
-                }
-
                 ResetAllocatorFailure();
                 activeOperation = operation;
                 ambientOperation.Value = operation;
@@ -293,11 +281,6 @@ internal sealed unsafe class LuauVmContext
                 if (!ReferenceEquals(activeOperation, operation))
                 {
                     return;
-                }
-
-                if (mainPointer != IntPtr.Zero)
-                {
-                    luau_host_interrupt_uninstall((LuauHostState*)mainPointer);
                 }
 
                 activeOperation = null;
@@ -690,7 +673,49 @@ internal sealed unsafe class LuauVmContext
             rootEntry = entry;
             root.SetCacheEntry(entry);
             globalStates[pointer] = entry;
-            globalContexts[pointer] = new WeakReference<LuauVmContext>(this);
+            var contextEntry = new WeakReference<LuauVmContext>(this);
+            globalContextEntry = contextEntry;
+            globalContexts[pointer] = contextEntry;
+        }
+    }
+
+    internal void InstallInterruptTrampoline()
+    {
+        lock (nativeGate)
+        {
+            lock (lifecycleGate)
+            {
+                if (lifecycleState != 0 || mainPointer == IntPtr.Zero)
+                {
+                    ThrowHelper.ThrowObjectDisposedException(nameof(LuauState));
+                }
+                if (rootEntry == null)
+                {
+                    ThrowHelper.ThrowInvalidOperationException(
+                        "The Luau root must be registered before installing its interrupt trampoline.");
+                }
+                if (interruptInstallCount != 0)
+                {
+                    ThrowHelper.ThrowInvalidOperationException(
+                        "The managed execution interrupt trampoline is already installed for this root.");
+                }
+
+                var callbacks = new LuauHostCallbackTable
+                {
+                    struct_size = (uint)sizeof(LuauHostCallbackTable),
+                    version = 1,
+                    interrupt_poll = interruptPointer,
+                };
+                if (luau_host_interrupt_install(
+                        (LuauHostState*)mainPointer,
+                        &callbacks) != LuauHostStatus.Ok)
+                {
+                    throw new PlatformNotSupportedException(
+                        "The native Luau plugin could not install the managed execution interrupt trampoline.");
+                }
+
+                Interlocked.Increment(ref interruptInstallCount);
+            }
         }
     }
 
@@ -781,7 +806,7 @@ internal sealed unsafe class LuauVmContext
 
             if (entry != null)
             {
-                globalContexts.TryRemove(mainPointer, out _);
+                TryRemoveGlobalContext(mainPointer, entry);
             }
         }
 
@@ -960,7 +985,11 @@ internal sealed unsafe class LuauVmContext
                 managedCallbackNativeReferences.Clear();
                 managedCallbackWrapperOwners.Clear();
             }
-            globalContexts.TryRemove(pointer, out _);
+            var contextEntry = Interlocked.Exchange(ref globalContextEntry, null);
+            if (contextEntry != null)
+            {
+                TryRemoveGlobalContext(pointer, contextEntry);
+            }
             try
             {
                 ObjectRegistry.Close();
@@ -1002,10 +1031,16 @@ internal sealed unsafe class LuauVmContext
 
     static void TryRemoveGlobal(IntPtr pointer, WeakReference<LuauState> expectedEntry)
     {
-        if (globalStates.TryGetValue(pointer, out var currentEntry) && ReferenceEquals(currentEntry, expectedEntry))
-        {
-            globalStates.TryRemove(pointer, out _);
-        }
+        ((ICollection<KeyValuePair<IntPtr, WeakReference<LuauState>>>)globalStates)
+            .Remove(new KeyValuePair<IntPtr, WeakReference<LuauState>>(pointer, expectedEntry));
+    }
+
+    static void TryRemoveGlobalContext(
+        IntPtr pointer,
+        WeakReference<LuauVmContext> expectedEntry)
+    {
+        ((ICollection<KeyValuePair<IntPtr, WeakReference<LuauVmContext>>>)globalContexts)
+            .Remove(new KeyValuePair<IntPtr, WeakReference<LuauVmContext>>(pointer, expectedEntry));
     }
 
     static int NextManagedCallbackId()

@@ -737,6 +737,72 @@
             scope-owned results; dispose returned child threads separately.
             </summary>
         </member>
+        <member name="M:Luau.LuauFunction.InvokeInto(System.Span{Luau.LuauValue},Luau.LuauExecutionOptions)">
+            <summary>
+            Invokes a script closure synchronously and writes its results into
+            caller-owned storage. The caller owns reference wrappers written to the
+            destination. Slots that receive results must not already contain managed
+            reference wrappers.
+            </summary>
+        </member>
+        <member name="M:Luau.LuauFunction.InvokeInto(System.ReadOnlySpan{Luau.LuauValue},System.Span{Luau.LuauValue},Luau.LuauExecutionOptions)">
+            <summary>
+            Invokes a script closure synchronously with arguments and writes its
+            results into distinct caller-owned storage. The caller owns reference
+            wrappers written to the destination. Slots that receive results must not
+            already contain managed reference wrappers.
+            </summary>
+        </member>
+        <member name="M:Luau.LuauFunction.InvokeIntoAsync(System.Memory{Luau.LuauValue},System.Threading.CancellationToken,Luau.LuauExecutionOptions)">
+            <summary>
+            Invokes a script closure asynchronously and writes its results into
+            caller-owned storage. The caller owns reference wrappers written to the
+            destination. Slots that receive results must not already contain managed
+            reference wrappers.
+            </summary>
+        </member>
+        <member name="M:Luau.LuauFunction.InvokeIntoAsync(System.ReadOnlyMemory{Luau.LuauValue},System.Memory{Luau.LuauValue},System.Threading.CancellationToken,Luau.LuauExecutionOptions)">
+            <summary>
+            Invokes a script closure asynchronously with arguments and writes its
+            results into distinct caller-owned storage. The caller owns reference
+            wrappers written to the destination. Slots that receive results must not
+            already contain managed reference wrappers.
+            </summary>
+        </member>
+        <member name="M:Luau.LuauFunction.InvokeVoid(Luau.LuauExecutionOptions)">
+            <summary>
+            Invokes a script closure synchronously and requires it to return no values.
+            </summary>
+        </member>
+        <member name="M:Luau.LuauFunction.InvokeVoid(Luau.LuauValue,Luau.LuauExecutionOptions)">
+            <summary>
+            Invokes a script closure synchronously with one argument and requires it
+            to return no values.
+            </summary>
+        </member>
+        <member name="M:Luau.LuauFunction.InvokeVoid(System.ReadOnlySpan{Luau.LuauValue},Luau.LuauExecutionOptions)">
+            <summary>
+            Invokes a script closure synchronously with arguments and requires it to
+            return no values.
+            </summary>
+        </member>
+        <member name="M:Luau.LuauFunction.InvokeVoidAsync(System.Threading.CancellationToken,Luau.LuauExecutionOptions)">
+            <summary>
+            Invokes a script closure asynchronously and requires it to return no values.
+            </summary>
+        </member>
+        <member name="M:Luau.LuauFunction.InvokeVoidAsync(Luau.LuauValue,System.Threading.CancellationToken,Luau.LuauExecutionOptions)">
+            <summary>
+            Invokes a script closure asynchronously with one argument and requires it
+            to return no values.
+            </summary>
+        </member>
+        <member name="M:Luau.LuauFunction.InvokeVoidAsync(System.ReadOnlyMemory{Luau.LuauValue},System.Threading.CancellationToken,Luau.LuauExecutionOptions)">
+            <summary>
+            Invokes a script closure asynchronously with arguments and requires it to
+            return no values.
+            </summary>
+        </member>
         <member name="M:Luau.LuauFunction.ResolvePublicState(Luau.LuauState)">
             <summary>
             Resolves the stack that callers should use when invoking this function.
@@ -1309,6 +1375,261 @@
         </member>
         <member name="M:Luau.LuauResultScope.GetEnumerator">
             <summary>Returns an enumerator over the result values.</summary>
+        </member>
+        <member name="T:Luau.LuauScriptContractException">
+            <summary>
+            Reports that a script instance did not satisfy its initialization or
+            exported-entrypoint contract.
+            </summary>
+        </member>
+        <member name="M:Luau.LuauScriptContractException.#ctor(System.String,System.String,System.String,System.Exception)">
+            <summary>
+            Initializes a script contract failure.
+            </summary>
+            <param name="instanceName">The host-provided script instance name.</param>
+            <param name="entrypointName">
+            The requested export name, or <see langword="null"/> for an initialization failure.
+            </param>
+            <param name="message">The failure detail, before the diagnostic label is applied.</param>
+            <param name="innerException">The exception that caused this failure, when available.</param>
+        </member>
+        <member name="P:Luau.LuauScriptContractException.InstanceName">
+            <summary>Gets the host-provided script instance name.</summary>
+        </member>
+        <member name="P:Luau.LuauScriptContractException.EntrypointName">
+            <summary>
+            Gets the requested export name, or <see langword="null"/> for an
+            initialization failure.
+            </summary>
+        </member>
+        <member name="T:Luau.LuauScriptEntrypoint">
+            <summary>
+            Invokes one named function exported by a <see cref="T:Luau.LuauScriptInstance"/>.
+            The entrypoint is owned by its instance and is not independently disposable.
+            </summary>
+        </member>
+        <member name="M:Luau.LuauScriptEntrypoint.Invoke(Luau.LuauExecutionOptions)">
+            <summary>Invokes the export synchronously with no arguments.</summary>
+            <param name="executionOptions">Optional per-invocation execution limits.</param>
+            <returns>A caller-owned result scope.</returns>
+        </member>
+        <member name="M:Luau.LuauScriptEntrypoint.Invoke(Luau.LuauValue,Luau.LuauExecutionOptions)">
+            <summary>Invokes the export synchronously with one argument.</summary>
+            <param name="argument">The borrowed argument value.</param>
+            <param name="executionOptions">Optional per-invocation execution limits.</param>
+            <returns>A caller-owned result scope.</returns>
+        </member>
+        <member name="M:Luau.LuauScriptEntrypoint.Invoke(System.ReadOnlySpan{Luau.LuauValue},Luau.LuauExecutionOptions)">
+            <summary>Invokes the export synchronously with borrowed arguments.</summary>
+            <param name="arguments">The borrowed argument values.</param>
+            <param name="executionOptions">Optional per-invocation execution limits.</param>
+            <returns>A caller-owned result scope.</returns>
+        </member>
+        <member name="M:Luau.LuauScriptEntrypoint.InvokeAsync(System.Threading.CancellationToken,Luau.LuauExecutionOptions)">
+            <summary>Invokes the export asynchronously with no arguments.</summary>
+            <param name="cancellationToken">Cancellation requested by the caller.</param>
+            <param name="executionOptions">Optional per-invocation execution limits.</param>
+            <returns>A caller-owned result scope.</returns>
+        </member>
+        <member name="M:Luau.LuauScriptEntrypoint.InvokeAsync(Luau.LuauValue,System.Threading.CancellationToken,Luau.LuauExecutionOptions)">
+            <summary>Invokes the export asynchronously with one argument.</summary>
+            <param name="argument">The borrowed argument value.</param>
+            <param name="cancellationToken">Cancellation requested by the caller.</param>
+            <param name="executionOptions">Optional per-invocation execution limits.</param>
+            <returns>A caller-owned result scope.</returns>
+        </member>
+        <member name="M:Luau.LuauScriptEntrypoint.InvokeAsync(System.ReadOnlyMemory{Luau.LuauValue},System.Threading.CancellationToken,Luau.LuauExecutionOptions)">
+            <summary>Invokes the export asynchronously with borrowed arguments.</summary>
+            <param name="arguments">The borrowed argument values.</param>
+            <param name="cancellationToken">Cancellation requested by the caller.</param>
+            <param name="executionOptions">Optional per-invocation execution limits.</param>
+            <returns>A caller-owned result scope.</returns>
+        </member>
+        <member name="M:Luau.LuauScriptEntrypoint.InvokeInto(System.Span{Luau.LuauValue},Luau.LuauExecutionOptions)">
+            <summary>Invokes the export into caller-owned storage with no arguments.</summary>
+            <param name="destination">Storage that receives owned result values.</param>
+            <param name="executionOptions">Optional per-invocation execution limits.</param>
+            <returns>The number of values written.</returns>
+        </member>
+        <member name="M:Luau.LuauScriptEntrypoint.InvokeInto(Luau.LuauValue,System.Span{Luau.LuauValue},Luau.LuauExecutionOptions)">
+            <summary>Invokes the export into caller-owned storage with one argument.</summary>
+            <param name="argument">The borrowed argument value.</param>
+            <param name="destination">Storage that receives owned result values.</param>
+            <param name="executionOptions">Optional per-invocation execution limits.</param>
+            <returns>The number of values written.</returns>
+        </member>
+        <member name="M:Luau.LuauScriptEntrypoint.InvokeInto(System.ReadOnlySpan{Luau.LuauValue},System.Span{Luau.LuauValue},Luau.LuauExecutionOptions)">
+            <summary>Invokes the export into caller-owned storage.</summary>
+            <param name="arguments">The borrowed argument values.</param>
+            <param name="destination">Storage that receives owned result values.</param>
+            <param name="executionOptions">Optional per-invocation execution limits.</param>
+            <returns>The number of values written.</returns>
+        </member>
+        <member name="M:Luau.LuauScriptEntrypoint.InvokeIntoAsync(System.Memory{Luau.LuauValue},System.Threading.CancellationToken,Luau.LuauExecutionOptions)">
+            <summary>
+            Invokes the export asynchronously into caller-owned storage with no arguments.
+            </summary>
+            <param name="destination">Storage that receives owned result values.</param>
+            <param name="cancellationToken">Cancellation requested by the caller.</param>
+            <param name="executionOptions">Optional per-invocation execution limits.</param>
+            <returns>The number of values written.</returns>
+        </member>
+        <member name="M:Luau.LuauScriptEntrypoint.InvokeIntoAsync(Luau.LuauValue,System.Memory{Luau.LuauValue},System.Threading.CancellationToken,Luau.LuauExecutionOptions)">
+            <summary>
+            Invokes the export asynchronously into caller-owned storage with one argument.
+            </summary>
+            <param name="argument">The borrowed argument value.</param>
+            <param name="destination">Storage that receives owned result values.</param>
+            <param name="cancellationToken">Cancellation requested by the caller.</param>
+            <param name="executionOptions">Optional per-invocation execution limits.</param>
+            <returns>The number of values written.</returns>
+        </member>
+        <member name="M:Luau.LuauScriptEntrypoint.InvokeIntoAsync(System.ReadOnlyMemory{Luau.LuauValue},System.Memory{Luau.LuauValue},System.Threading.CancellationToken,Luau.LuauExecutionOptions)">
+            <summary>Invokes the export asynchronously into caller-owned storage.</summary>
+            <param name="arguments">The borrowed argument values.</param>
+            <param name="destination">Storage that receives owned result values.</param>
+            <param name="cancellationToken">Cancellation requested by the caller.</param>
+            <param name="executionOptions">Optional per-invocation execution limits.</param>
+            <returns>The number of values written.</returns>
+        </member>
+        <member name="M:Luau.LuauScriptEntrypoint.InvokeVoid(Luau.LuauExecutionOptions)">
+            <summary>Invokes the export synchronously and requires zero results.</summary>
+            <param name="executionOptions">Optional per-invocation execution limits.</param>
+        </member>
+        <member name="M:Luau.LuauScriptEntrypoint.InvokeVoid(Luau.LuauValue,Luau.LuauExecutionOptions)">
+            <summary>
+            Invokes the export synchronously with one argument and requires zero results.
+            </summary>
+            <param name="argument">The borrowed argument value.</param>
+            <param name="executionOptions">Optional per-invocation execution limits.</param>
+        </member>
+        <member name="M:Luau.LuauScriptEntrypoint.InvokeVoid(System.ReadOnlySpan{Luau.LuauValue},Luau.LuauExecutionOptions)">
+            <summary>
+            Invokes the export synchronously with borrowed arguments and requires zero results.
+            </summary>
+            <param name="arguments">The borrowed argument values.</param>
+            <param name="executionOptions">Optional per-invocation execution limits.</param>
+        </member>
+        <member name="M:Luau.LuauScriptEntrypoint.InvokeVoidAsync(System.Threading.CancellationToken,Luau.LuauExecutionOptions)">
+            <summary>Invokes the export asynchronously and requires zero results.</summary>
+            <param name="cancellationToken">Cancellation requested by the caller.</param>
+            <param name="executionOptions">Optional per-invocation execution limits.</param>
+            <returns>An awaitable invocation.</returns>
+        </member>
+        <member name="M:Luau.LuauScriptEntrypoint.InvokeVoidAsync(Luau.LuauValue,System.Threading.CancellationToken,Luau.LuauExecutionOptions)">
+            <summary>
+            Invokes the export asynchronously with one argument and requires zero results.
+            </summary>
+            <param name="argument">The borrowed argument value.</param>
+            <param name="cancellationToken">Cancellation requested by the caller.</param>
+            <param name="executionOptions">Optional per-invocation execution limits.</param>
+            <returns>An awaitable invocation.</returns>
+        </member>
+        <member name="M:Luau.LuauScriptEntrypoint.InvokeVoidAsync(System.ReadOnlyMemory{Luau.LuauValue},System.Threading.CancellationToken,Luau.LuauExecutionOptions)">
+            <summary>
+            Invokes the export asynchronously with borrowed arguments and requires zero results.
+            </summary>
+            <param name="arguments">The borrowed argument values.</param>
+            <param name="cancellationToken">Cancellation requested by the caller.</param>
+            <param name="executionOptions">Optional per-invocation execution limits.</param>
+            <returns>An awaitable invocation.</returns>
+        </member>
+        <member name="T:Luau.LuauScriptInstance">
+            <summary>
+            Owns one sandboxed script thread and the table of functions returned by its
+            initialization chunk.
+            </summary>
+        </member>
+        <member name="M:Luau.LuauScriptInstance.CreateAsync(Luau.LuauState,System.String,Luau.LuauScriptLoader,System.Action{Luau.LuauState},System.Threading.CancellationToken)">
+            <summary>
+            Creates an instance by configuring and executing one owned sandboxed
+            child thread on the root's continuation scheduler.
+            </summary>
+            <param name="root">
+            A live, caller-owned, sandboxed root. Disposing the instance does not
+            dispose this root.
+            </param>
+            <param name="name">A non-empty diagnostic name for the instance.</param>
+            <param name="loader">
+            The host loader that executes the script and returns its result scope.
+            </param>
+            <param name="configureThread">
+            Optional capability configuration performed after sandboxing and before
+            the loader starts.
+            </param>
+            <param name="cancellationToken">Cancellation requested by the creating host.</param>
+            <returns>The fully initialized script instance.</returns>
+            <exception cref="T:System.ArgumentNullException">
+            <paramref name="root"/>, <paramref name="name"/>, or <paramref name="loader"/>
+            is <see langword="null"/>.
+            </exception>
+            <exception cref="T:System.ArgumentException">
+            <paramref name="root"/> is not a root state, or <paramref name="name"/>
+            contains no non-whitespace characters.
+            </exception>
+            <exception cref="T:Luau.LuauScriptContractException">
+            The loader does not return exactly one table.
+            </exception>
+        </member>
+        <member name="P:Luau.LuauScriptInstance.Name">
+            <summary>Gets the host-provided diagnostic name.</summary>
+        </member>
+        <member name="P:Luau.LuauScriptInstance.Root">
+            <summary>
+            Gets the caller-owned VM root. This property preserves identity after
+            instance disposal and does not transfer ownership.
+            </summary>
+        </member>
+        <member name="P:Luau.LuauScriptInstance.IsDisposed">
+            <summary>
+            Gets whether this instance, its child thread, or its root has been disposed.
+            </summary>
+        </member>
+        <member name="M:Luau.LuauScriptInstance.GetRequiredEntrypoint(System.String)">
+            <summary>
+            Gets or binds a required exported function.
+            </summary>
+            <param name="name">The non-empty raw export-table key.</param>
+            <returns>The cached entrypoint owner.</returns>
+            <exception cref="T:Luau.LuauScriptContractException">
+            The export is missing, nil, or not a function.
+            </exception>
+        </member>
+        <member name="M:Luau.LuauScriptInstance.TryGetEntrypoint(System.String,Luau.LuauScriptEntrypoint@)">
+            <summary>
+            Attempts to get or bind an optional exported function. A missing or nil
+            export returns <see langword="false"/>; a present non-function is a
+            contract failure.
+            </summary>
+            <param name="name">The non-empty raw export-table key.</param>
+            <param name="entrypoint">
+            Receives the cached entrypoint when the export is a function; otherwise
+            <see langword="null"/>.
+            </param>
+            <returns>Whether the requested function was exported.</returns>
+            <exception cref="T:Luau.LuauScriptContractException">
+            The export is present, non-nil, and not a function.
+            </exception>
+        </member>
+        <member name="M:Luau.LuauScriptInstance.Dispose">
+            <summary>
+            Invalidates and releases cached entrypoints, then the export table, then
+            the owned child thread. The root remains caller-owned.
+            </summary>
+        </member>
+        <member name="M:Luau.LuauScriptInstance.Finalize">
+            <summary>Releases an abandoned instance as a final fallback.</summary>
+        </member>
+        <member name="T:Luau.LuauScriptLoader">
+            <summary>
+            Loads and executes one script on its owned sandboxed thread.
+            </summary>
+            <param name="thread">The sandboxed child thread owned by the script instance.</param>
+            <param name="cancellationToken">Cancellation requested by the creating host.</param>
+            <returns>
+            A result scope containing the script's returned values. A valid script
+            instance returns exactly one table.
+            </returns>
         </member>
         <member name="T:Luau.LuauObjectExtensions">
             <summary>Creates generated managed-object capabilities for a Luau state.</summary>

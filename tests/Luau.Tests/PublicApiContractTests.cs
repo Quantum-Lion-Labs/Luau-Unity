@@ -220,7 +220,13 @@ public sealed class PublicApiContractTests
             type.GetConstructors(ContractDeclared).Any(constructor =>
                 constructor.IsPublic || constructor.IsFamily || constructor.IsFamilyOrAssembly);
         return type.GetConstructors(ContractDeclared)
-            .Where(constructor => IsContractVisible(constructor, includeProtected))
+            // Delegate constructors are CLR implementation machinery with an
+            // object/IntPtr signature, not callable source-level API. Keep the
+            // delegate's Invoke method in the inventory while excluding that
+            // synthetic native-looking constructor.
+            .Where(constructor =>
+                !typeof(MulticastDelegate).IsAssignableFrom(type.BaseType) &&
+                IsContractVisible(constructor, includeProtected))
             .Cast<MemberInfo>()
             .Concat(type.GetMethods(ContractDeclared).Where(method =>
                 IsContractVisible(method, includeProtected) &&

@@ -35,6 +35,38 @@ public static class PublicConsumerProbe
     {
         return state.CreateHandle(target);
     }
+
+    public static async ValueTask<int> RunScriptInstanceAsync(
+        LuauState sandboxedRoot,
+        CancellationToken cancellationToken = default)
+    {
+        using var instance = await LuauScriptInstance.CreateAsync(
+            sandboxedRoot,
+            "consumer-probe",
+            static (thread, token) => thread.DoStringAsync(
+                "return { value = function(input) return input end, tick = function() end }",
+                "@consumer/script-instance.luau",
+                cancellationToken: token),
+            cancellationToken: cancellationToken);
+
+        LuauScriptEntrypoint value = instance.GetRequiredEntrypoint("value");
+        _ = instance.TryGetEntrypoint("tick", out LuauScriptEntrypoint? tick);
+
+        using LuauResultScope allocated = value.Invoke(40);
+        var destination = new LuauValue[1];
+        _ = value.InvokeInto((LuauValue)41, destination);
+        _ = await value.InvokeIntoAsync(
+            (LuauValue)42,
+            destination,
+            cancellationToken);
+        tick?.InvokeVoid();
+        if (tick != null)
+        {
+            await tick.InvokeVoidAsync(cancellationToken);
+        }
+
+        return allocated[0].Read<int>() + destination[0].Read<int>();
+    }
 }
 
 public sealed class PublicCompilationService : ILuauCompilationService

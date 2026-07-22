@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Text;
 using System.Threading;
 using UnityEngine;
@@ -92,12 +93,17 @@ namespace Luau.Unity
 
     public static partial class LuauUnity
     {
+        static readonly object TrackedRootsGate = new object();
+        static readonly List<WeakReference<LuauState>> TrackedRoots =
+            new List<WeakReference<LuauState>>();
+        static bool trackedRootAdmissionStopping;
+
         public static LuauState CreateState(LuauUnityOptions options = null)
         {
             options = options ?? new LuauUnityOptions();
 
             var stateOptions = ResolveStateOptions(options);
-            var state = LuauState.Create(stateOptions);
+            var state = CreateTrackedState(stateOptions);
             try
             {
                 if (options.OpenStandardLibraries)
@@ -129,6 +135,13 @@ namespace Luau.Unity
                     state.SandboxRoot();
                 }
 
+                if (state.IsDisposed)
+                {
+                    throw new ObjectDisposedException(
+                        nameof(LuauState),
+                        "The Luau root was disposed during Unity lifecycle teardown.");
+                }
+
                 return state;
             }
             catch
@@ -137,6 +150,79 @@ namespace Luau.Unity
                 throw;
             }
         }
+
+        static LuauState CreateTrackedState(LuauStateOptions stateOptions)
+        {
+            lock (TrackedRootsGate)
+            {
+                if (trackedRootAdmissionStopping)
+                {
+                    throw new ObjectDisposedException(
+                        nameof(LuauUnity),
+                        "Luau root admission has stopped for Unity lifecycle teardown.");
+                }
+
+                for (var index = TrackedRoots.Count - 1; index >= 0; index--)
+                {
+                    if (!TrackedRoots[index].TryGetTarget(out var tracked) || tracked.IsDisposed)
+                    {
+                        TrackedRoots.RemoveAt(index);
+                    }
+                }
+
+                // Native root creation and weak registration are one lifecycle
+                // admission step. Teardown either runs first and rejects this
+                // creation, or waits and includes the raw root in its snapshot.
+                var state = LuauState.Create(stateOptions);
+                TrackedRoots.Add(new WeakReference<LuauState>(state));
+                return state;
+            }
+        }
+
+        /// <summary>
+        /// Disposes every still-live root created through <see cref="CreateState"/>.
+        /// Tracking is weak and does not replace caller ownership.
+        /// </summary>
+        internal static void DisposeTrackedRoots()
+        {
+            LuauState[] roots;
+            lock (TrackedRootsGate)
+            {
+                trackedRootAdmissionStopping = true;
+                var liveRoots = new List<LuauState>(TrackedRoots.Count);
+                for (var index = 0; index < TrackedRoots.Count; index++)
+                {
+                    if (TrackedRoots[index].TryGetTarget(out var root) && !root.IsDisposed)
+                    {
+                        liveRoots.Add(root);
+                    }
+                }
+
+                TrackedRoots.Clear();
+                roots = liveRoots.ToArray();
+            }
+
+            for (var index = 0; index < roots.Length; index++)
+            {
+                roots[index].Dispose();
+            }
+        }
+
+#if UNITY_EDITOR
+        internal static void ResetTrackedRootAdmissionAfterDrainForTests()
+        {
+            lock (TrackedRootsGate)
+            {
+                if (TrackedRoots.Count != 0)
+                {
+                    throw new InvalidOperationException(
+                        "Tracked root admission can only be reset after a completed root drain.");
+                }
+
+                trackedRootAdmissionStopping = false;
+            }
+        }
+#endif
 
         static LuauStateOptions ResolveStateOptions(LuauUnityOptions options)
         {

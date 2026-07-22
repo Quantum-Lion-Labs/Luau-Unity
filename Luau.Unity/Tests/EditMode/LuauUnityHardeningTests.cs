@@ -25,6 +25,12 @@ namespace Luau.Unity.Tests
             Assert.That(actual, Is.EqualTo(new[]
             {
                 "Luau.Unity.LuauAsset",
+                "Luau.Unity.LuauScriptDispatchResult",
+                "Luau.Unity.LuauScriptPhase",
+                "Luau.Unity.LuauScriptPhaseFailureMode",
+                "Luau.Unity.LuauScriptPhaseOptions",
+                "Luau.Unity.LuauScriptRegistration",
+                "Luau.Unity.LuauScriptScheduler",
                 "Luau.Unity.LuauStateExtensions",
                 "Luau.Unity.LuauUnity",
                 "Luau.Unity.LuauUnityObjectGuard",
