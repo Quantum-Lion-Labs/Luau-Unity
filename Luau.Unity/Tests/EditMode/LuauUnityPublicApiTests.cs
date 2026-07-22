@@ -13,7 +13,7 @@ namespace Luau.Unity.Tests
     public sealed class LuauUnityPublicApiTests
     {
         const string ApprovedApiSha256 =
-            "5918500aa9d9ec052e02606634530620de3f5f5f47e6b83d1b8901554de87692";
+            "ecb2664344f10c6bea023321a0733eeba2b3e9222d64e9339d7273972b63750d";
 
         [Test]
         public void RuntimePublicAndProtectedApiMatchesApprovedInventory()

@@ -281,6 +281,17 @@ namespace Luau.Unity
         {
             try
             {
+                DisposeTrackedRoots();
+            }
+            catch (Exception exception)
+            {
+                Debug.LogError(
+                    "Tracked Luau roots could not be disposed during player shutdown.\n" +
+                    exception);
+            }
+
+            try
+            {
                 DrainCompilationServiceAsync(exception =>
                     Debug.LogWarning(
                         "Luau background compilation is still draining during player shutdown.\n" +

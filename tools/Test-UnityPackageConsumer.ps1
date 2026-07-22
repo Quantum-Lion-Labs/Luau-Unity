@@ -433,5 +433,5 @@ if (Test-Path -LiteralPath $projectPath) {
 }
 
 Write-Host (
-    "Generated minimal Unity consumer resolved the package, compiled both imported samples and " +
+    "Generated minimal Unity consumer resolved the package, compiled all imported samples and " +
     "source-generator output, validated XML IntelliSense, loaded the native VM, and executed successfully.")

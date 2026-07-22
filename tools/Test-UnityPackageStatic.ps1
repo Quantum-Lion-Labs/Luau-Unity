@@ -393,11 +393,11 @@ foreach ($urlProperty in @("licensesUrl", "documentationUrl", "changelogUrl")) {
 }
 $sampleNames = @($package.samples | ForEach-Object displayName)
 $samplePaths = @($package.samples | ForEach-Object path)
-Assert-SequenceEqual "Unity package sample names" $sampleNames @("Getting Started", "Capability Binding")
+Assert-SequenceEqual "Unity package sample names" $sampleNames @("Getting Started", "Capability Binding", "Luau Behaviour")
 Assert-SequenceEqual `
     "Unity package sample paths" `
     $samplePaths `
-    @("Samples~/Getting Started", "Samples~/Capability Binding")
+    @("Samples~/Getting Started", "Samples~/Capability Binding", "Samples~/Luau Behaviour")
 $dependencyProperty = $package.PSObject.Properties["dependencies"]
 if ($null -ne $dependencyProperty -and @($dependencyProperty.Value.PSObject.Properties).Count -ne 0) {
     throw "The Unity package must not rely on development-project dependencies."
@@ -414,12 +414,16 @@ $requiredReleaseFiles = @(
     "Documentation~/capability-bindings.md",
     "Documentation~/resource-limits.md",
     "Documentation~/modules.md",
+    "Documentation~/script-instances.md",
     "Documentation~/artifacts.md",
     "Documentation~/compiler-security.md",
     "Samples~/Getting Started/GettingStartedSample.cs",
     "Samples~/Getting Started/GettingStarted.luau",
     "Samples~/Capability Binding/CapabilityBindingSample.cs",
-    "Samples~/Capability Binding/CapabilityBinding.luau"
+    "Samples~/Capability Binding/CapabilityBinding.luau",
+    "Samples~/Luau Behaviour/LuauBehaviourRuntimeSample.cs",
+    "Samples~/Luau Behaviour/LuauBehaviourSample.cs",
+    "Samples~/Luau Behaviour/LuauBehaviour.luau"
 )
 foreach ($releaseFile in $requiredReleaseFiles) {
     Get-PackageFile $releaseFile | Out-Null
@@ -473,7 +477,34 @@ foreach ($required in @(
 foreach ($forbidden in @("GameObject.Find", "FindObjectOfType", "FindFirstObjectByType", "Resources.Load")) {
     Assert-NotContainsLiteral "Capability Binding sample" $capabilitySample $forbidden
 }
-Write-Host "PASS: tracked package docs, legal notices, trust guidance, and both importable public-contract samples are complete."
+$luauBehaviourRuntimeSample = Read-PackageText "Samples~/Luau Behaviour/LuauBehaviourRuntimeSample.cs"
+$luauBehaviourSample = Read-PackageText "Samples~/Luau Behaviour/LuauBehaviourSample.cs"
+foreach ($required in @(
+    "new LuauScriptScheduler(root)",
+    '"Update"',
+    "WallClockLimit = TimeSpan.FromMilliseconds(2)",
+    "InterruptCountLimit = 10_000",
+    "AggregateWallClockBudget = TimeSpan.FromMilliseconds(4)",
+    "LuauScriptPhaseFailureMode.DisableAndContinue"
+)) {
+    Assert-ContainsLiteral "Luau Behaviour runtime sample" $luauBehaviourRuntimeSample $required
+}
+foreach ($required in @(
+    "LuauBehaviourRuntimeSample runtimeHost;",
+    "LuauAsset script;",
+    "CreateScriptInstanceAsync(",
+    'thread["self"] = self;',
+    'GetRequiredEntrypoint("update")',
+    "runtimeHost.Register(this, update, updateOrder)",
+    'TryGetEntrypoint("destroy"',
+    "instance?.Dispose();"
+)) {
+    Assert-ContainsLiteral "Luau Behaviour component sample" $luauBehaviourSample $required
+}
+foreach ($forbidden in @("GameObject.Find", "FindObjectOfType", "FindFirstObjectByType", "Resources.Load", "static LuauBehaviourRuntimeSample")) {
+    Assert-NotContainsLiteral "Luau Behaviour sample" ($luauBehaviourRuntimeSample + $luauBehaviourSample) $forbidden
+}
+Write-Host "PASS: tracked package docs, legal notices, trust guidance, and all three importable public-contract samples are complete."
 
 $forbiddenDirectoryNames = @(
     "Assets",
@@ -661,8 +692,8 @@ foreach ($required in @(
 Write-Host "PASS: the managed artifact envelope is versioned, bounded before allocation, integrity checked, typed on rejection, and independently mutation tested."
 
 $artifactBaselines = @(
-    @{ Path = "Runtime/Luau.dll"; Length = 257024L; Sha256 = "96A7F2095F8CB1EFC8FCE34CA1123587A05B72CB57A0FB7264FFE03770E9307A" },
-    @{ Path = "Runtime/Luau.xml"; Length = 156183L; Sha256 = "4B9AA846CCE65DB5E621D4C86BA4461CA64176C9CE54A4891935771992DF3829" },
+    @{ Path = "Runtime/Luau.dll"; Length = 276992L; Sha256 = "2EA5972C5205268275CA52CC3B87367E8FECC49F71CFCF534EBD36E2735A489D" },
+    @{ Path = "Runtime/Luau.xml"; Length = 175918L; Sha256 = "AFEF6ABD26CAA0167DD5FD2CABEE5AAFB64CF066D8446AAE20336AC78760C714" },
     @{ Path = "Runtime/Luau.SourceGenerator.dll"; Length = 63488L; Sha256 = "E6EC90D4A4152CEE1D5EC5F5F48D6ACCB4DAFFEB2560183B08D0CD233101D419" },
     @{ Path = "Runtime/Plugins/win-x64/luau_host.dll"; Length = 995328L; Sha256 = "429671AE55387F2783C70526D18CAFB68253B04EEB278B638D57ED13C724F0D0" },
     @{ Path = "Runtime/Plugins/android-arm64/libluau_host.so"; Length = 866704L; Sha256 = "382907D397A5B3AEED0E7F74B8E917B027A9B563B3988EE080B147B7D4CC6266" },
@@ -1299,7 +1330,7 @@ $managedPublicApiPath = Get-RepositoryFile "tests/Luau.Tests/PublicApi.approved.
 Assert-CanonicalTextFileHash `
     "Managed public API approval inventory" `
     $managedPublicApiPath `
-    "31389FBA06EDC360196B4F5C68FF48E0132169A229C8B4973E494FD098B48218"
+    "DD449ACF8A4F8B92F16C3484285B5A9D75E37F6AB58F6DDB3ED2A7CBB5057FBB"
 $managedPublicApiProject = Read-RepositoryText "tests/Luau.Tests/Luau.Tests.csproj"
 Assert-ContainsLiteral `
     "Managed public API test project" `
@@ -1308,7 +1339,7 @@ Assert-ContainsLiteral `
 Assert-ContainsLiteral `
     "Unity public API approval inventory" `
     $unityPublicApiTests `
-    '"5918500aa9d9ec052e02606634530620de3f5f5f47e6b83d1b8901554de87692"'
+    '"ecb2664344f10c6bea023321a0733eeba2b3e9222d64e9339d7273972b63750d"'
 Assert-NotContainsLiteral `
     "Unity public API approval inventory" `
     $unityPublicApiTests `

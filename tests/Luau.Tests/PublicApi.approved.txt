@@ -27,6 +27,7 @@ ctor Luau.LuauModuleMap :: Void .ctor(System.Collections.Generic.IReadOnlyDictio
 ctor Luau.LuauObjectDescriptor<T> :: Void .ctor(System.String, System.Action`1[T], Luau.LuauObjectMember`1[T][])
 ctor Luau.LuauReferenceLimitException :: Void .ctor()
 ctor Luau.LuauResultLimitException :: Void .ctor(System.String, Int32, Int32)
+ctor Luau.LuauScriptContractException :: Void .ctor(System.String, System.String, System.String, System.Exception)
 ctor Luau.LuauStateOptions :: Void .ctor()
 ctor Luau.LuauSynchronizationContextScheduler :: Void .ctor(System.Threading.SynchronizationContext)
 ctor Luau.LuauTable.Enumerator :: Void .ctor(Luau.LuauTable)
@@ -132,10 +133,20 @@ method Luau.LuauExecutionOptions :: Boolean op_Inequality(Luau.LuauExecutionOpti
 method Luau.LuauExecutionOptions :: Int32 GetHashCode()
 method Luau.LuauExecutionOptions :: Luau.LuauExecutionOptions <Clone>$()
 method Luau.LuauExecutionOptions :: System.String ToString()
+method Luau.LuauFunction :: Int32 InvokeInto(System.ReadOnlySpan`1[Luau.LuauValue], System.Span`1[Luau.LuauValue], Luau.LuauExecutionOptions)
+method Luau.LuauFunction :: Int32 InvokeInto(System.Span`1[Luau.LuauValue], Luau.LuauExecutionOptions)
 method Luau.LuauFunction :: Luau.LuauFunction Retain()
 method Luau.LuauFunction :: Luau.LuauResultScope Invoke(System.ReadOnlySpan`1[Luau.LuauValue], Luau.LuauExecutionOptions)
+method Luau.LuauFunction :: System.Threading.Tasks.ValueTask InvokeVoidAsync(Luau.LuauValue, System.Threading.CancellationToken, Luau.LuauExecutionOptions)
+method Luau.LuauFunction :: System.Threading.Tasks.ValueTask InvokeVoidAsync(System.ReadOnlyMemory`1[Luau.LuauValue], System.Threading.CancellationToken, Luau.LuauExecutionOptions)
+method Luau.LuauFunction :: System.Threading.Tasks.ValueTask InvokeVoidAsync(System.Threading.CancellationToken, Luau.LuauExecutionOptions)
 method Luau.LuauFunction :: System.Threading.Tasks.ValueTask`1[Luau.LuauResultScope] InvokeAsync(System.ReadOnlyMemory`1[Luau.LuauValue], System.Threading.CancellationToken, Luau.LuauExecutionOptions)
+method Luau.LuauFunction :: System.Threading.Tasks.ValueTask`1[System.Int32] InvokeIntoAsync(System.Memory`1[Luau.LuauValue], System.Threading.CancellationToken, Luau.LuauExecutionOptions)
+method Luau.LuauFunction :: System.Threading.Tasks.ValueTask`1[System.Int32] InvokeIntoAsync(System.ReadOnlyMemory`1[Luau.LuauValue], System.Memory`1[Luau.LuauValue], System.Threading.CancellationToken, Luau.LuauExecutionOptions)
 method Luau.LuauFunction :: Void Dispose()
+method Luau.LuauFunction :: Void InvokeVoid(Luau.LuauExecutionOptions)
+method Luau.LuauFunction :: Void InvokeVoid(Luau.LuauValue, Luau.LuauExecutionOptions)
+method Luau.LuauFunction :: Void InvokeVoid(System.ReadOnlySpan`1[Luau.LuauValue], Luau.LuauExecutionOptions)
 method Luau.LuauModuleLimits :: Boolean Equals(Luau.LuauModuleLimits)
 method Luau.LuauModuleLimits :: Boolean Equals(System.Object)
 method Luau.LuauModuleLimits :: Boolean op_Equality(Luau.LuauModuleLimits, Luau.LuauModuleLimits)
@@ -156,6 +167,31 @@ method Luau.LuauResultScope :: System.Collections.Generic.IEnumerator`1[Luau.Lua
 method Luau.LuauResultScope :: System.ReadOnlySpan`1[Luau.LuauValue] AsSpan()
 method Luau.LuauResultScope :: T Read[T](Int32)
 method Luau.LuauResultScope :: Void Dispose()
+method Luau.LuauScriptEntrypoint :: Int32 InvokeInto(Luau.LuauValue, System.Span`1[Luau.LuauValue], Luau.LuauExecutionOptions)
+method Luau.LuauScriptEntrypoint :: Int32 InvokeInto(System.ReadOnlySpan`1[Luau.LuauValue], System.Span`1[Luau.LuauValue], Luau.LuauExecutionOptions)
+method Luau.LuauScriptEntrypoint :: Int32 InvokeInto(System.Span`1[Luau.LuauValue], Luau.LuauExecutionOptions)
+method Luau.LuauScriptEntrypoint :: Luau.LuauResultScope Invoke(Luau.LuauExecutionOptions)
+method Luau.LuauScriptEntrypoint :: Luau.LuauResultScope Invoke(Luau.LuauValue, Luau.LuauExecutionOptions)
+method Luau.LuauScriptEntrypoint :: Luau.LuauResultScope Invoke(System.ReadOnlySpan`1[Luau.LuauValue], Luau.LuauExecutionOptions)
+method Luau.LuauScriptEntrypoint :: System.Threading.Tasks.ValueTask InvokeVoidAsync(Luau.LuauValue, System.Threading.CancellationToken, Luau.LuauExecutionOptions)
+method Luau.LuauScriptEntrypoint :: System.Threading.Tasks.ValueTask InvokeVoidAsync(System.ReadOnlyMemory`1[Luau.LuauValue], System.Threading.CancellationToken, Luau.LuauExecutionOptions)
+method Luau.LuauScriptEntrypoint :: System.Threading.Tasks.ValueTask InvokeVoidAsync(System.Threading.CancellationToken, Luau.LuauExecutionOptions)
+method Luau.LuauScriptEntrypoint :: System.Threading.Tasks.ValueTask`1[Luau.LuauResultScope] InvokeAsync(Luau.LuauValue, System.Threading.CancellationToken, Luau.LuauExecutionOptions)
+method Luau.LuauScriptEntrypoint :: System.Threading.Tasks.ValueTask`1[Luau.LuauResultScope] InvokeAsync(System.ReadOnlyMemory`1[Luau.LuauValue], System.Threading.CancellationToken, Luau.LuauExecutionOptions)
+method Luau.LuauScriptEntrypoint :: System.Threading.Tasks.ValueTask`1[Luau.LuauResultScope] InvokeAsync(System.Threading.CancellationToken, Luau.LuauExecutionOptions)
+method Luau.LuauScriptEntrypoint :: System.Threading.Tasks.ValueTask`1[System.Int32] InvokeIntoAsync(Luau.LuauValue, System.Memory`1[Luau.LuauValue], System.Threading.CancellationToken, Luau.LuauExecutionOptions)
+method Luau.LuauScriptEntrypoint :: System.Threading.Tasks.ValueTask`1[System.Int32] InvokeIntoAsync(System.Memory`1[Luau.LuauValue], System.Threading.CancellationToken, Luau.LuauExecutionOptions)
+method Luau.LuauScriptEntrypoint :: System.Threading.Tasks.ValueTask`1[System.Int32] InvokeIntoAsync(System.ReadOnlyMemory`1[Luau.LuauValue], System.Memory`1[Luau.LuauValue], System.Threading.CancellationToken, Luau.LuauExecutionOptions)
+method Luau.LuauScriptEntrypoint :: Void InvokeVoid(Luau.LuauExecutionOptions)
+method Luau.LuauScriptEntrypoint :: Void InvokeVoid(Luau.LuauValue, Luau.LuauExecutionOptions)
+method Luau.LuauScriptEntrypoint :: Void InvokeVoid(System.ReadOnlySpan`1[Luau.LuauValue], Luau.LuauExecutionOptions)
+method Luau.LuauScriptInstance :: Boolean TryGetEntrypoint(System.String, Luau.LuauScriptEntrypoint ByRef)
+method Luau.LuauScriptInstance :: Luau.LuauScriptEntrypoint GetRequiredEntrypoint(System.String)
+method Luau.LuauScriptInstance :: System.Threading.Tasks.ValueTask`1[Luau.LuauScriptInstance] CreateAsync(Luau.LuauState, System.String, Luau.LuauScriptLoader, System.Action`1[Luau.LuauState], System.Threading.CancellationToken)
+method Luau.LuauScriptInstance :: Void Dispose()
+method Luau.LuauScriptLoader :: System.IAsyncResult BeginInvoke(Luau.LuauState, System.Threading.CancellationToken, System.AsyncCallback, System.Object)
+method Luau.LuauScriptLoader :: System.Threading.Tasks.ValueTask`1[Luau.LuauResultScope] EndInvoke(System.IAsyncResult)
+method Luau.LuauScriptLoader :: System.Threading.Tasks.ValueTask`1[Luau.LuauResultScope] Invoke(Luau.LuauState, System.Threading.CancellationToken)
 method Luau.LuauState :: Int32 DoStringInto(System.ReadOnlySpan`1[System.Byte], System.Span`1[Luau.LuauValue], System.ReadOnlySpan`1[System.Byte], Luau.LuauCompileOptions, Luau.LuauExecutionOptions)
 method Luau.LuauState :: Int32 DoStringInto(System.ReadOnlySpan`1[System.Char], System.Span`1[Luau.LuauValue], System.ReadOnlySpan`1[System.Char], Luau.LuauCompileOptions, Luau.LuauExecutionOptions)
 method Luau.LuauState :: Int32 ExecuteCompilerOutputInto(Luau.LuauCompilerOutput, System.Span`1[Luau.LuauValue], System.ReadOnlySpan`1[System.Char], Luau.LuauExecutionOptions)
@@ -402,6 +438,11 @@ property Luau.LuauResultLimitException :: Int32 Limit { get; }
 property Luau.LuauResultScope :: Int32 Count { get; }
 property Luau.LuauResultScope :: Int32 Length { get; }
 property Luau.LuauResultScope :: Luau.LuauValue Item [Int32] { get; }
+property Luau.LuauScriptContractException :: System.String EntrypointName { get; }
+property Luau.LuauScriptContractException :: System.String InstanceName { get; }
+property Luau.LuauScriptInstance :: Boolean IsDisposed { get; }
+property Luau.LuauScriptInstance :: Luau.LuauState Root { get; }
+property Luau.LuauScriptInstance :: System.String Name { get; }
 property Luau.LuauState :: Boolean IsDisposed { get; }
 property Luau.LuauState :: Boolean IsMainThread { get; }
 property Luau.LuauState :: Boolean IsRootSandboxed { get; }
@@ -459,6 +500,7 @@ type abstract class Luau.LuauObjectDescriptor
 type abstract class Luau.LuauRequirer
 type class Luau.LuauException : System.Exception, System.Runtime.Serialization.ISerializable
 type class Luau.LuauState : System.IDisposable
+type delegate Luau.LuauScriptLoader : System.ICloneable, System.Runtime.Serialization.ISerializable
 type enum Luau.LuauArtifactFailureKind : System.IComparable, System.IConvertible, System.IFormattable, System.ISpanFormattable
 type enum Luau.LuauBytecodePolicy : System.IComparable, System.IConvertible, System.IFormattable, System.ISpanFormattable
 type enum Luau.LuauCompilationLimitKind : System.IComparable, System.IConvertible, System.IFormattable, System.ISpanFormattable
@@ -510,6 +552,9 @@ type sealed class Luau.LuauObjectMember<T>
 type sealed class Luau.LuauReferenceLimitException : Luau.LuauException, System.Runtime.Serialization.ISerializable
 type sealed class Luau.LuauResultLimitException : Luau.LuauException, System.Runtime.Serialization.ISerializable
 type sealed class Luau.LuauResultScope : System.Collections.Generic.IEnumerable<Luau.LuauValue>, System.Collections.Generic.IReadOnlyCollection<Luau.LuauValue>, System.Collections.Generic.IReadOnlyList<Luau.LuauValue>, System.Collections.IEnumerable, System.IDisposable
+type sealed class Luau.LuauScriptContractException : Luau.LuauException, System.Runtime.Serialization.ISerializable
+type sealed class Luau.LuauScriptEntrypoint
+type sealed class Luau.LuauScriptInstance : System.IDisposable
 type sealed class Luau.LuauStateOptions : System.IEquatable<Luau.LuauStateOptions>
 type sealed class Luau.LuauSynchronizationContextScheduler : Luau.ILuauContinuationScheduler
 type sealed class Luau.LuauTable : System.Collections.Generic.IEnumerable<System.Collections.Generic.KeyValuePair<Luau.LuauValue, Luau.LuauValue>>, System.Collections.IEnumerable, System.IDisposable

@@ -4,6 +4,16 @@ All notable package changes are recorded here. The package follows semantic
 versioning while in preview; preview releases may make explicitly documented
 API or ABI breaks.
 
+## [Unreleased]
+
+### Added
+
+- Sandboxed `LuauScriptInstance` asset loading and lifecycle-agnostic,
+  per-root script phases with deterministic ordering, aggregate budgets, and
+  configurable failure isolation.
+- An importable Luau Behaviour sample demonstrating explicit `self`
+  capabilities and a shared bounded Unity Update phase.
+
 ## [0.2.0] - 2026-07-19
 
 ### Added
