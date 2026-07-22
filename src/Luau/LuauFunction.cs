@@ -87,12 +87,7 @@ public abstract class LuauFunction : IDisposable, ILuauCallbackBorrowedReference
         ReadOnlySpan<LuauValue> arguments = default,
         LuauExecutionOptions? executionOptions = null)
     {
-        if (this is not LuauScriptFunction scriptFunction)
-        {
-            throw CreateHostInvocationCapabilityException();
-        }
-
-        return scriptFunction.InvokeWithArguments(arguments, executionOptions);
+        return GetScriptFunctionForInvocation().InvokeWithArguments(arguments, executionOptions);
     }
 
     /// <summary>
@@ -106,15 +101,324 @@ public abstract class LuauFunction : IDisposable, ILuauCallbackBorrowedReference
         CancellationToken cancellationToken = default,
         LuauExecutionOptions? executionOptions = null)
     {
-        if (this is not LuauScriptFunction scriptFunction)
-        {
-            throw CreateHostInvocationCapabilityException();
-        }
-
-        return scriptFunction.InvokeWithArgumentsAsync(
+        return GetScriptFunctionForInvocation().InvokeWithArgumentsAsync(
             arguments,
             cancellationToken,
             executionOptions);
+    }
+
+    /// <summary>
+    /// Invokes a script closure synchronously and writes its results into
+    /// caller-owned storage. The caller owns reference wrappers written to the
+    /// destination. Slots that receive results must not already contain managed
+    /// reference wrappers.
+    /// </summary>
+    public int InvokeInto(
+        Span<LuauValue> destination,
+        LuauExecutionOptions? executionOptions = null)
+    {
+        return InvokeInto(default, destination, executionOptions);
+    }
+
+    /// <summary>
+    /// Invokes a script closure synchronously with arguments and writes its
+    /// results into distinct caller-owned storage. The caller owns reference
+    /// wrappers written to the destination. Slots that receive results must not
+    /// already contain managed reference wrappers.
+    /// </summary>
+    public int InvokeInto(
+        ReadOnlySpan<LuauValue> arguments,
+        Span<LuauValue> destination,
+        LuauExecutionOptions? executionOptions = null)
+    {
+        return GetScriptFunctionForInvocation().InvokeIntoWithArguments(
+            arguments,
+            destination,
+            executionOptions);
+    }
+
+    /// <summary>
+    /// Invokes a script closure asynchronously and writes its results into
+    /// caller-owned storage. The caller owns reference wrappers written to the
+    /// destination. Slots that receive results must not already contain managed
+    /// reference wrappers.
+    /// </summary>
+    public ValueTask<int> InvokeIntoAsync(
+        Memory<LuauValue> destination,
+        CancellationToken cancellationToken = default,
+        LuauExecutionOptions? executionOptions = null)
+    {
+        return InvokeIntoAsync(
+            ReadOnlyMemory<LuauValue>.Empty,
+            destination,
+            cancellationToken,
+            executionOptions);
+    }
+
+    /// <summary>
+    /// Invokes a script closure asynchronously with arguments and writes its
+    /// results into distinct caller-owned storage. The caller owns reference
+    /// wrappers written to the destination. Slots that receive results must not
+    /// already contain managed reference wrappers.
+    /// </summary>
+    public ValueTask<int> InvokeIntoAsync(
+        ReadOnlyMemory<LuauValue> arguments,
+        Memory<LuauValue> destination,
+        CancellationToken cancellationToken = default,
+        LuauExecutionOptions? executionOptions = null)
+    {
+        return GetScriptFunctionForInvocation().InvokeIntoWithArgumentsAsync(
+            arguments,
+            destination,
+            cancellationToken,
+            executionOptions);
+    }
+
+    /// <summary>
+    /// Invokes a script closure synchronously and requires it to return no values.
+    /// </summary>
+    public void InvokeVoid(LuauExecutionOptions? executionOptions = null)
+    {
+        GetScriptFunctionForInvocation().InvokeVoidWithArguments(default, executionOptions);
+    }
+
+    /// <summary>
+    /// Invokes a script closure synchronously with one argument and requires it
+    /// to return no values.
+    /// </summary>
+    public void InvokeVoid(
+        LuauValue argument,
+        LuauExecutionOptions? executionOptions = null)
+    {
+        GetScriptFunctionForInvocation().InvokeVoidWithArgument(argument, executionOptions);
+    }
+
+    /// <summary>
+    /// Invokes a script closure synchronously with arguments and requires it to
+    /// return no values.
+    /// </summary>
+    public void InvokeVoid(
+        ReadOnlySpan<LuauValue> arguments,
+        LuauExecutionOptions? executionOptions = null)
+    {
+        GetScriptFunctionForInvocation().InvokeVoidWithArguments(arguments, executionOptions);
+    }
+
+    /// <summary>
+    /// Invokes a script closure asynchronously and requires it to return no values.
+    /// </summary>
+    public ValueTask InvokeVoidAsync(
+        CancellationToken cancellationToken = default,
+        LuauExecutionOptions? executionOptions = null)
+    {
+        return GetScriptFunctionForInvocation().InvokeVoidWithArgumentsAsync(
+            ReadOnlyMemory<LuauValue>.Empty,
+            cancellationToken,
+            executionOptions);
+    }
+
+    /// <summary>
+    /// Invokes a script closure asynchronously with one argument and requires it
+    /// to return no values.
+    /// </summary>
+    public ValueTask InvokeVoidAsync(
+        LuauValue argument,
+        CancellationToken cancellationToken = default,
+        LuauExecutionOptions? executionOptions = null)
+    {
+        return GetScriptFunctionForInvocation().InvokeVoidWithArgumentAsync(
+            argument,
+            cancellationToken,
+            executionOptions);
+    }
+
+    /// <summary>
+    /// Invokes a script closure asynchronously with arguments and requires it to
+    /// return no values.
+    /// </summary>
+    public ValueTask InvokeVoidAsync(
+        ReadOnlyMemory<LuauValue> arguments,
+        CancellationToken cancellationToken = default,
+        LuauExecutionOptions? executionOptions = null)
+    {
+        return GetScriptFunctionForInvocation().InvokeVoidWithArgumentsAsync(
+            arguments,
+            cancellationToken,
+            executionOptions);
+    }
+
+    internal LuauResultScope InvokeLabeled(
+        ReadOnlySpan<LuauValue> arguments,
+        string operationLabel,
+        LuauExecutionOptions? executionOptions = null)
+    {
+        return GetScriptFunctionForInvocation().InvokeWithArguments(
+            arguments,
+            executionOptions,
+            operationLabel);
+    }
+
+    internal LuauResultScope InvokeOneLabeled(
+        LuauValue argument,
+        string operationLabel,
+        LuauExecutionOptions? executionOptions = null)
+    {
+        return GetScriptFunctionForInvocation().InvokeWithArgument(
+            argument,
+            executionOptions,
+            operationLabel);
+    }
+
+    internal ValueTask<LuauResultScope> InvokeLabeledAsync(
+        ReadOnlyMemory<LuauValue> arguments,
+        string operationLabel,
+        CancellationToken cancellationToken = default,
+        LuauExecutionOptions? executionOptions = null)
+    {
+        return GetScriptFunctionForInvocation().InvokeWithArgumentsAsync(
+            arguments,
+            cancellationToken,
+            executionOptions,
+            operationLabel);
+    }
+
+    internal ValueTask<LuauResultScope> InvokeOneLabeledAsync(
+        LuauValue argument,
+        string operationLabel,
+        CancellationToken cancellationToken = default,
+        LuauExecutionOptions? executionOptions = null)
+    {
+        return GetScriptFunctionForInvocation().InvokeWithArgumentAsync(
+            argument,
+            cancellationToken,
+            executionOptions,
+            operationLabel);
+    }
+
+    internal int InvokeIntoLabeled(
+        ReadOnlySpan<LuauValue> arguments,
+        Span<LuauValue> destination,
+        string operationLabel,
+        LuauExecutionOptions? executionOptions = null)
+    {
+        return GetScriptFunctionForInvocation().InvokeIntoWithArguments(
+            arguments,
+            destination,
+            executionOptions,
+            operationLabel);
+    }
+
+    internal int InvokeOneIntoLabeled(
+        LuauValue argument,
+        Span<LuauValue> destination,
+        string operationLabel,
+        LuauExecutionOptions? executionOptions = null)
+    {
+        return GetScriptFunctionForInvocation().InvokeIntoWithArgument(
+            argument,
+            destination,
+            executionOptions,
+            operationLabel);
+    }
+
+    internal ValueTask<int> InvokeIntoLabeledAsync(
+        ReadOnlyMemory<LuauValue> arguments,
+        Memory<LuauValue> destination,
+        string operationLabel,
+        CancellationToken cancellationToken = default,
+        LuauExecutionOptions? executionOptions = null)
+    {
+        return GetScriptFunctionForInvocation().InvokeIntoWithArgumentsAsync(
+            arguments,
+            destination,
+            cancellationToken,
+            executionOptions,
+            operationLabel);
+    }
+
+    internal ValueTask<int> InvokeOneIntoLabeledAsync(
+        LuauValue argument,
+        Memory<LuauValue> destination,
+        string operationLabel,
+        CancellationToken cancellationToken = default,
+        LuauExecutionOptions? executionOptions = null)
+    {
+        return GetScriptFunctionForInvocation().InvokeIntoWithArgumentAsync(
+            argument,
+            destination,
+            cancellationToken,
+            executionOptions,
+            operationLabel);
+    }
+
+    internal void InvokeVoidLabeled(
+        string operationLabel,
+        LuauExecutionOptions? executionOptions = null)
+    {
+        GetScriptFunctionForInvocation().InvokeVoidWithArguments(
+            default,
+            executionOptions,
+            operationLabel);
+    }
+
+    internal void InvokeVoidLabeled(
+        LuauValue argument,
+        string operationLabel,
+        LuauExecutionOptions? executionOptions = null)
+    {
+        GetScriptFunctionForInvocation().InvokeVoidWithArgument(
+            argument,
+            executionOptions,
+            operationLabel);
+    }
+
+    internal void InvokeVoidLabeled(
+        ReadOnlySpan<LuauValue> arguments,
+        string operationLabel,
+        LuauExecutionOptions? executionOptions = null)
+    {
+        GetScriptFunctionForInvocation().InvokeVoidWithArguments(
+            arguments,
+            executionOptions,
+            operationLabel);
+    }
+
+    internal ValueTask InvokeVoidLabeledAsync(
+        string operationLabel,
+        CancellationToken cancellationToken = default,
+        LuauExecutionOptions? executionOptions = null)
+    {
+        return GetScriptFunctionForInvocation().InvokeVoidWithArgumentsAsync(
+            ReadOnlyMemory<LuauValue>.Empty,
+            cancellationToken,
+            executionOptions,
+            operationLabel);
+    }
+
+    internal ValueTask InvokeVoidLabeledAsync(
+        LuauValue argument,
+        string operationLabel,
+        CancellationToken cancellationToken = default,
+        LuauExecutionOptions? executionOptions = null)
+    {
+        return GetScriptFunctionForInvocation().InvokeVoidWithArgumentAsync(
+            argument,
+            cancellationToken,
+            executionOptions,
+            operationLabel);
+    }
+
+    internal ValueTask InvokeVoidLabeledAsync(
+        ReadOnlyMemory<LuauValue> arguments,
+        string operationLabel,
+        CancellationToken cancellationToken = default,
+        LuauExecutionOptions? executionOptions = null)
+    {
+        return GetScriptFunctionForInvocation().InvokeVoidWithArgumentsAsync(
+            arguments,
+            cancellationToken,
+            executionOptions,
+            operationLabel);
     }
 
     /// <summary>
@@ -239,6 +543,11 @@ public abstract class LuauFunction : IDisposable, ILuauCallbackBorrowedReference
     {
         return new InvalidOperationException(
             "Managed callback functions are host capabilities that can only be invoked by Luau code.");
+    }
+
+    LuauScriptFunction GetScriptFunctionForInvocation()
+    {
+        return this as LuauScriptFunction ?? throw CreateHostInvocationCapabilityException();
     }
 
     void ILuauCallbackBorrowedReference.InvalidateBorrowed() => Dispose();

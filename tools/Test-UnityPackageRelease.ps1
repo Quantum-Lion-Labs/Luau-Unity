@@ -285,6 +285,7 @@ $expectedDirectories = @(
     "Samples~",
     "Samples~/Capability Binding",
     "Samples~/Getting Started",
+    "Samples~/Luau Behaviour",
     "Tests",
     "Tests/EditMode"
 )
@@ -383,14 +384,18 @@ foreach ($artifact in @($policy.artifacts)) {
 }
 
 $sampleNames = @($package.samples | ForEach-Object displayName)
-Assert-Sequence "Declared sample display names" $sampleNames @("Getting Started", "Capability Binding")
+Assert-Sequence "Declared sample display names" $sampleNames @("Getting Started", "Capability Binding", "Luau Behaviour")
 $requiredSampleFiles = @(
     "Samples~/Getting Started/GettingStartedSample.cs",
     "Samples~/Getting Started/GettingStarted.luau",
     "Samples~/Getting Started/README.md",
     "Samples~/Capability Binding/CapabilityBindingSample.cs",
     "Samples~/Capability Binding/CapabilityBinding.luau",
-    "Samples~/Capability Binding/README.md"
+    "Samples~/Capability Binding/README.md",
+    "Samples~/Luau Behaviour/LuauBehaviourRuntimeSample.cs",
+    "Samples~/Luau Behaviour/LuauBehaviourSample.cs",
+    "Samples~/Luau Behaviour/LuauBehaviour.luau",
+    "Samples~/Luau Behaviour/README.md"
 )
 foreach ($sampleFile in $requiredSampleFiles) {
     if (!(Test-Path -LiteralPath (Join-Path $packageRoot $sampleFile) -PathType Leaf)) {

@@ -113,6 +113,8 @@ public unsafe sealed class LuauTable : ILuauReference, ILuauCallbackBorrowedRefe
         }
     }
 
+    internal LuauState? OriginatingState => Volatile.Read(ref state);
+
     LuauReferenceAccess ILuauReference.AcquireReference() => AcquireReference();
 
     /// <summary>

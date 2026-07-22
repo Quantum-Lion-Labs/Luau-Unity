@@ -237,15 +237,24 @@ public unsafe partial class LuauState : IDisposable, ILuauReference
         }
 
         var context = new LuauVmContext(l, options);
+        LuauState? state = null;
         try
         {
-            var state = new LuauState(l, context, root: null, reference: -1, isMainThread: true);
+            state = new LuauState(l, context, root: null, reference: -1, isMainThread: true);
             context.RegisterRoot(state);
+            context.InstallInterruptTrampoline();
             return state;
         }
         catch
         {
-            luau_host_state_close(l);
+            if (state == null)
+            {
+                luau_host_state_close(l);
+            }
+            else
+            {
+                state.Dispose();
+            }
             throw;
         }
     }

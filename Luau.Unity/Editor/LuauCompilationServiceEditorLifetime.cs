@@ -27,6 +27,17 @@ namespace Luau.Unity.Editor
         {
             try
             {
+                LuauUnity.DisposeTrackedRoots();
+            }
+            catch (Exception exception)
+            {
+                Debug.LogError(
+                    "Tracked Luau roots could not be disposed for " + reason + ".\n" +
+                    exception);
+            }
+
+            try
+            {
                 LuauUnity.DrainCompilationServiceAsync(exception =>
                     Debug.LogWarning(
                         "Luau background compilation is still draining for " + reason + ".\n" +

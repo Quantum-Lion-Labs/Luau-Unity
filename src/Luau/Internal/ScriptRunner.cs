@@ -84,6 +84,21 @@ internal static class ScriptRunner
         return new LuauResultScope(results);
     }
 
+    internal static void RunVoid(
+        ScriptOperation operation,
+        int argumentCount,
+        bool hasFunction = true)
+    {
+        var resultCount = RunCore(operation, argumentCount, hasFunction);
+        if (resultCount == 0)
+        {
+            return;
+        }
+
+        DiscardResults(operation, operation.ThreadPointer, resultCount);
+        throw new LuauResultLimitException(operation.ChunkName, resultCount, limit: 0);
+    }
+
     internal static async ValueTask<int> RunAsync(
         ScriptOperation operation,
         LuauState state,
@@ -175,6 +190,23 @@ internal static class ScriptRunner
             }).ConfigureAwait(false);
 
         return new LuauResultScope(results);
+    }
+
+    internal static async ValueTask RunVoidAsync(
+        ScriptOperation operation,
+        int argumentCount,
+        bool hasFunction = true)
+    {
+        var resultCount = await RunAsyncCore(operation, argumentCount, hasFunction).ConfigureAwait(false);
+        if (resultCount == 0)
+        {
+            return;
+        }
+
+        await LuauContinuationDispatcher.InvokeAsync(
+            operation.Options.ContinuationScheduler,
+            () => DiscardResults(operation, operation.ThreadPointer, resultCount)).ConfigureAwait(false);
+        throw new LuauResultLimitException(operation.ChunkName, resultCount, limit: 0);
     }
 
     internal static ValueTask<int> RunCountAsync(
