@@ -41,7 +41,7 @@
         },
         {
             "displayName": "Luau Behaviour",
-            "description": "Compose sandboxed script instances into a shared, bounded Unity Update phase.",
+            "description": "Compose sandboxed script instances with explicit scene references and controlled prefab spawning in a shared, bounded Unity Update phase.",
             "path": "Samples~/Luau Behaviour"
         }
     ]
