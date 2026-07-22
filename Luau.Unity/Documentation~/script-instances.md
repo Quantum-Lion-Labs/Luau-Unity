@@ -131,4 +131,5 @@ or authoritative simulation entrypoints from the application's fixed-step tick,
 with explicit tick inputs, ordering, budgets, and rollback/snapshot policy.
 
 Import the **Luau Behaviour** sample for a complete presentation-lifecycle
-composition with explicit `self` injection and per-component failure isolation.
+composition with explicit `self` and scene-reference injection, controlled
+prefab spawning, owned-instance cleanup, and per-component failure isolation.

@@ -11,8 +11,9 @@ API or ABI breaks.
 - Sandboxed `LuauScriptInstance` asset loading and lifecycle-agnostic,
   per-root script phases with deterministic ordering, aggregate budgets, and
   configurable failure isolation.
-- An importable Luau Behaviour sample demonstrating explicit `self`
-  capabilities and a shared bounded Unity Update phase.
+- An importable Luau Behaviour sample demonstrating explicit `self` and scene
+  object capabilities, controlled prefab spawning with owned cleanup, and a
+  shared bounded Unity Update phase.
 
 ## [0.2.0] - 2026-07-19
 

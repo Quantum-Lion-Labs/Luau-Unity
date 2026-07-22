@@ -492,11 +492,17 @@ foreach ($required in @(
 foreach ($required in @(
     "LuauBehaviourRuntimeSample runtimeHost;",
     "LuauAsset script;",
+    "SceneObjectReference[] sceneObjectReferences",
+    "PrefabReference[] prefabReferences",
     "CreateScriptInstanceAsync(",
     'thread["self"] = self;',
+    'thread["refs"] = refs;',
+    'thread["spawnPrefab"] = spawnPrefab;',
+    "context.State.CreateHandle(spawned)",
     'GetRequiredEntrypoint("update")',
     "runtimeHost.Register(this, update, updateOrder)",
     'TryGetEntrypoint("destroy"',
+    "DestroySpawnedObjects();",
     "instance?.Dispose();"
 )) {
     Assert-ContainsLiteral "Luau Behaviour component sample" $luauBehaviourSample $required
