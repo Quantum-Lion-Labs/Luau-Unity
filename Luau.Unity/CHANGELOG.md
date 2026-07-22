@@ -4,6 +4,14 @@ All notable package changes are recorded here. The package follows semantic
 versioning while in preview; preview releases may make explicitly documented
 API or ABI breaks.
 
+## [Unreleased]
+
+### Added
+
+- A generated first-party bytecode manifest workflow, enabled per project and
+  per asset, with fail-closed build validation and one runtime option that
+  preserves existing state limits.
+
 ## [0.2.0] - 2026-07-19
 
 ### Added

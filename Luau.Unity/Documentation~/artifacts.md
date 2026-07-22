@@ -27,12 +27,56 @@ wasn't corrupted in transit, not that you wanted it in the first place.
 **Never accept bytecode from a player or a mod.** Ship source for that, and let
 the compiler do its job. See [execution and trust](execution-and-trust.md).
 
-## Loading your own artifacts
+## Generated first-party manifest (recommended)
+
+For Unity assets shipped by your project, the package can generate the allowlist
+and install its validator for you:
+
+1. In **Project Settings > Luau.Unity**, select **First-party precompile with
+   generated manifest** and configure a stable provenance ID.
+2. Select each trusted `.luau` asset that should ship as bytecode and enable its
+   **Precompile** importer option. Assets without that opt-in remain source, so
+   first-party and mod content can coexist.
+3. Create the state with
+   `new LuauUnityOptions { UseFirstPartyBytecode = true }`.
+4. Build normally. The build refreshes imports, verifies every opted-in asset
+   under `Assets`, and regenerates the manifest before collecting player content.
+
+The generated asset is owned by Luau.Unity at
+`Assets/Generated/Luau.Unity/Resources/Luau.Unity/FirstPartyBytecodeManifest.asset`.
+Do not edit it or place project content under that package-owned folder. It is
+safe to ignore the folder in source control: Editor startup and every player
+build regenerate the asset deterministically. Project Settings reports whether
+the manifest is current and provides **Reimport Luau Assets** and **Refresh
+Manifest** recovery actions.
+
+`UseFirstPartyBytecode` is disabled by default. When enabled, state creation
+keeps the caller's resource, execution, and scheduler settings but replaces the
+default bytecode rejection policy with the generated-manifest validator. It
+fails before allocating a native state if the manifest cannot be loaded or if
+the caller also supplied a custom bytecode policy or validator.
+
+The manifest authenticates one project snapshot: every opted-in asset under
+`Assets` at the time of the player build, including assets not referenced by its
+scenes. Addressables and AssetBundles built from that same snapshot can use the
+embedded entries. Changed bytecode, newly compiled remote bytecode, and content
+added after the player build are rejected until a new player with a regenerated
+manifest is shipped. Manifest signing and post-build remote-content updates are
+not part of this workflow yet.
+
+The provenance ID remains a public publisher or scheme label. It is recorded
+once as the manifest's common provenance ID and checked for every artifact, but
+the embedded manifest entry—not the label—establishes trust.
+
+## Advanced custom validators
+
+Keep `UseFirstPartyBytecode` disabled when your host already authenticates
+artifacts. The existing custom-validator flow is unchanged:
 
 1. Compile trusted source with the reviewed toolchain.
 2. Write the artifact with a stable source identity and your provenance claims.
-3. Authenticate it against a signed manifest or an allowlist compiled into your
-   game build.
+3. Authenticate it against a signed manifest or an allowlist controlled by your
+   host.
 4. Set `LuauBytecodePolicy.RequireValidator` on the root, with that validator.
 5. Load through the verified-artifact API.
 
@@ -100,9 +144,11 @@ validates.
 - **`SourceOnly`** (default, and what SDK and mod projects want) — the importer
   still compiles transiently to report authoring errors, but stores UTF-8 source
   and hides the precompile option.
-- **`AllowFirstPartyPrecompile`** — exposes a per-asset precompile option once
-  you've configured a public first-party provenance ID. Execution still requires
-  the state's validator.
+- **First-party precompile with generated manifest** (serialized enum value
+  `AllowFirstPartyPrecompile`) — exposes a per-asset precompile option once
+  you've configured a public first-party provenance ID. The generated manifest
+  and `LuauUnityOptions.UseFirstPartyBytecode` provide the standard runtime
+  validation path.
 
 Hiding a checkbox is not a security boundary. Source-only player builds inspect
 imported content and fail the build if any `LuauAsset` contains bytecode. A
@@ -121,6 +167,13 @@ before it clones or allocates anything, and its readers reject malformed input
 with typed diagnostics rather than best-effort guessing. The writer emits one
 deterministic representation, so the same input always produces byte-identical
 output.
+
+First-party builds also fail closed for missing provenance, opted-in assets that
+fell back to source after a compilation error, stale source/import state,
+noncanonical or corrupted artifacts, duplicate source identities, and another
+asset claiming the generated manifest's `Resources` load key. An empty manifest
+is allowed so the mode can be configured before assets opt in, but Project
+Settings displays a warning.
 
 ## Notes
 

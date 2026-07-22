@@ -433,9 +433,34 @@ foreach ($contract in @(
     "LuauResultScope",
     "source-only by default",
     "runtime mod-source limits",
+    "First-party precompile with",
+    "generated manifest",
+    "LuauUnityOptions.UseFirstPartyBytecode",
     "Windows x64 and Android ARM64/x86_64"
 )) {
     Assert-ContainsLiteral "Package README product contract" $packageReadme $contract
+}
+$gettingStartedDocumentation = Read-PackageText "Documentation~/getting-started.md"
+$artifactDocumentation = Read-PackageText "Documentation~/artifacts.md"
+foreach ($required in @(
+    "First-party precompile with",
+    "generated manifest",
+    "UseFirstPartyBytecode = true",
+    "Assets/Generated/Luau.Unity",
+    "remote Addressables or AssetBundle updates"
+)) {
+    Assert-ContainsLiteral "Generated-manifest getting-started workflow" $gettingStartedDocumentation $required
+}
+foreach ($required in @(
+    "Assets/Generated/Luau.Unity/Resources/Luau.Unity/FirstPartyBytecodeManifest.asset",
+    "Advanced custom validators",
+    "The manifest authenticates one project snapshot",
+    "Manifest signing and post-build remote-content updates are",
+    "not part of this workflow yet",
+    "the embedded manifest entry",
+    "establishes trust"
+)) {
+    Assert-ContainsLiteral "Generated-manifest artifact security boundary" $artifactDocumentation $required
 }
 $trackedDocumentation = @("README.md") + @(
     Get-ChildItem -LiteralPath $packageRoot -Recurse -File -Filter "*.md" |
@@ -865,7 +890,8 @@ Assert-SequenceEqual `
     @($verificationEditorAsmdef.references) `
     @(
         "GUID:ae747f3b7ca5411e97eb0bc61ae3f38e",
-        "GUID:c727d2ef8dd2e4846ab81fbe6ca1f508"
+        "GUID:c727d2ef8dd2e4846ab81fbe6ca1f508",
+        "GUID:827e3872b9ef548b0b8e2ab0ad7f3ff4"
     )
 Assert-SequenceEqual "Verification Editor included platforms" @($verificationEditorAsmdef.includePlatforms) @("Editor")
 Assert-SequenceEqual "Verification Editor excluded platforms" @($verificationEditorAsmdef.excludePlatforms) @()
@@ -939,7 +965,8 @@ foreach ($required in @(
     "asset.SetSource(text, source);",
     "LuauAssetImportSettings.ImportPolicy ==",
     "LuauAssetImportPolicy.AllowFirstPartyPrecompile &&",
-    "precompile;"
+    "precompile;",
+    "internal bool PrecompileRequested => precompile;"
 )) {
     Assert-ContainsLiteral "Luau importer" $importer $required
 }
@@ -1035,7 +1062,11 @@ foreach ($required in @(
     "DefaultMaxImportedSourceBytes = 1024 * 1024",
     "int maxImportedSourceBytes = LuauAssetImportSettings.DefaultMaxImportedSourceBytes;",
     "public static int MaxImportedSourceBytes",
-    "public static void SetMaxImportedSourceBytes(int maxSourceBytes)"
+    "public static void SetMaxImportedSourceBytes(int maxSourceBytes)",
+    '"First-party precompile with generated manifest"',
+    "LuauFirstPartyManifestGenerator.LastStatus",
+    'GUILayout.Button("Reimport Luau Assets")',
+    'GUILayout.Button("Refresh Manifest")'
 )) {
     Assert-ContainsLiteral "Luau project import policy" $projectSettings $required
 }
@@ -1156,6 +1187,10 @@ foreach ($required in @(
 $playerSmoke = Read-IntegrationText "Assets/Verification/Runtime/LuauPlayerSmoke.cs"
 foreach ($required in @(
     "compiledResult = await first.ExecuteAsync(backgroundAsset);",
+    "UseFirstPartyBytecode = true",
+    "firstPartyResult = await first.ExecuteAsync(firstPartyAsset);",
+    "if (!firstPartyAsset.IsPrecompiled)",
+    "Generated-manifest first-party bytecode execution failed.",
     '[LuauLibrary("PlayerSmokeCapability", Exposure = LuauLibraryExposure.Capability)]',
     "using var capabilityHandle = root.CreateHandle(capability);",
     "capability.Position = vector.create(1, 2, 3)",
@@ -1163,6 +1198,20 @@ foreach ($required in @(
     "exception.InnerException is MissingReferenceException"
 )) {
     Assert-ContainsLiteral "Luau player ordinary asset and capability smoke" $playerSmoke $required
+}
+$playerSmokeBuild = Read-IntegrationText "Assets/Verification/Editor/LuauPlayerSmokeBuild.cs"
+foreach ($required in @(
+    "LuauAssetImportPolicy.AllowFirstPartyPrecompile",
+    "LuauPlayerSmoke.FirstPartyProvenanceId",
+    'serializedImporter.FindProperty("precompile")',
+    "firstPartyImporter.SaveAndReimport();",
+    "GeneratedManifestAssetPath",
+    'InvokeSettingsTestHook("ReimportLuauAssets")',
+    "SetTemporaryImportSettings(previousPolicy, previousProvenanceId);",
+    "FlushScheduledManifestRefresh();",
+    "generatedBackup.Restore();"
+)) {
+    Assert-ContainsLiteral "Disposable first-party player smoke build" $playerSmokeBuild $required
 }
 Assert-NotContainsLiteral `
     "Luau player ordinary asset smoke" `
@@ -1207,9 +1256,14 @@ foreach ($required in @(
     ".Any(asset => !asset.IsSource)",
     "public static void ValidateSourceOnly(",
     "internal sealed class LuauSourceOnlyBuildPreprocessor : IPreprocessBuildWithReport",
+    "AssetDatabase.Refresh(ImportAssetOptions.ForceSynchronousImport);",
     "LuauAssetImportSettings.ImportPolicy ==",
-    "LuauAssetImportPolicy.AllowFirstPartyPrecompile)",
-    "LuauSourceOnlyAssetValidator.ValidateProject();"
+    "LuauAssetImportPolicy.SourceOnly)",
+    "LuauFirstPartyManifestGenerator.RefreshForCurrentPolicy();",
+    "LuauSourceOnlyAssetValidator.ValidateProject();",
+    "var status = LuauFirstPartyManifestGenerator.Generate();",
+    "LuauFirstPartyManifestGenerator.GeneratedAssetPath",
+    "FirstPartyBytecodeManifestCache.Reload(manifest);"
 )) {
     Assert-ContainsLiteral "Source-only package validator" $sourceOnlyValidator $required
 }
@@ -1232,6 +1286,91 @@ Assert-LiteralOrder `
     )
 Write-Host "PASS: SourceOnly hides precompile controls and unknown policy values still receive fail-closed build validation."
 Write-Host "PASS: reusable validation and the build preprocessor inspect imported asset content, not importer flags."
+
+$manifestRuntime = Read-PackageText "Runtime/FirstPartyBytecodeManifest.cs"
+Get-PackageFile "Runtime/FirstPartyBytecodeManifest.cs.meta" | Out-Null
+foreach ($required in @(
+    "internal sealed class FirstPartyBytecodeManifest : ScriptableObject",
+    'internal const string ResourcePath = "Luau.Unity/FirstPartyBytecodeManifest";',
+    "internal sealed class FirstPartyBytecodeManifestValidator : ILuauBytecodeValidator",
+    "new Dictionary<string, ValidatedEntry>(",
+    "StringComparer.Ordinal",
+    "sha256.TryComputeHash(",
+    "internal static class FirstPartyBytecodeManifestCache",
+    "[RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]",
+    "[RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterAssembliesLoaded)]",
+    "Resources.Load<FirstPartyBytecodeManifest>("
+)) {
+    Assert-ContainsLiteral "Generated first-party runtime validator" $manifestRuntime $required
+}
+Assert-LiteralCount `
+    "Generated first-party runtime Resources load" `
+    $manifestRuntime `
+    "Resources.Load<FirstPartyBytecodeManifest>(" `
+    1
+
+$manifestGenerator = Read-PackageText "Editor/LuauFirstPartyManifestGenerator.cs"
+$manifestRefresh = Read-PackageText "Editor/LuauFirstPartyManifestRefresh.cs"
+foreach ($required in @(
+    'internal const string GeneratedAssetPath =',
+    '"Assets/Generated/Luau.Unity/Resources/Luau.Unity/FirstPartyBytecodeManifest.asset"',
+    "AssetDatabase.FindAssets(",
+    '"t:LuauAsset",',
+    'new[] { "Assets" })',
+    "luauImporter.PrecompileRequested",
+    "entries.Sort((left, right) =>",
+    "StringComparer.Ordinal.Compare(left.sourceIdentity, right.sourceIdentity)",
+    "FindResourceKeyCollisions()",
+    "WriteManifestIfChanged(provenanceId, entries.ToArray())",
+    "if (manifest != null && ManifestMatches(manifest, provenanceId, entries))",
+    "return false;",
+    ".CompileAssetSourceAsync(",
+    "artifact.CompileOptions,",
+    "FirstPartyBytecodeManifestCache.Reload(reloaded);"
+)) {
+    Assert-ContainsLiteral "Deterministic first-party manifest generator" $manifestGenerator $required
+}
+foreach ($required in @(
+    "[InitializeOnLoad]",
+    "EditorApplication.delayCall += RunScheduled;",
+    "internal sealed class LuauFirstPartyManifestAssetPostprocessor : AssetPostprocessor",
+    "ContainsLuau(importedAssets)",
+    "ContainsLuau(deletedAssets)",
+    "ContainsLuau(movedAssets)",
+    "ContainsLuau(movedFromAssetPaths)"
+)) {
+    Assert-ContainsLiteral "Coalesced first-party manifest refresh" $manifestRefresh $required
+}
+
+$manifestValidatorTests = Read-PackageText "Tests/EditMode/LuauFirstPartyManifestTests.cs"
+foreach ($required in @(
+    "FullyMatchingArtifactAndExactPayloadAreAccepted",
+    "EverySecurityRelevantManifestFieldIsFailClosed",
+    "ExactPayloadTamperingAndLengthMismatchAreRejected",
+    "DuplicateAndNonOrdinalEntriesAreRejectedDuringInitialization",
+    "GeneratedOptionPreservesEveryCallerLimitAndSchedulerSetting",
+    "GeneratedOptionRejectsCustomValidatorConflictBeforeManifestLookup",
+    "GeneratedOptionRejectsMissingManifestBeforeCreatingAState",
+    "SourceAssetStillUsesCompilationWhenGeneratedValidationIsEnabled"
+)) {
+    Assert-ContainsLiteral "First-party manifest validator tests" $manifestValidatorTests $required
+}
+$manifestGeneratorTests = Read-PackageText "Tests/EditMode/LuauFirstPartyManifestGeneratorTests.cs"
+foreach ($required in @(
+    "GenerationCoversAllAssetsAndIsOrdinalDeterministicAndNoOp",
+    "ValidProvenanceProducesACurrentZeroEntryManifest",
+    "SourceOnlyBuildDeletesThePackageOwnedManifest",
+    "FirstPartyBuildFailsClosedWhenProvenanceIsMissing",
+    "ResourceKeyCollisionIsReportedBeforeManifestCreation",
+    "SourceOnlyBuildRejectsAlternateManifestResourceKey",
+    "SourceChangedWithoutReimportIsRejectedAsStale",
+    "OptedInCompilationFallbackCannotSilentlyEnterManifest",
+    "MalformedSerializedArtifactIsRejected",
+    "PrecompiledAssetFromAnotherImporterIsRejected",
+    "OccupiedGeneratedAssetPathFailsWithoutOverwritingTheAsset"
+)) {
+    Assert-ContainsLiteral "First-party manifest generator/build tests" $manifestGeneratorTests $required
+}
 
 Assert-PackagePathAbsent "Runtime/LuauModuleMap.cs"
 Assert-PackagePathAbsent "Runtime/LuauModuleMap.cs.meta"
@@ -1261,10 +1400,13 @@ foreach ($forbidden in @(
 $unityFacade = Read-PackageText "Runtime/LuauUnity.cs"
 foreach ($required in @(
     "public LuauStateOptions StateOptions { get; set; } = LuauStateOptions.Default;",
+    "public bool UseFirstPartyBytecode { get; set; }",
     "public LuauModuleMap ModuleMap { get; set; }",
     "state.OpenRequireLibrary(options.ModuleMap);",
     "return stateOptions with",
     "DefaultExecutionOptions = executionOptions with",
+    "BytecodePolicy = LuauBytecodePolicy.RequireValidator",
+    "BytecodeValidator = FirstPartyBytecodeManifestCache.GetValidatorOrThrow()",
     "DefaultMaxPrintArguments = 32",
     "DefaultMaxPrintUtf8Bytes = 4 * 1024",
     "DefaultMaxPrintMessagesPerSecond = 20"
@@ -1282,8 +1424,6 @@ $runtimeSource = [string]::Join(
         ForEach-Object { Get-Content -LiteralPath $_.FullName -Raw }))
 foreach ($forbidden in @(
     "UnityEngine.AddressableAssets",
-    "UnityEngine.Resources",
-    "Resources.Load",
     "ExecuteTrustedBytecode",
     "LoadTrustedBytecode",
     "LuauBytecodePolicy.AllowUnvalidated",
@@ -1293,7 +1433,16 @@ foreach ($forbidden in @(
 )) {
     Assert-NotContainsLiteral "Unity package runtime" $runtimeSource $forbidden
 }
-Write-Host "PASS: module loading is immutable, source-only, canonicalized, and rooted in finite Unity defaults."
+$ordinaryRuntimeSource = [string]::Join(
+    "`n",
+    @(Get-ChildItem -LiteralPath (Join-Path $packageRoot "Runtime") -File -Filter "*.cs" |
+        Where-Object { $_.Name -ne "FirstPartyBytecodeManifest.cs" } |
+        Sort-Object FullName |
+        ForEach-Object { Get-Content -LiteralPath $_.FullName -Raw }))
+foreach ($forbidden in @("UnityEngine.Resources", "Resources.Load")) {
+    Assert-NotContainsLiteral "Unity runtime outside the generated manifest loader" $ordinaryRuntimeSource $forbidden
+}
+Write-Host "PASS: module loading remains source-only while the single package-owned manifest loader uses an exact Resources key."
 
 $managedPublicApiPath = Get-RepositoryFile "tests/Luau.Tests/PublicApi.approved.txt"
 Assert-CanonicalTextFileHash `
@@ -1308,11 +1457,11 @@ Assert-ContainsLiteral `
 Assert-ContainsLiteral `
     "Unity public API approval inventory" `
     $unityPublicApiTests `
-    '"5918500aa9d9ec052e02606634530620de3f5f5f47e6b83d1b8901554de87692"'
+    '"09ccb7e915fbb182ead9a67fd5e7aa32698cfa9cd8cb3b83470f11ac923b7363"'
 Assert-NotContainsLiteral `
     "Unity public API approval inventory" `
     $unityPublicApiTests `
-    '"56c52c'
+    '"5918500aa9d9ec052e02606634530620de3f5f5f47e6b83d1b8901554de87692"'
 Write-Host "PASS: managed and Unity public API approval inventories match the Stage 6 ownership surface."
 
 $headerPath = Get-RequiredFile $hostRoot "include/luau_host.h" "Native host ABI header"

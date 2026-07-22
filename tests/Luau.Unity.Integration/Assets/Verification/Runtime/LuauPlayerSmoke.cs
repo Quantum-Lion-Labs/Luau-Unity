@@ -25,6 +25,9 @@ namespace Luau.Unity.Verification
             "capability.Position = vector.create(1, 2, 3); " +
             "return smokeHost.assertUnityThread(), hostManualAddOne(314), " +
             "capability.Value, capability.Hidden == nil";
+        public const string FirstPartyAssetResourceName = "__LuauPlayerSmokeFirstParty";
+        public const string FirstPartySource = "return 2718";
+        public const string FirstPartyProvenanceId = "tests:player-smoke/v1";
         public const string PassedMarker = "LUAU_PLAYER_SMOKE_PASS";
         public const string FailedMarker = "LUAU_PLAYER_SMOKE_FAIL";
 
@@ -58,9 +61,16 @@ namespace Luau.Unity.Verification
                 var unityThreadId = System.Environment.CurrentManagedThreadId;
                 using var root = LuauUnity.CreateState(new LuauUnityOptions
                 {
+                    UseFirstPartyBytecode = true,
                     StateOptions = new LuauStateOptions
                     {
                         MemoryLimitBytes = 32 * 1024 * 1024,
+                        DefaultExecutionOptions = LuauExecutionOptions.Default with
+                        {
+                            // Player startup and first-use async dispatch can pause
+                            // beyond the ordinary 250 ms host default on mobile VR.
+                            WallClockLimit = TimeSpan.FromSeconds(5),
+                        },
                         BytecodePolicy = LuauBytecodePolicy.Reject,
                     },
                     ConfigureHostApis = state =>
@@ -99,6 +109,7 @@ namespace Luau.Unity.Verification
                 var capabilityObject = new GameObject("Luau Player Smoke Capability");
                 var capability = capabilityObject.AddComponent<LuauPlayerSmokeCapability>();
                 LuauResultScope compiledResult = null;
+                LuauResultScope firstPartyResult = null;
                 try
                 {
                     using var capabilityHandle = root.CreateHandle(capability);
@@ -137,6 +148,27 @@ namespace Luau.Unity.Verification
                         Resources.UnloadAsset(backgroundAsset);
                     }
 
+                    var firstPartyAsset = Resources.Load<LuauAsset>(FirstPartyAssetResourceName);
+                    if (firstPartyAsset == null)
+                    {
+                        throw new LuauException(
+                            "The importer-produced first-party smoke asset was not included in the player.");
+                    }
+                    try
+                    {
+                        if (!firstPartyAsset.IsPrecompiled)
+                        {
+                            throw new LuauException(
+                                "The first-party smoke asset did not contain precompiled bytecode.");
+                        }
+
+                        firstPartyResult = await first.ExecuteAsync(firstPartyAsset);
+                    }
+                    finally
+                    {
+                        Resources.UnloadAsset(firstPartyAsset);
+                    }
+
                     if (compiledResult.Length != 4 ||
                         !compiledResult[0].Read<bool>() ||
                         compiledResult[1].Read<int>() != 315 ||
@@ -146,7 +178,14 @@ namespace Luau.Unity.Verification
                         capability.Position != new Vector3(1, 2, 3))
                     {
                         throw new LuauException(
-                            "Background compilation, ordinary Unity asset execution, or generated capability dispatch failed.");
+                            "Background compilation, source asset execution, or generated capability dispatch failed.");
+                    }
+
+                    if (firstPartyResult.Length != 1 ||
+                        firstPartyResult[0].Read<int>() != 2718)
+                    {
+                        throw new LuauException(
+                            "Generated-manifest first-party bytecode execution failed.");
                     }
 
                     UnityEngine.Object.Destroy(capabilityObject);
@@ -175,6 +214,7 @@ namespace Luau.Unity.Verification
                 }
                 finally
                 {
+                    firstPartyResult?.Dispose();
                     compiledResult?.Dispose();
                     if (capabilityObject != null)
                     {

@@ -55,6 +55,14 @@ The importer is source-only by default. First-party precompile is an explicit
 project policy and still requires runtime artifact authentication. Import
 admission is separate from runtime mod-source limits.
 
+For package-managed authentication, select **First-party precompile with
+generated manifest** in Project Settings, configure a provenance ID, opt trusted
+assets into **Precompile**, and set `LuauUnityOptions.UseFirstPartyBytecode =
+true`. A normal player build regenerates the package-owned manifest. Unchecked
+assets remain source, so first-party scripts and mods can coexist. See
+[Persistent artifacts](Documentation~/artifacts.md) for the snapshot and remote
+content security boundary.
+
 ## Learn more
 
 - [Getting started](Documentation~/getting-started.md)

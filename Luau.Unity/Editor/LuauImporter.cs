@@ -18,6 +18,12 @@ namespace Luau.Unity.Editor
         [SerializeField]
         bool precompile;
 
+        // The imported LuauAsset can contain source even when this setting is
+        // enabled (for example, after a compiler diagnostic). Build validation
+        // must inspect both values so a failed opt-in never silently ships as
+        // source in a first-party build.
+        internal bool PrecompileRequested => precompile;
+
         public override void OnImportAsset(AssetImportContext ctx)
         {
             LuauCompilerIdentityDependency.DependsOn(ctx);
@@ -106,7 +112,7 @@ namespace Luau.Unity.Editor
             AddAsset(ctx, asset);
         }
 
-        static string GetCompilationFailureMessage(LuauCompileResult result)
+        internal static string GetCompilationFailureMessage(LuauCompileResult result)
         {
             switch (result.Kind)
             {

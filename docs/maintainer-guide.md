@@ -481,9 +481,14 @@ ucp run-tests --mode edit
 ```
 
 The required player gates are Windows x64 IL2CPP, Android ARM64 IL2CPP on a
-device, and Android x64 on an emulator. The smoke includes background compile,
-explicit Unity-owner scheduler handoff, and same-process output execution. A
-successful build without the stable runtime pass marker is not a smoke pass.
+device, and Android x64 on an emulator. The disposable smoke temporarily enables
+first-party precompile, imports one opted-in Resources asset, regenerates the
+manifest during the build, and executes that asset through
+`UseFirstPartyBytecode`. It also covers background source compilation, explicit
+Unity-owner scheduler handoff, and same-process output execution. The build
+helper must restore project settings and package-owned generated assets in its
+`finally` path. A successful build without the stable runtime pass marker is not
+a smoke pass.
 
 See [Stage 4 implementation notes](stage-4-implementation-notes.md) for the
 decision record and final verification record.

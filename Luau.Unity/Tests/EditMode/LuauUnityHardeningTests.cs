@@ -43,6 +43,7 @@ namespace Luau.Unity.Tests
             Assert.That(options.ModuleMap, Is.Null);
             Assert.That(options.SandboxRoot, Is.True);
             Assert.That(options.CaptureUnitySynchronizationContext, Is.True);
+            Assert.That(options.UseFirstPartyBytecode, Is.False);
             Assert.That(
                 options.MaxPrintArguments,
                 Is.EqualTo(LuauUnityOptions.DefaultMaxPrintArguments));
