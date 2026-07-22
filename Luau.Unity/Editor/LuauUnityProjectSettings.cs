@@ -109,6 +109,7 @@ namespace Luau.Unity.Editor
                 return;
 
             ReimportLuauAssets();
+            LuauFirstPartyManifestRefresh.Schedule();
         }
 
         public static void SetFirstPartyProvenanceId(string provenanceId)
@@ -117,7 +118,10 @@ namespace Luau.Unity.Editor
                 throw new ArgumentException("A provenance ID is required.", nameof(provenanceId));
             provenanceId = provenanceId.Trim();
             if (LuauUnityProjectSettingsData.instance.SetFirstPartyProvenanceId(provenanceId, save: true))
+            {
                 ReimportLuauAssets();
+                LuauFirstPartyManifestRefresh.Schedule();
+            }
         }
 
         /// <summary>Sets the finite maximum UTF-8 byte length of one imported source asset.</summary>
@@ -128,6 +132,7 @@ namespace Luau.Unity.Editor
                 save: true))
             {
                 ReimportLuauAssets();
+                LuauFirstPartyManifestRefresh.Schedule();
             }
         }
 
@@ -148,14 +153,19 @@ namespace Luau.Unity.Editor
                 save: false);
         }
 
-        static void ReimportLuauAssets()
+        internal static void ReimportLuauAssets()
         {
-            foreach (var guid in AssetDatabase.FindAssets("t:LuauAsset"))
+            foreach (var path in AssetDatabase.GetAllAssetPaths())
             {
-                var path = AssetDatabase.GUIDToAssetPath(guid);
-                if (!string.IsNullOrEmpty(path))
+                if (path.StartsWith("Assets/", StringComparison.Ordinal) &&
+                    path.EndsWith(".luau", StringComparison.OrdinalIgnoreCase) &&
+                    AssetImporter.GetAtPath(path) is LuauImporter)
+                {
                     AssetDatabase.ImportAsset(path, ImportAssetOptions.ForceUpdate);
+                }
             }
+
+            LuauFirstPartyManifestRefresh.Schedule();
         }
 
         [SettingsProvider]
@@ -189,7 +199,18 @@ namespace Luau.Unity.Editor
             }
 
             var current = ImportPolicy;
-            var next = (LuauAssetImportPolicy)EditorGUILayout.EnumPopup("Asset import policy", current);
+            var currentIndex = current == LuauAssetImportPolicy.AllowFirstPartyPrecompile ? 1 : 0;
+            var nextIndex = EditorGUILayout.Popup(
+                "Asset import policy",
+                currentIndex,
+                new[]
+                {
+                    "Source only",
+                    "First-party precompile with generated manifest",
+                });
+            var next = nextIndex == 1
+                ? LuauAssetImportPolicy.AllowFirstPartyPrecompile
+                : LuauAssetImportPolicy.SourceOnly;
             if (next != current)
                 SetImportPolicy(next);
 
@@ -198,9 +219,12 @@ namespace Luau.Unity.Editor
                 var provenanceId = EditorGUILayout.DelayedTextField(
                     new GUIContent("First-party provenance ID", "Public label only; runtime validation establishes trust."),
                     FirstPartyProvenanceId);
+                provenanceId = (provenanceId ?? string.Empty).Trim();
                 if (!string.Equals(provenanceId, FirstPartyProvenanceId, StringComparison.Ordinal) &&
-                    !string.IsNullOrWhiteSpace(provenanceId))
-                    SetFirstPartyProvenanceId(provenanceId);
+                    LuauUnityProjectSettingsData.instance.SetFirstPartyProvenanceId(provenanceId, save: true))
+                {
+                    ReimportLuauAssets();
+                }
             }
 
             var sourceOnly = next == LuauAssetImportPolicy.SourceOnly;
@@ -215,6 +239,53 @@ namespace Luau.Unity.Editor
                 sourceOnly
                     ? MessageType.Info
                     : missingProvenanceId ? MessageType.Error : MessageType.Warning);
+
+            DrawManifestStatus();
+        }
+
+        static void DrawManifestStatus()
+        {
+            EditorGUILayout.Space();
+            EditorGUILayout.LabelField("Generated first-party manifest", EditorStyles.boldLabel);
+
+            var status = LuauFirstPartyManifestGenerator.LastStatus;
+            if (status == null)
+            {
+                EditorGUILayout.HelpBox(
+                    "Manifest status is pending an Editor refresh.",
+                    MessageType.Info);
+            }
+            else
+            {
+                EditorGUILayout.LabelField("Total .luau assets", status.TotalLuauAssets.ToString());
+                EditorGUILayout.LabelField("Opted in", status.OptedInAssets.ToString());
+                EditorGUILayout.LabelField("Successfully precompiled", status.PrecompiledAssets.ToString());
+                EditorGUILayout.LabelField(
+                    "Provenance",
+                    status.HasProvenanceId ? "Configured" : "Missing");
+                EditorGUILayout.LabelField(
+                    "Manifest",
+                    status.IsManifestCurrent ? "Current" : "Not current");
+
+                foreach (var error in status.Errors)
+                    EditorGUILayout.HelpBox(error, MessageType.Error);
+
+                if (status.IsEmptyManifest)
+                {
+                    EditorGUILayout.HelpBox(
+                        "The generated manifest is empty. No .luau assets are currently opted in and successfully precompiled.",
+                        MessageType.Warning);
+                }
+            }
+
+            using (new EditorGUILayout.HorizontalScope())
+            {
+                if (GUILayout.Button("Reimport Luau Assets"))
+                    ReimportLuauAssets();
+
+                if (GUILayout.Button("Refresh Manifest"))
+                    LuauFirstPartyManifestRefresh.RefreshNow(logErrors: true);
+            }
         }
     }
 }

@@ -116,6 +116,14 @@ public sealed class HelloLuau : MonoBehaviour
 thread, so a large script won't hitch. One VM and all its threads are
 serialized; separate VMs run concurrently.
 
+Trusted project scripts can instead opt into package-managed precompilation:
+choose **First-party precompile with generated manifest** in Project Settings,
+set a provenance ID, enable **Precompile** on selected assets, and create the
+state with `LuauUnityOptions.UseFirstPartyBytecode = true`. The player build
+embeds a manifest for that exact project snapshot; source-only and mod assets
+remain on the compiler path. See
+[precompiled bytecode](Luau.Unity/Documentation~/artifacts.md).
+
 For the setup you actually want in a real project — one VM shared across the
 game, one sandboxed thread per scripted object, and script functions your game
 calls each frame — see [Getting started](Luau.Unity/Documentation~/getting-started.md).
@@ -147,9 +155,9 @@ Untrusted mods drove the design, so the defaults assume the script is hostile:
 - **Frozen globals.** Host APIs register before the root is sandboxed; after
   that, nothing can replace them.
 - **Source, not bytecode.** `LuauBytecodePolicy.Reject` is both the default and
-  the zero enum value. Loading precompiled bytecode requires an explicit policy
-  change plus a validator you write, because bytecode skips the compiler
-  entirely.
+  the zero enum value. Loading precompiled bytecode requires either the explicit
+  generated-manifest option or a custom validator, because bytecode skips the
+  compiler entirely.
 - **One VM per trust domain.** Everything inside a root shares memory, host APIs,
   and a module cache. Mutually untrusted mods get separate roots.
 

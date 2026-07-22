@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using System.Reflection;
 using System.Text;
 using Luau.Unity.Verification;
 using UnityEditor;
@@ -19,6 +20,10 @@ namespace Luau.Unity.Editor
     public static class LuauPlayerSmokeBuild
     {
         const string OutputArgument = "-luauSmokeOutput";
+        const string GeneratedParentAssetPath = "Assets/Generated";
+        const string GeneratedRootAssetPath = "Assets/Generated/Luau.Unity";
+        const string GeneratedManifestAssetPath =
+            "Assets/Generated/Luau.Unity/Resources/Luau.Unity/FirstPartyBytecodeManifest.asset";
 
         [MenuItem("Luau/Verification/Build Windows x64 IL2CPP Smoke Player")]
         public static void BuildWindows64Il2Cpp()
@@ -74,17 +79,26 @@ namespace Luau.Unity.Editor
 
             Directory.CreateDirectory(outputDirectory);
 
-            var temporaryFolderName = "__LuauPlayerSmoke_" + Guid.NewGuid().ToString("N");
-            var temporaryFolderGuid = AssetDatabase.CreateFolder("Assets", temporaryFolderName);
-            var temporaryFolder = AssetDatabase.GUIDToAssetPath(temporaryFolderGuid);
-            if (string.IsNullOrEmpty(temporaryFolder))
-            {
-                throw new BuildFailedException("Unable to create a temporary Luau smoke scene folder.");
-            }
-
+            var previousPolicy = LuauAssetImportSettings.ImportPolicy;
+            var previousProvenanceId = LuauAssetImportSettings.FirstPartyProvenanceId;
+            var generatedBackup = new GeneratedAssetsBackup();
+            string temporaryFolder = null;
             Scene smokeScene = default;
             try
             {
+                SetTemporaryImportSettings(
+                    LuauAssetImportPolicy.AllowFirstPartyPrecompile,
+                    LuauPlayerSmoke.FirstPartyProvenanceId);
+
+                var temporaryFolderName = "__LuauPlayerSmoke_" + Guid.NewGuid().ToString("N");
+                var temporaryFolderGuid = AssetDatabase.CreateFolder("Assets", temporaryFolderName);
+                temporaryFolder = AssetDatabase.GUIDToAssetPath(temporaryFolderGuid);
+                if (string.IsNullOrEmpty(temporaryFolder))
+                {
+                    throw new BuildFailedException(
+                        "Unable to create a temporary Luau smoke scene folder.");
+                }
+
                 var resourcesFolder = AssetDatabase.CreateFolder(
                     temporaryFolder,
                     "Resources");
@@ -110,6 +124,45 @@ namespace Luau.Unity.Editor
                 {
                     throw new BuildFailedException(
                         "The temporary Luau background smoke source was not imported as a LuauAsset.");
+                }
+
+                var firstPartyAssetPath = resourcesFolder + "/" +
+                    LuauPlayerSmoke.FirstPartyAssetResourceName + ".luau";
+                var absoluteFirstPartyAssetPath = Path.GetFullPath(
+                    Path.Combine(Application.dataPath, "..", firstPartyAssetPath));
+                File.WriteAllText(
+                    absoluteFirstPartyAssetPath,
+                    LuauPlayerSmoke.FirstPartySource,
+                    new UTF8Encoding(false));
+                AssetDatabase.ImportAsset(
+                    firstPartyAssetPath,
+                    ImportAssetOptions.ForceSynchronousImport);
+
+                var firstPartyImporter = AssetImporter.GetAtPath(firstPartyAssetPath);
+                if (firstPartyImporter == null)
+                {
+                    throw new BuildFailedException(
+                        "The temporary first-party Luau smoke importer was unavailable.");
+                }
+
+                var serializedImporter = new SerializedObject(firstPartyImporter);
+                var precompile = serializedImporter.FindProperty("precompile");
+                if (precompile == null)
+                {
+                    throw new BuildFailedException(
+                        "The Luau importer did not expose its serialized precompile opt-in.");
+                }
+
+                precompile.boolValue = true;
+                serializedImporter.ApplyModifiedPropertiesWithoutUndo();
+                firstPartyImporter.SaveAndReimport();
+
+                var firstPartyAsset =
+                    AssetDatabase.LoadAssetAtPath<LuauAsset>(firstPartyAssetPath);
+                if (firstPartyAsset == null || !firstPartyAsset.IsPrecompiled)
+                {
+                    throw new BuildFailedException(
+                        "The temporary first-party Luau smoke source was not precompiled.");
                 }
 
                 var activeScene = SceneManager.GetActiveScene();
@@ -143,23 +196,169 @@ namespace Luau.Unity.Editor
                         "Luau smoke build failed with " + report.summary.totalErrors + " error(s).");
                 }
 
+                if (AssetDatabase.LoadMainAssetAtPath(GeneratedManifestAssetPath) == null)
+                {
+                    throw new BuildFailedException(
+                        "The first-party Luau manifest was not generated during the smoke build.");
+                }
+
                 Debug.Log("Luau smoke player built at " + report.summary.outputPath);
             }
             finally
             {
-                if (smokeScene.IsValid() && smokeScene.isLoaded)
+                try
                 {
-                    if (SceneManager.sceneCount == 1)
+                    if (smokeScene.IsValid() && smokeScene.isLoaded)
                     {
-                        EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Single);
+                        if (SceneManager.sceneCount == 1)
+                        {
+                            EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Single);
+                        }
+                        else
+                        {
+                            EditorSceneManager.CloseScene(smokeScene, true);
+                        }
                     }
-                    else
+
+                    if (!string.IsNullOrEmpty(temporaryFolder))
                     {
-                        EditorSceneManager.CloseScene(smokeScene, true);
+                        AssetDatabase.DeleteAsset(temporaryFolder);
                     }
                 }
+                finally
+                {
+                    try
+                    {
+                        SetTemporaryImportSettings(previousPolicy, previousProvenanceId);
+                    }
+                    finally
+                    {
+                        try
+                        {
+                            FlushScheduledManifestRefresh();
+                        }
+                        finally
+                        {
+                            generatedBackup.Restore();
+                        }
+                    }
+                }
+            }
+        }
 
-                AssetDatabase.DeleteAsset(temporaryFolder);
+        static void SetTemporaryImportSettings(
+            LuauAssetImportPolicy policy,
+            string provenanceId)
+        {
+            InvokeSettingsTestHook("SetFirstPartyProvenanceIdForTests", provenanceId);
+            InvokeSettingsTestHook("SetImportPolicyForTests", policy);
+            InvokeSettingsTestHook("ReimportLuauAssets");
+        }
+
+        static void InvokeSettingsTestHook(string methodName, params object[] arguments)
+        {
+            var method = typeof(LuauAssetImportSettings).GetMethod(
+                methodName,
+                BindingFlags.NonPublic | BindingFlags.Static);
+            if (method == null)
+            {
+                throw new BuildFailedException(
+                    "The Luau smoke build could not find settings hook " + methodName + ".");
+            }
+
+            method.Invoke(null, arguments);
+        }
+
+        static void FlushScheduledManifestRefresh()
+        {
+            var refreshType = typeof(LuauAssetImportSettings).Assembly.GetType(
+                "Luau.Unity.Editor.LuauFirstPartyManifestRefresh",
+                throwOnError: false);
+            var method = refreshType?.GetMethod(
+                "RefreshNow",
+                BindingFlags.NonPublic | BindingFlags.Static);
+            if (method == null)
+            {
+                throw new BuildFailedException(
+                    "The Luau smoke build could not flush the scheduled manifest refresh.");
+            }
+
+            // Deleting and reimporting the temporary .luau assets queues a
+            // delayed refresh. Consume it under the restored settings before
+            // restoring exact generated bytes, or the next Editor tick could
+            // overwrite the backup.
+            method.Invoke(null, new object[] { false });
+        }
+
+        sealed class GeneratedAssetsBackup
+        {
+            readonly string generatedParentPath;
+            readonly string generatedRootPath;
+            readonly string backupPath;
+            readonly bool generatedParentExisted;
+            readonly bool generatedRootExisted;
+
+            public GeneratedAssetsBackup()
+            {
+                generatedParentPath = ToAbsoluteProjectPath(GeneratedParentAssetPath);
+                generatedRootPath = ToAbsoluteProjectPath(GeneratedRootAssetPath);
+                generatedParentExisted = Directory.Exists(generatedParentPath);
+                generatedRootExisted = Directory.Exists(generatedRootPath);
+                backupPath = Path.Combine(
+                    Path.GetTempPath(),
+                    "LuauPlayerSmokeGenerated_" + Guid.NewGuid().ToString("N"));
+
+                if (generatedRootExisted)
+                {
+                    FileUtil.CopyFileOrDirectory(generatedRootPath, backupPath);
+                    if (File.Exists(generatedRootPath + ".meta"))
+                    {
+                        FileUtil.CopyFileOrDirectory(
+                            generatedRootPath + ".meta",
+                            backupPath + ".meta");
+                    }
+                }
+            }
+
+            public void Restore()
+            {
+                try
+                {
+                    AssetDatabase.DeleteAsset(GeneratedRootAssetPath);
+                    FileUtil.DeleteFileOrDirectory(generatedRootPath);
+                    FileUtil.DeleteFileOrDirectory(generatedRootPath + ".meta");
+
+                    if (generatedRootExisted)
+                    {
+                        FileUtil.CopyFileOrDirectory(backupPath, generatedRootPath);
+                        if (File.Exists(backupPath + ".meta"))
+                        {
+                            FileUtil.CopyFileOrDirectory(
+                                backupPath + ".meta",
+                                generatedRootPath + ".meta");
+                        }
+                    }
+
+                    if (!generatedParentExisted &&
+                        Directory.Exists(generatedParentPath) &&
+                        Directory.GetFileSystemEntries(generatedParentPath).Length == 0)
+                    {
+                        AssetDatabase.DeleteAsset(GeneratedParentAssetPath);
+                    }
+
+                    AssetDatabase.Refresh(ImportAssetOptions.ForceSynchronousImport);
+                }
+                finally
+                {
+                    FileUtil.DeleteFileOrDirectory(backupPath);
+                    FileUtil.DeleteFileOrDirectory(backupPath + ".meta");
+                }
+            }
+
+            static string ToAbsoluteProjectPath(string assetPath)
+            {
+                return Path.GetFullPath(
+                    Path.Combine(Application.dataPath, "..", assetPath));
             }
         }
 

@@ -59,6 +59,33 @@ file.
 That's the whole API surface for running a script. The rest of this page is
 about the setup you actually want in a real project.
 
+## Optional: ship trusted scripts as bytecode
+
+Source is the safe default and is still the right format for mods. To skip
+runtime compilation for selected first-party assets:
+
+1. Open **Project Settings > Luau.Unity**, choose **First-party precompile with
+   generated manifest**, and enter your public provenance ID.
+2. Select the trusted `.luau` assets and enable **Precompile** in each importer.
+   Leave mod or source-only assets unchecked.
+3. Set `UseFirstPartyBytecode = true` when creating the state:
+
+   ```csharp
+   using var root = LuauUnity.CreateState(new LuauUnityOptions
+   {
+       UseFirstPartyBytecode = true,
+   });
+   ```
+
+4. Build normally. Luau.Unity regenerates and embeds the manifest that approves
+   the current project snapshot.
+
+The generated folder under `Assets/Generated/Luau.Unity` is package-owned and
+may be ignored by source control. Bytecode rebuilt or added after the player
+build—including remote Addressables or AssetBundle updates—needs a newly built
+player manifest. See [precompiled bytecode](artifacts.md) for the security
+boundary and the unchanged advanced custom-validator path.
+
 ## A practical setup
 
 The hello world above creates and destroys a VM inside one method, which is fine

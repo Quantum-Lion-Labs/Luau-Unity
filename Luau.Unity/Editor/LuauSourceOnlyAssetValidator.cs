@@ -52,21 +52,58 @@ namespace Luau.Unity.Editor
         }
     }
 
+    /// <summary>
+    /// Establishes the package's Luau content snapshot before Unity collects
+    /// player content. Source-only cleanup and first-party generation live in
+    /// one early preprocessor so neither policy can bypass the other.
+    /// </summary>
     internal sealed class LuauSourceOnlyBuildPreprocessor : IPreprocessBuildWithReport
     {
         public int callbackOrder => -1000;
 
         public void OnPreprocessBuild(BuildReport report)
         {
-            if (LuauAssetImportSettings.ImportPolicy ==
-                LuauAssetImportPolicy.AllowFirstPartyPrecompile)
-                return;
-
             try
             {
-                LuauSourceOnlyAssetValidator.ValidateProject();
+                AssetDatabase.Refresh(ImportAssetOptions.ForceSynchronousImport);
+
+                if (LuauAssetImportSettings.ImportPolicy ==
+                    LuauAssetImportPolicy.SourceOnly)
+                {
+                    var sourceOnlyStatus =
+                        LuauFirstPartyManifestGenerator.RefreshForCurrentPolicy();
+                    if (sourceOnlyStatus.Errors.Count != 0)
+                    {
+                        throw new InvalidOperationException(
+                            "Source-only Luau generated-content cleanup failed:\n- " +
+                            string.Join("\n- ", sourceOnlyStatus.Errors));
+                    }
+                    LuauSourceOnlyAssetValidator.ValidateProject();
+                    return;
+                }
+
+                var status = LuauFirstPartyManifestGenerator.Generate();
+                if (status.Errors.Count != 0)
+                {
+                    throw new InvalidOperationException(
+                        "First-party Luau manifest validation failed:\n- " +
+                        string.Join("\n- ", status.Errors));
+                }
+
+                var manifest = AssetDatabase.LoadAssetAtPath<FirstPartyBytecodeManifest>(
+                    LuauFirstPartyManifestGenerator.GeneratedAssetPath);
+                if (manifest == null)
+                {
+                    throw new InvalidOperationException(
+                        "The generated first-party Luau manifest could not be reloaded before " +
+                        "player content collection.");
+                }
+
+                // Rebuild the pure-managed runtime snapshot from the exact
+                // ScriptableObject that Unity is about to include.
+                FirstPartyBytecodeManifestCache.Reload(manifest);
             }
-            catch (InvalidOperationException exception)
+            catch (Exception exception)
             {
                 throw new BuildFailedException(exception.Message);
             }
