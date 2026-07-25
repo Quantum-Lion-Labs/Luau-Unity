@@ -10,6 +10,20 @@ namespace Luau.Unity.Tests
 {
     public sealed class LuauScriptSchedulerTests
     {
+        static readonly LuauObjectDescriptor<GameObject> SchedulerGameObjectDescriptor =
+            new LuauObjectDescriptor<GameObject>(
+                "SchedulerGameObject",
+                LuauUnityObjectGuard.ThrowIfDestroyed,
+                new[]
+                {
+                    LuauObjectMember<GameObject>.Method(
+                        "TranslateX",
+                        (target, context) => target.transform.Translate(
+                            (float)context.Read<double>(1),
+                            0f,
+                            0f)),
+                });
+
         [Test]
         public void DispatchUsesOrderThenRegistrationSequence()
         {
@@ -519,11 +533,11 @@ namespace Luau.Unity.Tests
         }
 
         [Test]
-        public async Task AssetFactoryUsesBoundedLaneAndScheduledCapabilityChangesGameObject()
+        public async Task AssetFactoryUsesBoundedLaneAndScheduledLocalCapabilityChangesGameObject()
         {
             const string source =
                 "return { update = function(amount) " +
-                "self.transform:Translate(vector.create(amount, 0, 0)) end }";
+                "self:TranslateX(amount) end }";
             var asset = ScriptableObject.CreateInstance<LuauAsset>();
             asset.name = "@unity/script-instance-capability.luau";
             asset.SetSource(source, Encoding.UTF8.GetBytes(source));
@@ -545,7 +559,9 @@ namespace Luau.Unity.Tests
                     asset,
                     thread =>
                     {
-                        using var self = root.CreateHandle(gameObject);
+                        using var self = root.CreateHandle(
+                            gameObject,
+                            SchedulerGameObjectDescriptor);
                         thread["self"] = self;
                     });
                 using var scheduler = new LuauScriptScheduler(root);

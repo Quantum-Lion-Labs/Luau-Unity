@@ -283,9 +283,15 @@ $expectedDirectories = @(
     "Runtime/Plugins/android-x64",
     "Runtime/Plugins/win-x64",
     "Samples~",
-    "Samples~/Capability Binding",
     "Samples~/Getting Started",
-    "Samples~/Luau Behaviour",
+    "Samples~/Full Luau Scripting Demo",
+    "Samples~/Full Luau Scripting Demo/Core",
+    "Samples~/Full Luau Scripting Demo/Demo Game",
+    "Samples~/Full Luau Scripting Demo/Demo Game/Art",
+    "Samples~/Full Luau Scripting Demo/Demo Game/Audio",
+    "Samples~/Full Luau Scripting Demo/Demo Game/Prefabs",
+    "Samples~/Full Luau Scripting Demo/Demo Game/Scenes",
+    "Samples~/Full Luau Scripting Demo/Demo Game/Scripts",
     "Tests",
     "Tests/EditMode"
 )
@@ -307,7 +313,7 @@ foreach ($item in $allItems) {
     if (!$item.PSIsContainer) {
         $allowedExtensions = @(
             ".asmdef", ".cs", ".dll", ".json", ".luau", ".md",
-            ".meta", ".png", ".so", ".xml")
+            ".meta", ".png", ".prefab", ".so", ".unity", ".xml")
         if ($allowedExtensions -cnotcontains $item.Extension.ToLowerInvariant()) {
             throw "Unexpected package file type: $relativePath"
         }
@@ -384,23 +390,55 @@ foreach ($artifact in @($policy.artifacts)) {
 }
 
 $sampleNames = @($package.samples | ForEach-Object displayName)
-Assert-Sequence "Declared sample display names" $sampleNames @("Getting Started", "Capability Binding", "Luau Behaviour")
+$samplePaths = @($package.samples | ForEach-Object path)
+Assert-Sequence `
+    "Declared sample display names" `
+    $sampleNames `
+    @("Getting Started", "Full Luau Scripting Demo")
+Assert-Sequence `
+    "Declared sample paths" `
+    $samplePaths `
+    @("Samples~/Getting Started", "Samples~/Full Luau Scripting Demo")
 $requiredSampleFiles = @(
     "Samples~/Getting Started/GettingStartedSample.cs",
+    "Samples~/Getting Started/GettingStartedTarget.cs",
     "Samples~/Getting Started/GettingStarted.luau",
     "Samples~/Getting Started/README.md",
-    "Samples~/Capability Binding/CapabilityBindingSample.cs",
-    "Samples~/Capability Binding/CapabilityBinding.luau",
-    "Samples~/Capability Binding/README.md",
-    "Samples~/Luau Behaviour/LuauBehaviourRuntimeSample.cs",
-    "Samples~/Luau Behaviour/LuauBehaviourSample.cs",
-    "Samples~/Luau Behaviour/LuauBehaviour.luau",
-    "Samples~/Luau Behaviour/README.md"
+    "Samples~/Full Luau Scripting Demo/README.md",
+    "Samples~/Full Luau Scripting Demo/Core/FullLuauScriptingDemo.Core.asmdef",
+    "Samples~/Full Luau Scripting Demo/Core/LuauBehaviourRuntime.cs",
+    "Samples~/Full Luau Scripting Demo/Core/LuauBehaviour.cs",
+    "Samples~/Full Luau Scripting Demo/Core/LuauUnityCapabilities.cs",
+    "Samples~/Full Luau Scripting Demo/Core/LuauUnityTableValues.cs",
+    "Samples~/Full Luau Scripting Demo/Core/LuauQuaternionLibrary.cs",
+    "Samples~/Full Luau Scripting Demo/Core/LuauInputLibrary.cs",
+    "Samples~/Full Luau Scripting Demo/Core/README.md",
+    "Samples~/Full Luau Scripting Demo/Demo Game/Prefabs/Bird.prefab",
+    "Samples~/Full Luau Scripting Demo/Demo Game/Prefabs/PipePair.prefab",
+    "Samples~/Full Luau Scripting Demo/Demo Game/Scenes/FlappyBird.unity",
+    "Samples~/Full Luau Scripting Demo/Demo Game/Scripts/GameController.luau",
+    "Samples~/Full Luau Scripting Demo/Demo Game/Scripts/PlayerController.luau",
+    "Samples~/Full Luau Scripting Demo/Demo Game/Scripts/PipeController.luau",
+    "Samples~/Full Luau Scripting Demo/Demo Game/Art/Bird.png",
+    "Samples~/Full Luau Scripting Demo/Demo Game/Art/Pipe.png",
+    "Samples~/Full Luau Scripting Demo/Demo Game/Art/Ground.png",
+    "Samples~/Full Luau Scripting Demo/Demo Game/Audio/README.md",
+    "Samples~/Full Luau Scripting Demo/Demo Game/README.md"
 )
 foreach ($sampleFile in $requiredSampleFiles) {
     if (!(Test-Path -LiteralPath (Join-Path $packageRoot $sampleFile) -PathType Leaf)) {
         throw "Declared sample content is missing: $sampleFile"
     }
+}
+$demoGameRoot = Join-Path $packageRoot "Samples~/Full Luau Scripting Demo/Demo Game"
+$demoGameCSharpFiles = @(
+    Get-ChildItem -LiteralPath $demoGameRoot -Recurse -File -Filter "*.cs")
+if ($demoGameCSharpFiles.Count -ne 0) {
+    throw (
+        "Full Luau Scripting Demo gameplay must remain C#-free; found: " +
+        (($demoGameCSharpFiles | ForEach-Object {
+            Get-RelativePackagePath $_.FullName
+        }) -join ", "))
 }
 
 $xmlPath = Join-Path $packageRoot "Runtime/Luau.xml"

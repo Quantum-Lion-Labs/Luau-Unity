@@ -22,7 +22,9 @@ using var instance = await root.CreateScriptInstanceAsync(
     asset,
     thread =>
     {
-        using var self = root.CreateHandle(gameObject);
+        using var self = root.CreateHandle(
+            gameObject,
+            LuauUnityCapabilities.GameObjectDescriptor);
         thread["self"] = self;
     },
     cancellationToken);
@@ -39,6 +41,11 @@ different instance can receive a different capability even when both share a
 root. A missing optional export is `false`; a missing required export or a
 non-function export is a script contract error. Repeated binding of the same
 name returns the same cached entrypoint.
+
+`LuauUnityCapabilities.GameObjectDescriptor` above comes from the imported
+**Full Luau Scripting Demo** sample and is editable application code. Luau.Unity
+does not ship a default Unity object surface. Copy and customize that policy,
+or define a narrower descriptor for your own archetype.
 
 ## Ownership
 
@@ -130,6 +137,8 @@ presentation-driven and are not deterministic across machines. Drive network
 or authoritative simulation entrypoints from the application's fixed-step tick,
 with explicit tick inputs, ordering, budgets, and rollback/snapshot policy.
 
-Import the **Luau Behaviour** sample for a complete presentation-lifecycle
-composition with explicit `self` and scene-reference injection, controlled
-prefab spawning, owned-instance cleanup, and per-component failure isolation.
+Import **Full Luau Scripting Demo** for a complete Unity-lifecycle composition
+with explicit `self` and named-reference injection, controlled prefab spawning,
+owned-instance cleanup, shared trust-domain state, and per-component failure
+isolation. Keep `Core/` and delete `Demo Game/` when using it as the foundation
+for another game.

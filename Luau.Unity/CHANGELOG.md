@@ -14,9 +14,32 @@ API or ABI breaks.
 - Sandboxed `LuauScriptInstance` asset loading and lifecycle-agnostic,
   per-root script phases with deterministic ordering, aggregate budgets, and
   configurable failure isolation.
-- An importable Luau Behaviour sample demonstrating explicit `self` and scene
-  object capabilities, controlled prefab spawning with owned cleanup, and a
-  shared bounded Unity Update phase.
+- An importable Full Luau Scripting Demo split into reusable `Core/` components
+  and a one-scene Flappy Bird game whose gameplay scripts are entirely Luau.
+  The core demonstrates explicit `self` and scene-object capabilities,
+  controlled prefab spawning with owned cleanup, a shared trust-domain table,
+  and bounded Unity lifecycle phases.
+
+### Changed
+
+- Unity object capability policy is now consumer-defined. Generated
+  capabilities remain the preferred path for application-owned annotated
+  types; external types use explicit immutable `LuauObjectDescriptor<T>`
+  values.
+- Full Luau Scripting Demo owns editable descriptors for the supported
+  `GameObject`, `Transform`, 2D physics, rendering, audio, and text surfaces
+  used by its `self`, named-reference, and spawned-prefab handles.
+- Capability Binding has been folded into Getting Started. Package Manager now
+  presents exactly two samples: Getting Started and Full Luau Scripting Demo.
+
+### Removed
+
+- **Breaking:** removed the package-owned `GameObject` and `Transform`
+  descriptors and the `state.CreateHandle(gameObject)` /
+  `state.CreateHandle(transform)` convenience overloads. Import and explicitly
+  select the Full Luau Scripting Demo core policy, copy and customize it in
+  application code, or define a narrower descriptor or wrapper for the
+  application's needs.
 
 ## [0.2.0] - 2026-07-19
 
@@ -26,7 +49,7 @@ API or ABI breaks.
   capability budgets, with visibly named unbounded opt-ins for trusted work.
 - A versioned, bounded persistent-artifact encoding plus bounded, immutable
   managed module maps and bundles.
-- Explicit generated object capabilities for `GameObject` and `Transform`.
+- Package-owned object capability surfaces for `GameObject` and `Transform`.
 - Package-local documentation, legal notices, XML IntelliSense, and two
   importable samples.
 - Deterministic package archive/content validation and stripped Android

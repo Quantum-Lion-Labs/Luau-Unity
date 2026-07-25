@@ -63,6 +63,15 @@ assets remain source, so first-party scripts and mods can coexist. See
 [Persistent artifacts](Documentation~/artifacts.md) for the snapshot and remote
 content security boundary.
 
+## Capability policy
+
+The runtime exposes no predefined Luau member surface for `GameObject` or
+`Transform`. Generate a capability for an application-owned annotated type, or
+construct an immutable `LuauObjectDescriptor<T>` for an external type and pass
+it to `state.CreateHandle(target, descriptor)`. Importing **Full Luau Scripting
+Demo** copies editable sample-owned Unity policies into the application; it
+does not turn them into ambient package authority.
+
 ## Learn more
 
 - [Getting started](Documentation~/getting-started.md)
@@ -76,5 +85,8 @@ content security boundary.
 - [Changelog](CHANGELOG.md)
 - [Third-party notices](Third%20Party%20Notices.md)
 
-The Package Manager **Samples** tab offers three small importable examples. Only
-Windows x64 and Android ARM64/x86_64 are maintained targets.
+The Package Manager **Samples** tab offers exactly two importable examples:
+**Getting Started** for focused API lessons and **Full Luau Scripting Demo** for
+reusable game-scripting components plus a Luau-only Flappy Bird game. Its
+`Core/` remains useful after deleting `Demo Game/`. Only Windows x64 and Android ARM64/x86_64
+are maintained targets.

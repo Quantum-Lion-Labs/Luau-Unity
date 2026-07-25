@@ -1,9 +1,12 @@
 # Exposing C# to Luau
 
 Luau scripts can't see anything in your game until you hand it to them. There is
-no reflection, no `GameObject.Find`, no component lookup by name. You choose what
-to expose with two attributes, and a source generator writes the binding code at
-compile time — which is also why this works under IL2CPP and AOT.
+no reflection and no ambient `GameObject.Find`. For types you own, two
+attributes let a source generator write the binding code. For external types
+you cannot annotate, an explicit descriptor provides the same reflection-free
+dispatch. Both paths work under IL2CPP and AOT. An application descriptor may
+deliberately add a fixed component allowlist, as Full Luau Scripting Demo does;
+that still reaches only components on a `GameObject` already handed to Luau.
 
 There are two ways to expose something, and the difference matters:
 
@@ -92,18 +95,13 @@ A capability is a single object handed to a single script. It grants exactly the
 members you described and nothing else — no pointer, no registry token, no
 `GCHandle`, no way to walk from the object to the rest of the scene.
 
-The package ships descriptors for `GameObject` and `Transform`:
+Installing Luau.Unity does not define a Luau-visible surface for `GameObject`,
+`Transform`, or any other Unity object. The application owns that policy and
+selects it when creating each handle. There are two supported authoring paths.
 
-```csharp
-using var handle = root.CreateHandle(targetGameObject);
-thread["target"] = handle;
-```
+### Generated capability for a type you own
 
-`GameObject` exposes `name`, `activeSelf`, `transform`, and `SetActive`.
-`Transform` exposes `name`, `position`, `localPosition`, `localScale`,
-`gameObject`, and `Translate`. That's the whole surface — deliberately small.
-
-To expose your own type, use the same attributes with capability exposure:
+Annotate an application-owned type with capability exposure:
 
 ```csharp
 [LuauLibrary("Door", Exposure = LuauLibraryExposure.Capability)]
@@ -122,7 +120,91 @@ using var door = root.CreateHandle(GetComponent<DoorController>());
 thread["door"] = door;
 ```
 
-One class is either a global library or a capability, never implicitly both.
+The generator implements the capability contract and creates its descriptor.
+The generic `CreateHandle(target)` extension selects that generated descriptor.
+One class is either a global library or an object capability, never implicitly
+both, and unmarked members do not exist to Luau.
+
+### Manual descriptor for a type you cannot annotate
+
+Unity owns `GameObject`, so an application cannot add `[LuauLibrary]` to it.
+Define a deliberately small descriptor instead. This example grants read-only
+access to `name` and nothing else:
+
+```csharp
+public static class GameCapabilities
+{
+    public static readonly LuauObjectDescriptor<GameObject> ReadableName =
+        new LuauObjectDescriptor<GameObject>(
+            "ReadableGameObject",
+            LuauUnityObjectGuard.ThrowIfDestroyed,
+            new[]
+            {
+                LuauObjectMember<GameObject>.Property(
+                    "name",
+                    (target, context) => context.Return(target.name),
+                    setter: null),
+            });
+}
+```
+
+Pass the target and selected policy explicitly:
+
+```csharp
+using var target = root.CreateHandle(
+    targetGameObject,
+    GameCapabilities.ReadableName);
+thread["target"] = target;
+```
+
+`LuauUnityObjectGuard.ThrowIfDestroyed` rejects both managed null and Unity's
+destroyed-object fake-null state before every access. `LuauUnityValue` provides
+AOT-safe conversions when a descriptor exposes `UnityEngine.Vector3` values.
+
+The **Getting Started** sample includes both a generated application-owned
+capability and a minimal manual `GameObject` descriptor. Import **Full Luau
+Scripting Demo** for editable, reusable policies modeled after the supported
+parts of Unity's `GameObject`, `Transform`, 2D physics, rendering, audio, and
+text APIs. Those policies belong to the sample, not the Luau.Unity runtime.
+
+### Descriptors are immutable authority
+
+A `LuauObjectDescriptor<T>` is a complete immutable policy. There is no
+`AddMember` API, and the runtime never mutates or silently widens an existing
+descriptor. If you want the Full Luau Scripting Demo surface plus another
+member, copy or adapt its core source, or construct a new descriptor in
+application code, and review the whole resulting surface.
+
+Descriptor identity is also part of the authority. Two descriptors over the
+same managed object create separate capability views; creating a wider view
+does not upgrade a narrower handle that Luau already holds.
+
+### Migrating package-provided Unity handles
+
+The package previously provided `state.CreateHandle(gameObject)` and
+`state.CreateHandle(transform)`. Those overloads and their package-owned
+surfaces have been removed. Choose one of these replacements:
+
+- Import **Full Luau Scripting Demo** and explicitly use
+  `LuauUnityCapabilities.GameObjectDescriptor` or another descriptor from its
+  editable `Core/` policy.
+- Copy those sample descriptors into application code and customize the policy
+  there.
+- Define a narrower descriptor or an application-owned wrapper exposing only
+  what the script needs.
+
+For example, after importing Full Luau Scripting Demo:
+
+```csharp
+using var self = root.CreateHandle(
+    gameObject,
+    LuauUnityCapabilities.GameObjectDescriptor);
+thread["self"] = self;
+```
+
+Keeping the descriptor visible at the call site makes the granted authority
+reviewable. Do not replace it with a generic application overload that hides
+which policy was selected.
 
 ### Lifetime
 
@@ -138,16 +220,15 @@ pattern of creating a handle, assigning it to a global, and disposing it at the
 end of setup is correct:
 
 ```csharp
-using (var handle = root.CreateHandle(gameObject))
+using (var handle = root.CreateHandle(gameObject, GameCapabilities.ReadableName))
 {
     thread["self"] = handle;
 }
 // the script's `self` still works here
 ```
 
-Import the **Capability Binding** sample for a running version. Note that it
-binds a serialized `GameObject` from the inspector — it never searches the scene,
-and neither should you.
+The target still comes from an explicit serialized reference or another
+host-controlled source. The descriptor does not grant scene discovery.
 
 ## Manual callbacks
 

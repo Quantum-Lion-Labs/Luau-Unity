@@ -1198,10 +1198,11 @@
         </member>
         <member name="T:Luau.LuauObjectDescriptor">
             <summary>
-            Describes one explicit, generated member surface that can be attached to an
-            opaque <see cref="T:Luau.LuauObjectHandle"/>. Descriptor identity is part of the
-            capability authority: two descriptor instances never silently upgrade one
-            another even when they target the same managed object.
+            Describes one explicit, immutable member surface that can be attached to an
+            opaque <see cref="T:Luau.LuauObjectHandle"/>. Source-generated bindings and hosts
+            constructing descriptors manually use the same capability model. Descriptor
+            identity is part of the authority: two descriptor instances never silently
+            upgrade one another even when they target the same managed object.
             </summary>
         </member>
         <member name="P:Luau.LuauObjectDescriptor.TypeName">
@@ -1210,7 +1211,8 @@
         <member name="T:Luau.LuauObjectDescriptor`1">
             <summary>
             A reflection-free descriptor for one managed reference type. Source-generated
-            capability bindings construct this type once and reuse it for every instance.
+            bindings or host-authored policies construct this type once and reuse it for
+            every instance sharing that authority.
             </summary>
             <typeparam name="T">The exact managed target type.</typeparam>
         </member>
@@ -1221,13 +1223,13 @@
             An optional AOT-safe liveness/thread-affinity validator invoked before
             every member access. Unity bindings use this to reject destroyed objects.
             </param>
-            <param name="members">The explicitly allowed generated member surface.</param>
+            <param name="members">The explicitly allowed member surface.</param>
         </member>
         <member name="T:Luau.LuauObjectMember`1">
             <summary>
-            Immutable generated dispatch data for one explicitly exposed member.
-            Hosts normally obtain these values from the Luau source generator rather
-            than constructing a binding by hand.
+            Immutable dispatch data for one explicitly exposed member. Source-generated
+            bindings and manually constructed descriptors use the same reflection-free
+            member representation.
             </summary>
         </member>
         <member name="P:Luau.LuauObjectMember`1.Name">
@@ -1650,9 +1652,10 @@
         </member>
         <member name="M:Luau.LuauState.CreateHandle``1(``0,Luau.LuauObjectDescriptor{``0})">
             <summary>
-            Creates a capability using an explicit generated descriptor. Descriptor
-            identity remains part of the authority, allowing intentionally narrower
-            views over the same target without upgrading either handle.
+            Creates a capability using an explicit immutable descriptor, whether
+            source-generated or constructed manually by the host. Descriptor identity
+            remains part of the authority, allowing intentionally narrower views over
+            the same target without upgrading either handle.
             </summary>
         </member>
         <member name="M:Luau.LuauState.CreateTable">

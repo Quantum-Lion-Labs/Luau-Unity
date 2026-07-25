@@ -293,9 +293,29 @@ $packageMetadata = Get-Content -LiteralPath $resolvedPackageJsonPath -Raw | Conv
 if ($packageMetadata.name -cne "com.qll.luau.unity") {
     throw "The referenced package has an unexpected identity: $($packageMetadata.name)"
 }
+$declaredSamples = @($packageMetadata.samples)
+$expectedSampleNames = @("Getting Started", "Full Luau Scripting Demo")
+$expectedSamplePaths = @(
+    "Samples~/Getting Started",
+    "Samples~/Full Luau Scripting Demo")
+if ($declaredSamples.Count -ne $expectedSampleNames.Count) {
+    throw (
+        "The referenced package must declare exactly the two maintained samples; " +
+        "found $($declaredSamples.Count).")
+}
+for ($sampleIndex = 0; $sampleIndex -lt $expectedSampleNames.Count; $sampleIndex++) {
+    $sample = $declaredSamples[$sampleIndex]
+    if ($sample.displayName -cne $expectedSampleNames[$sampleIndex] -or
+        $sample.path -cne $expectedSamplePaths[$sampleIndex]) {
+        throw (
+            "Declared package sample mismatch at index $sampleIndex. Expected " +
+            "'$($expectedSampleNames[$sampleIndex])' at '$($expectedSamplePaths[$sampleIndex])'; " +
+            "found '$($sample.displayName)' at '$($sample.path)'.")
+    }
+}
 $sampleImportRoot = Join-Path $projectPath (
     "Assets/Samples/Luau.Unity/" + $packageMetadata.version)
-foreach ($sample in @($packageMetadata.samples)) {
+foreach ($sample in $declaredSamples) {
     if ([string]::IsNullOrWhiteSpace($sample.displayName) -or
         [string]::IsNullOrWhiteSpace($sample.path)) {
         throw "Every declared package sample requires a displayName and path."
@@ -322,12 +342,29 @@ foreach ($sample in @($packageMetadata.samples)) {
         Copy-Item -LiteralPath $_.FullName -Destination $sampleDestination -Recurse -Force
     }
 }
+
+# This consumer intentionally compiles the reusable core after applying the
+# documented "delete Demo Game" workflow. Test-UnityHost imports the complete
+# sample separately, so both the starter-kit and full-demo shapes are covered.
+$fullDemoImport = [System.IO.Path]::GetFullPath(
+    (Join-Path $sampleImportRoot "Full Luau Scripting Demo"))
+$demoGameImport = [System.IO.Path]::GetFullPath(
+    (Join-Path $fullDemoImport "Demo Game"))
+$demoGameMetaImport = $demoGameImport + ".meta"
+Assert-ExistingDirectory $demoGameImport "Imported Full Luau Scripting Demo game content"
+Assert-ExistingFile $demoGameMetaImport "Imported Full Luau Scripting Demo game metadata"
+Assert-StrictDescendant $demoGameImport $projectPath
+Remove-Item -LiteralPath $demoGameImport -Recurse -Force
+Remove-Item -LiteralPath $demoGameMetaImport -Force
+
 Copy-Item -LiteralPath $versionFile -Destination (
     Join-Path $projectSettingsPath "ProjectVersion.txt") -Force
 
 $manifest = [ordered]@{
     dependencies = [ordered]@{
         "com.qll.luau.unity" = $resolvedPackageReference
+        "com.unity.modules.audio" = "1.0.0"
+        "com.unity.modules.physics2d" = "1.0.0"
     }
 }
 $manifestJson = $manifest | ConvertTo-Json -Depth 4
@@ -337,7 +374,9 @@ $utf8WithoutBom = [System.Text.UTF8Encoding]::new($false)
     $manifestJson,
     $utf8WithoutBom)
 
-Write-Host "Running generated minimal Unity package consumer with Unity $unityVersion."
+Write-Host (
+    "Running generated minimal Unity package consumer with Unity $unityVersion " +
+    "after deleting the demo game and retaining its reusable Core.")
 Write-Host "Disposable project: $projectPath"
 $unityArguments = @(
     "-batchmode",

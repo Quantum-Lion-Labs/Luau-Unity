@@ -59,37 +59,6 @@ namespace Luau.Unity.Tests
         }
 
         [Test]
-        public void BuiltInGameObjectAndTransformBindingsAreExplicitAndAotSafe()
-        {
-            var gameObject = new GameObject("Original");
-            using var root = LuauUnity.CreateState();
-            using var child = root.CreateSandboxedThread();
-            using var gameObjectHandle = root.CreateHandle(gameObject);
-            using var transformHandle = root.CreateHandle(gameObject.transform);
-            child["gameObject"] = gameObjectHandle;
-            child["transform"] = transformHandle;
-
-            try
-            {
-                using var results = child.DoString(
-                    "gameObject.name = \"Renamed\"\n" +
-                    "gameObject:SetActive(false)\n" +
-                    "transform.localPosition = vector.create(4, 5, 6)\n" +
-                    "return gameObject.name, gameObject.activeSelf");
-
-                Assert.That(results[0].Read<string>(), Is.EqualTo("Renamed"));
-                Assert.That(results[1].Read<bool>(), Is.False);
-                Assert.That(gameObject.name, Is.EqualTo("Renamed"));
-                Assert.That(gameObject.activeSelf, Is.False);
-                Assert.That(gameObject.transform.localPosition, Is.EqualTo(new Vector3(4, 5, 6)));
-            }
-            finally
-            {
-                UnityEngine.Object.DestroyImmediate(gameObject);
-            }
-        }
-
-        [Test]
         public void DestroyedUnityTargetFailsBeforeMemberAccess()
         {
             var gameObject = new GameObject("DestroyedDoor");

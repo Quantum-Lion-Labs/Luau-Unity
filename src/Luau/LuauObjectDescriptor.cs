@@ -11,10 +11,11 @@ public interface ILuauObjectCapability
 }
 
 /// <summary>
-/// Describes one explicit, generated member surface that can be attached to an
-/// opaque <see cref="LuauObjectHandle"/>. Descriptor identity is part of the
-/// capability authority: two descriptor instances never silently upgrade one
-/// another even when they target the same managed object.
+/// Describes one explicit, immutable member surface that can be attached to an
+/// opaque <see cref="LuauObjectHandle"/>. Source-generated bindings and hosts
+/// constructing descriptors manually use the same capability model. Descriptor
+/// identity is part of the authority: two descriptor instances never silently
+/// upgrade one another even when they target the same managed object.
 /// </summary>
 public abstract class LuauObjectDescriptor
 {
@@ -49,7 +50,8 @@ public abstract class LuauObjectDescriptor
 
 /// <summary>
 /// A reflection-free descriptor for one managed reference type. Source-generated
-/// capability bindings construct this type once and reuse it for every instance.
+/// bindings or host-authored policies construct this type once and reuse it for
+/// every instance sharing that authority.
 /// </summary>
 /// <typeparam name="T">The exact managed target type.</typeparam>
 public sealed class LuauObjectDescriptor<T> : LuauObjectDescriptor
@@ -64,7 +66,7 @@ public sealed class LuauObjectDescriptor<T> : LuauObjectDescriptor
     /// An optional AOT-safe liveness/thread-affinity validator invoked before
     /// every member access. Unity bindings use this to reject destroyed objects.
     /// </param>
-    /// <param name="members">The explicitly allowed generated member surface.</param>
+    /// <param name="members">The explicitly allowed member surface.</param>
     public LuauObjectDescriptor(
         string typeName,
         Action<T>? validateTarget,
@@ -152,9 +154,9 @@ public sealed class LuauObjectDescriptor<T> : LuauObjectDescriptor
 }
 
 /// <summary>
-/// Immutable generated dispatch data for one explicitly exposed member.
-/// Hosts normally obtain these values from the Luau source generator rather
-/// than constructing a binding by hand.
+/// Immutable dispatch data for one explicitly exposed member. Source-generated
+/// bindings and manually constructed descriptors use the same reflection-free
+/// member representation.
 /// </summary>
 public sealed class LuauObjectMember<T>
     where T : class
