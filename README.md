@@ -36,9 +36,12 @@ modding in [NervBox](https://nervbox.com/).
 | Android | ARM64 | `libluau_host.so` | ARM64 IL2CPP device smoke |
 | Android | x64 | `libluau_host.so` | x64 emulator smoke |
 
-Unity 6000.3.19f1 is the tested minimum. Only these three targets are
-maintained — the presence of import-name handling for another platform is not a
-support claim.
+The package requires Unity 6000.3.0f1 or newer in the 6000.3 stream. The
+canonical integration project remains pinned to 6000.3.19f1, while local Linux
+validation may use any installed 6000.3 patch. Only the three targets above are
+shipping targets. Linux x64 is supported as a development and test host only;
+its native library is staged into disposable projects and never enters the UPM
+package.
 
 Before its first compile or state creation, the managed runtime verifies the
 native host's self-description, ABI layout, required features, pinned Luau
@@ -213,22 +216,22 @@ step they removed.
 
 ## Building and validating
 
-```powershell
-# Fast validation; never mutates package artifacts.
+```bash
+dotnet restore Luau.slnx
+
+# Fast managed validation; on Linux, build/install linux-x64 first.
+# This never mutates package artifacts.
 dotnet test Luau.slnx --no-restore
 
-# Static package, assembly-reference, and source-only policy checks used by CI.
-powershell -ExecutionPolicy Bypass -File tools/Test-UnityPackageStatic.ps1
+# Static package and deterministic release checks used by CI.
+dotnet run --project tools/Luau.Tooling -- package-static
+dotnet run --project tools/Luau.Tooling -- package-release
 
-# Generate a disposable minimal UPM consumer, compile generated bindings, load
-# the native plugin, and execute a representative script.
-powershell -ExecutionPolicy Bypass -File tools/Test-UnityPackageConsumer.ps1
-
-# Unity integration-project compile and EditMode tests.
-Push-Location tests/Luau.Unity.Integration
-ucp compile
-ucp run-tests --mode edit
-Pop-Location
+# Complete Linux development gate: native host, all .NET tests, generated
+# consumer, Unity compile/EditMode tests, and a Linux x64 IL2CPP player smoke.
+dotnet run --project tools/Luau.Tooling -- validate-linux \
+  --unity /path/to/6000.3.xf1/Editor/Unity \
+  --unity-version 6000.3.xf1
 ```
 
 Native plugins build separately from the CMake presets under
@@ -241,7 +244,9 @@ sanitizer, fuzz, and deterministic-package validation, requires the tag to equal
 manifest on a GitHub Release. Hosted runners skip only the Unity consumer check,
 which has no licensed editor.
 
-The [maintainer guide](docs/maintainer-guide.md) covers authority boundaries,
+The [Linux development guide](docs/linux-development.md) covers workstation
+setup and the disposable staging boundary. The
+[maintainer guide](docs/maintainer-guide.md) covers authority boundaries,
 operation semantics, artifact refresh, and the full validation recipes.
 
 ## Attribution

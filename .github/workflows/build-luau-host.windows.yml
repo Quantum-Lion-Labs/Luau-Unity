@@ -11,6 +11,9 @@ jobs:
   build:
     name: Build Windows x64 host
     runs-on: windows-2022
+    defaults:
+      run:
+        shell: cmd
 
     steps:
       - name: Checkout repository
@@ -23,97 +26,17 @@ jobs:
         with:
           cmake-version: 3.29.5
 
-      - name: Provision pinned MSVC 14.42 compatibility toolset
-        shell: pwsh
-        run: |
-          $reviewedComponent = "Microsoft.VisualStudio.Component.VC.14.42.17.12.x86.x64"
-          $vswhere = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio/Installer/vswhere.exe"
-          $installationPath = & $vswhere `
-            -latest `
-            -products Microsoft.VisualStudio.Product.Enterprise `
-            -version "[17.0,18.0)" `
-            -property installationPath
-          if ([string]::IsNullOrWhiteSpace($installationPath) -or
-              -not (Test-Path -LiteralPath $installationPath -PathType Container)) {
-            throw "The existing Visual Studio 2022 Enterprise installation was not found."
-          }
-          $installer = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio/Installer/setup.exe"
-          if (-not (Test-Path -LiteralPath $installer -PathType Leaf)) {
-            throw "The Visual Studio Installer was not found: $installer"
-          }
-          $arguments = @(
-            "modify",
-            "--installPath",
-            "`"$installationPath`"",
-            "--add",
-            $reviewedComponent,
-            "--quiet",
-            "--norestart"
-          )
-          $installerProcess = Start-Process `
-            -FilePath $installer `
-            -ArgumentList $arguments `
-            -WindowStyle Hidden `
-            -Wait `
-            -PassThru
-          if ($installerProcess.ExitCode -ne 0) {
-            throw "Visual Studio Installer failed to add $reviewedComponent with exit code $($installerProcess.ExitCode)."
-          }
-          "LUAU_HOST_VS_INSTALLATION_PATH=$installationPath" |
-            Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+      - name: Install .NET SDK
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          dotnet-version: 9.0.306
 
-      - name: Verify pinned MSVC toolchain
-        shell: pwsh
-        run: |
-          $reviewedToolsVersion = "14.42.34433"
-          $reviewedCompilerVersion = [Version]"19.42.34444.0"
-          $reviewedLinkerVersion = [Version]"14.42.34444.0"
-          $reviewedSdkVersion = "10.0.22621.0"
-          $installationPath = $env:LUAU_HOST_VS_INSTALLATION_PATH
-          if ([string]::IsNullOrWhiteSpace($installationPath) -or
-              -not (Test-Path -LiteralPath $installationPath -PathType Container)) {
-            throw "The provisioned Visual Studio installation path was not propagated."
-          }
-          $compiler = Join-Path $installationPath `
-            "VC/Tools/MSVC/$reviewedToolsVersion/bin/Hostx64/x64/cl.exe"
-          if (-not (Test-Path -LiteralPath $compiler -PathType Leaf)) {
-            throw "Reviewed MSVC toolset $reviewedToolsVersion is not installed: $compiler"
-          }
-          $linker = Join-Path $installationPath `
-            "VC/Tools/MSVC/$reviewedToolsVersion/bin/Hostx64/x64/link.exe"
-          if (-not (Test-Path -LiteralPath $linker -PathType Leaf)) {
-            throw "Reviewed MSVC linker is not installed: $linker"
-          }
-          $actualCompilerVersion = [Version]([Diagnostics.FileVersionInfo]::GetVersionInfo($compiler).FileVersion)
-          if ($actualCompilerVersion -ne $reviewedCompilerVersion) {
-            throw "MSVC compiler version mismatch. Expected $reviewedCompilerVersion, found $actualCompilerVersion."
-          }
-          $actualLinkerVersion = [Version]([Diagnostics.FileVersionInfo]::GetVersionInfo($linker).FileVersion)
-          if ($actualLinkerVersion -ne $reviewedLinkerVersion) {
-            throw "MSVC linker version mismatch. Expected $reviewedLinkerVersion, found $actualLinkerVersion."
-          }
-          $sdkRoot = Join-Path ${env:ProgramFiles(x86)} "Windows Kits/10"
-          foreach ($requiredSdkInput in @(
-            "Include/$reviewedSdkVersion/um/Windows.h",
-            "Include/$reviewedSdkVersion/ucrt/corecrt.h",
-            "Lib/$reviewedSdkVersion/um/x64/kernel32.lib"
-          )) {
-            $requiredSdkPath = Join-Path $sdkRoot $requiredSdkInput
-            if (-not (Test-Path -LiteralPath $requiredSdkPath -PathType Leaf)) {
-              throw "Reviewed Windows SDK $reviewedSdkVersion is incomplete: $requiredSdkPath"
-            }
-          }
-          Write-Host (
-            "Verified MSVC compiler $actualCompilerVersion and linker $actualLinkerVersion " +
-            "from toolset $reviewedToolsVersion " +
-            "and Windows SDK $reviewedSdkVersion.")
+      - name: Provision and verify pinned MSVC toolchain
+        run: dotnet run --project tools/Luau.Tooling --configuration Release -- windows-toolchain --provision --github-env "%GITHUB_ENV%"
 
       - name: Configure host
         working-directory: native/luau-host
-        shell: pwsh
-        run: >-
-          cmake --preset windows-x64
-          "-DCMAKE_GENERATOR_INSTANCE=$env:LUAU_HOST_VS_INSTALLATION_PATH"
+        run: cmake --preset windows-x64 "-DCMAKE_GENERATOR_INSTANCE=%LUAU_HOST_VS_INSTALLATION_PATH%"
 
       - name: Build and audit host
         working-directory: native/luau-host
@@ -127,28 +50,14 @@ jobs:
         working-directory: native/luau-host
         run: cmake --install out/build/windows-x64 --config Release
 
-      - name: Install .NET SDK
-        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
-        with:
-          dotnet-version: 9.0.306
-
       - name: Restore .NET test harness
         run: dotnet restore Luau.slnx
 
       - name: Run .NET suite against host
-        shell: pwsh
-        run: |
-          $nativeHost = Join-Path $env:GITHUB_WORKSPACE "native/luau-host/out/install/windows-x64/luau_host.dll"
-          dotnet test Luau.slnx --no-restore --configuration Release "-p:LuauHostNativePath=$nativeHost"
+        run: dotnet test Luau.slnx --no-restore --configuration Release "-p:LuauHostNativePath=%GITHUB_WORKSPACE%\native\luau-host\out\install\windows-x64\luau_host.dll"
 
       - name: Run host lifetime and fault soak
-        shell: pwsh
-        run: |
-          $nativeHost = Join-Path $env:GITHUB_WORKSPACE "native/luau-host/out/install/windows-x64/luau_host.dll"
-          & ./tools/Test-LuauHostSoak.ps1 `
-            -Configuration Release `
-            -SoakIterations 25 `
-            -NativeHostPath $nativeHost
+        run: dotnet run --project tools/Luau.Tooling --configuration Release -- host-soak --configuration Release --iterations 25 --native-host "%GITHUB_WORKSPACE%\native\luau-host\out\install\windows-x64\luau_host.dll"
 
       - name: Reject malformed host ABI fixtures before native operations
         run: >-
@@ -160,28 +69,13 @@ jobs:
           --fixtures native/luau-host/out/build/windows-x64/invalid-abi-fixtures
 
       - name: Write validated artifact and ABI manifest
-        shell: pwsh
-        run: |
-          & ./native/luau-host/cmake/Write-ArtifactManifest.ps1 `
-            -BinaryPath native/luau-host/out/install/windows-x64/luau_host.dll `
-            -Platform win-x64 `
-            -Configuration Release `
-            -OutputPath native/luau-host/out/install/windows-x64/luau_host.manifest.json
+        run: dotnet run --project tools/Luau.Tooling --configuration Release -- artifact-manifest --binary native/luau-host/out/install/windows-x64/luau_host.dll --platform win-x64 --configuration Release --output native/luau-host/out/install/windows-x64/luau_host.manifest.json
 
       - name: Require current shipped Windows plugin
-        shell: pwsh
-        run: >-
-          powershell -ExecutionPolicy Bypass
-          -File tools/Copy-NativeArtifactsToUnity.ps1
-          -Platform win-x64
-          -Check
+        run: dotnet run --project tools/Luau.Tooling --configuration Release -- native-artifacts --platform win-x64 --check
 
       - name: Shape shipping host and external symbols
-        shell: pwsh
-        run: >-
-          powershell -ExecutionPolicy Bypass
-          -File tools/Copy-NativeArtifactsToUnity.ps1
-          -Platform win-x64
+        run: dotnet run --project tools/Luau.Tooling --configuration Release -- native-artifacts --platform win-x64
 
       - name: Upload unstripped host, audited shipping output, and symbols
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

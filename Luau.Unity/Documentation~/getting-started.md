@@ -7,9 +7,9 @@ mods your players write. All three run through the same bounded runtime; the onl
 thing that changes for the ones you don't trust is how tight you set the limits.
 
 The package is a prebuilt managed runtime plus native plugins for Windows x64 and
-Android ARM64/x86_64. Unity 6000.3.19f1 is the tested minimum. If a term on this
-page is unfamiliar, [concepts and vocabulary](concepts.md) defines all of them in
-one place.
+Android ARM64/x86_64. It requires Unity 6000.3.0f1 or newer in the 6000.3 stream.
+If a term on this page is unfamiliar,
+[concepts and vocabulary](concepts.md) defines all of them in one place.
 
 ## Install
 

@@ -16,6 +16,9 @@ jobs:
     name: Test managed source and shipped artifacts
     runs-on: windows-2022
     timeout-minutes: 45
+    defaults:
+      run:
+        shell: cmd
 
     steps:
       - name: Checkout repository
@@ -53,27 +56,13 @@ jobs:
           path: artifacts/artifact-fuzz-reproducers/
 
       - name: Prove managed harness native selection
-        shell: pwsh
-        run: >-
-          powershell -ExecutionPolicy Bypass
-          -File tools/Test-ManagedHarnessSelection.ps1
+        run: dotnet run --project tools/Luau.Tooling --configuration Release -- managed-harness-selection
 
       - name: Require current Unity managed artifacts
-        shell: pwsh
-        run: >-
-          powershell -ExecutionPolicy Bypass
-          -File tools/Copy-DotNetArtifactsToUnity.ps1
-          -Configuration Release
-          -Check
+        run: dotnet run --project tools/Luau.Tooling --configuration Release -- managed-artifacts --configuration Release --check
 
       - name: Validate Unity package static boundaries
-        shell: pwsh
-        run: >-
-          powershell -ExecutionPolicy Bypass
-          -File tools/Test-UnityPackageStatic.ps1
+        run: dotnet run --project tools/Luau.Tooling --configuration Release -- package-static
 
       - name: Validate deterministic release package
-        shell: pwsh
-        run: >-
-          powershell -ExecutionPolicy Bypass
-          -File tools/Test-UnityPackageRelease.ps1
+        run: dotnet run --project tools/Luau.Tooling --configuration Release -- package-release

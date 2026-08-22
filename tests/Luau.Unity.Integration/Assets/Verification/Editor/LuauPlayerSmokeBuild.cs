@@ -33,6 +33,14 @@ namespace Luau.Unity.Editor
                 Path.Combine("Builds", "LuauSmoke", "Windows", "LuauSmoke.exe"));
         }
 
+        [MenuItem("Luau/Verification/Build Linux x64 IL2CPP Smoke Player")]
+        public static void BuildLinux64Il2Cpp()
+        {
+            Build(
+                BuildTarget.StandaloneLinux64,
+                Path.Combine("Builds", "LuauSmoke", "Linux", "LuauSmoke"));
+        }
+
         [MenuItem("Luau/Verification/Build Android ARM64 IL2CPP Smoke Player")]
         public static void BuildAndroidArm64Il2Cpp()
         {

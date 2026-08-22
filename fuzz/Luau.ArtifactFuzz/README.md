@@ -19,7 +19,7 @@ repeated large allocations. The run fails if exact-limit coverage disappears.
 
 Run the deterministic bounded smoke pass from the repository root:
 
-```powershell
+```bash
 dotnet run --project fuzz/Luau.ArtifactFuzz -c Release -- --smoke --iterations 25000 --seed 0x6a09e667f3bcc909
 ```
 
@@ -37,7 +37,7 @@ managed validation job has a finite 45-minute outer timeout.
 
 Replay a retained input exactly:
 
-```powershell
+```bash
 dotnet run --project fuzz/Luau.ArtifactFuzz -c Release -- --input artifacts/artifact-fuzz-reproducers/artifact-<sha256>.bin
 ```
 
