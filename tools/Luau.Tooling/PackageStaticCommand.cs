@@ -187,12 +187,15 @@ internal static class PackageStaticCommand
         var xml = XDocument.Load(Path.Combine(packageRoot, "Runtime", "Luau.xml"));
         Require(xml.Root?.Element("assembly")?.Element("name")?.Value == "Luau", "Runtime/Luau.xml does not describe Luau.");
         var sourceProjectVersion = File.ReadAllText(repository.PathOf("tests", "Luau.Unity.Integration", "ProjectSettings", "ProjectVersion.txt"));
-        Require(Regex.IsMatch(sourceProjectVersion, @"(?m)^m_EditorVersion: 6000\.3\.\d+f\d+$"),
+        Require(HasCanonicalIntegrationVersion(sourceProjectVersion),
             "The canonical integration project must pin one exact Unity 6000.3 editor.");
     }
 
     internal static string Relative(string root, string path) =>
         Path.GetRelativePath(root, path).Replace(Path.DirectorySeparatorChar, '/');
+
+    internal static bool HasCanonicalIntegrationVersion(string projectVersion) =>
+        Regex.IsMatch(projectVersion, @"(?m)^m_EditorVersion: 6000\.3\.\d+f\d+\r?$");
 
     internal static JsonElement[] ValidateMaintainedSamples(JsonElement package, string description)
     {
