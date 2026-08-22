@@ -65,12 +65,11 @@ content security boundary.
 
 ## Capability policy
 
-The runtime exposes no predefined Luau member surface for `GameObject` or
-`Transform`. Generate a capability for an application-owned annotated type, or
-construct an immutable `LuauObjectDescriptor<T>` for an external type and pass
-it to `state.CreateHandle(target, descriptor)`. Importing **Full Luau Scripting
-Demo** copies editable sample-owned Unity policies into the application; it
-does not turn them into ambient package authority.
+There is no built-in Luau surface for `GameObject` or `Transform`. What a script
+may do to a Unity object is your decision: generate a capability for a type you
+annotated, or write a `LuauObjectDescriptor<T>` for one you can't and name it at
+`state.CreateHandle(target, descriptor)`. See
+[exposing C# to Luau](Documentation~/capability-bindings.md#object-capabilities).
 
 ## Learn more
 
@@ -85,8 +84,9 @@ does not turn them into ambient package authority.
 - [Changelog](CHANGELOG.md)
 - [Third-party notices](Third%20Party%20Notices.md)
 
-The Package Manager **Samples** tab offers exactly two importable examples:
-**Getting Started** for focused API lessons and **Full Luau Scripting Demo** for
-reusable game-scripting components plus a Luau-only Flappy Bird game. Its
-`Core/` remains useful after deleting `Demo Game/`. Only Windows x64 and Android ARM64/x86_64
-are maintained targets.
+The Package Manager **Samples** tab has two importable examples: **Getting
+Started** for focused API lessons, and **Full Luau Scripting Demo** for reusable
+game-scripting components plus a Luau-only Flappy Bird game — keep its `Core/`
+and delete `Demo Game/` to start your own.
+
+Only Windows x64 and Android ARM64/x86_64 are maintained targets.

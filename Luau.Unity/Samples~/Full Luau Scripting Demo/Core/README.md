@@ -15,8 +15,10 @@ starter kit for another project.
    appear by name in `refs`.
 5. Optionally add prefab assets to **Prefab References**. The script can call
    `spawnPrefab(name)` only for those entries and only up to that behaviour's
-   finite **Max Spawned Objects** limit. Leave prefab references empty for
-   scripts that do not need instantiation authority.
+   finite **Max Spawned Objects** limit; the behaviour destroys what it spawned
+   when it shuts down. Leave prefab references empty for scripts that do not
+   need instantiation authority. `Demo Game` uses this for its pipe pairs: one
+   named prefab, a cap of two, and no pipes in the scene at all.
 
 The runtime initializes attached behaviours sequentially. Lower execution
 orders initialize and run first; ties use a stable scene-hierarchy order.
@@ -67,10 +69,17 @@ are copied `{ x, y, z, w }` tables, and colors are copied
 `AngleAxis`, `Inverse`, `Lerp`, `Slerp`, `Multiply`, and `ToEulerAngles`.
 
 The generated `Input` global provides `GetKeyDown`, `GetKey`,
-`GetMouseButtonDown`, `GetMouseButton`, `touchCount`, and `GetTouchPhase`.
-It intentionally uses Unity's built-in input API. A project configured for
-only the new Input System should replace this editable library or enable
-legacy/both input handling.
+`GetMouseButtonDown`, `GetMouseButton`, `touchCount`, and `GetTouchPhase`. It
+polls the Input System package directly: key names are `UnityEngine.InputSystem.Key`
+names, mouse indexes `0`–`4` map to left, right, middle, back, and forward, and
+touch phases come back as `Began`, `Moved`, `Stationary`, `Ended`, or `Canceled`.
+
+Set **Active Input Handling** to *Input System Package (New)* or *Both* in
+Player Settings. A device the player does not have reports no activity rather
+than failing, so a missing keyboard is not an error; the runtime warns once if
+the Input System sees no devices at all. If your game binds input through
+actions instead of polled devices, replace this editable library — the scripts
+only depend on the six names above.
 
 ## Trust and limits
 

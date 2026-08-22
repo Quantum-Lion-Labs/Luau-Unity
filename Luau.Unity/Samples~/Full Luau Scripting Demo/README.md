@@ -1,21 +1,29 @@
 # Full Luau Scripting Demo
 
-This sample is deliberately split into two independent folders:
+This sample is two independent halves:
 
-- **Core** contains the reusable, sample-owned C# host, `LuauBehaviour`
-  component, explicit Unity capability descriptors, and generated `Input` and
+- **Core** is the reusable, sample-owned C# host: a `LuauBehaviour` component,
+  its runtime, explicit Unity capability descriptors, and generated `Input` and
   `Quaternion` libraries.
-- **Demo Game** contains the Flappy Bird scene, prefabs, replaceable geometric
-  assets, and game-specific Luau scripts. It contains no C#.
+- **Demo Game** is the Flappy Bird scene, prefabs, replaceable geometric art,
+  and the game's Luau scripts. It contains no C# at all.
 
 Open `Demo Game/Scenes/FlappyBird.unity` and enter Play Mode. Press Space,
-left-click, or tap to begin and flap. After a collision, press again to reset
-the existing scene objects and start a new round.
+left-click, or tap to begin and flap. After a collision, wait about half a
+second and press again to start a new round on the same scene objects.
 
-To use the scripting foundation for another project, keep **Core** and delete
-**Demo Game**. The Core README documents the behavior hooks, explicit reference
-model, shared-table trust boundary, and the Unity members visible to Luau.
+To build something else on this foundation, keep **Core** and delete
+**Demo Game**. The Core README covers the behaviour hooks, the explicit
+reference model, the shared-table trust boundary, and exactly which Unity
+members Luau can see.
 
-The three AudioSource objects in the demo intentionally have no clips. Assign
-your own flap, score, and hit clips during a polish pass; the Luau scripts
-already check `hasClip` and call `Play`.
+## Before you press Play
+
+This sample reads input through the Input System package. Set **Active Input
+Handling** to *Input System Package (New)* or *Both* in Player Settings — with
+the legacy setting alone the scene gets no input, and the runtime says so in the
+Console.
+
+The three AudioSource objects deliberately ship without clips. Assign your own
+flap, score, and hit clips whenever you want sound; the Luau scripts already
+check `hasClip` before calling `Play`.

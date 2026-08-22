@@ -1,7 +1,6 @@
-using System;
 using Luau;
-using NumericsVector3 = System.Numerics.Vector3;
 using UnityEngine;
+using NumericsVector3 = System.Numerics.Vector3;
 
 namespace Luau.Unity.Samples.FullLuauScriptingDemo
 {

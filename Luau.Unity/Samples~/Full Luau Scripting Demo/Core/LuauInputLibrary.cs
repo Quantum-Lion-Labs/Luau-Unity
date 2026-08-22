@@ -1,78 +1,170 @@
 using System;
 using Luau;
-using UnityEngine;
+using UnityEngine.InputSystem;
+using UnityEngine.InputSystem.Controls;
+using TouchPhase = UnityEngine.InputSystem.TouchPhase;
 
 namespace Luau.Unity.Samples.FullLuauScriptingDemo
 {
     /// <summary>
-    /// Source-generated global facade over the small legacy Unity input surface
-    /// used by the sample. Projects can replace this editable class with their
-    /// own input-system policy.
+    /// Source-generated global facade over the small Input System surface the
+    /// sample needs. Replace this editable class with your own policy when your
+    /// game binds input through actions rather than polled devices.
     /// </summary>
     [LuauLibrary("Input")]
     public sealed partial class LuauInputLibrary
     {
+        /// <summary>Gets the number of touches the touchscreen reports this frame.</summary>
         [LuauMember("touchCount")]
-        public static double TouchCount => Input.touchCount;
+        public static double TouchCount => CountActiveTouches();
 
         [LuauMember("GetKeyDown")]
         public static bool GetKeyDown(string keyName)
         {
-            return Input.GetKeyDown(ParseKey(keyName));
+            var control = FindKey(keyName);
+            return control != null && control.wasPressedThisFrame;
         }
 
         [LuauMember("GetKey")]
         public static bool GetKey(string keyName)
         {
-            return Input.GetKey(ParseKey(keyName));
+            var control = FindKey(keyName);
+            return control != null && control.isPressed;
         }
 
         [LuauMember("GetMouseButtonDown")]
         public static bool GetMouseButtonDown(int button)
         {
-            ValidateMouseButton(button);
-            return Input.GetMouseButtonDown(button);
+            var control = FindMouseButton(button);
+            return control != null && control.wasPressedThisFrame;
         }
 
         [LuauMember("GetMouseButton")]
         public static bool GetMouseButton(int button)
         {
-            ValidateMouseButton(button);
-            return Input.GetMouseButton(button);
+            var control = FindMouseButton(button);
+            return control != null && control.isPressed;
         }
 
+        /// <summary>
+        /// Returns the Input System touch phase name at an active-touch index:
+        /// Began, Moved, Stationary, Ended, or Canceled.
+        /// </summary>
         [LuauMember("GetTouchPhase")]
         public static string GetTouchPhase(int index)
         {
-            if ((uint)index >= (uint)Input.touchCount)
+            var touch = FindActiveTouch(index);
+            if (touch == null)
             {
                 throw new LuauException(
                     "Input touch index must be less than Input.touchCount.");
             }
 
-            return Input.GetTouch(index).phase.ToString();
+            return touch.phase.ReadValue().ToString();
         }
 
-        static KeyCode ParseKey(string keyName)
+        // A device the player does not have is absent rather than an error, so
+        // every lookup returns null and the polling members report false. The
+        // runtime host warns once when the Input System reports no devices at
+        // all, which is the misconfiguration worth surfacing.
+        static KeyControl FindKey(string keyName)
+        {
+            var keyboard = Keyboard.current;
+            if (keyboard == null)
+            {
+                return null;
+            }
+
+            return keyboard[ParseKey(keyName)];
+        }
+
+        static ButtonControl FindMouseButton(int button)
+        {
+            var mouse = Mouse.current;
+            if (mouse == null)
+            {
+                return null;
+            }
+
+            switch (button)
+            {
+                case 0:
+                    return mouse.leftButton;
+                case 1:
+                    return mouse.rightButton;
+                case 2:
+                    return mouse.middleButton;
+                case 3:
+                    return mouse.backButton;
+                case 4:
+                    return mouse.forwardButton;
+                default:
+                    throw new LuauException(
+                        "Mouse button indexes must be between 0 and 4.");
+            }
+        }
+
+        static Key ParseKey(string keyName)
         {
             if (string.IsNullOrWhiteSpace(keyName) ||
-                !Enum.TryParse(keyName, true, out KeyCode key) ||
-                !Enum.IsDefined(typeof(KeyCode), key))
+                !Enum.TryParse(keyName, true, out Key key) ||
+                key == Key.None ||
+                !Enum.IsDefined(typeof(Key), key))
             {
                 throw new LuauException(
-                    "Unknown Unity KeyCode name '" + keyName + "'.");
+                    "Unknown Input System Key name '" + keyName + "'.");
             }
 
             return key;
         }
 
-        static void ValidateMouseButton(int button)
+        static int CountActiveTouches()
         {
-            if (button < 0 || button > 6)
+            var touchscreen = Touchscreen.current;
+            if (touchscreen == null)
             {
-                throw new LuauException(
-                    "Unity mouse button indexes must be between 0 and 6.");
+                return 0;
             }
+
+            var touches = touchscreen.touches;
+            var count = 0;
+            for (var index = 0; index < touches.Count; index++)
+            {
+                if (touches[index].phase.ReadValue() != TouchPhase.None)
+                {
+                    count++;
+                }
+            }
+
+            return count;
+        }
+
+        static TouchControl FindActiveTouch(int index)
+        {
+            var touchscreen = Touchscreen.current;
+            if (touchscreen == null || index < 0)
+            {
+                return null;
+            }
+
+            var touches = touchscreen.touches;
+            var active = 0;
+            for (var position = 0; position < touches.Count; position++)
+            {
+                var touch = touches[position];
+                if (touch.phase.ReadValue() == TouchPhase.None)
+                {
+                    continue;
+                }
+                if (active == index)
+                {
+                    return touch;
+                }
+
+                active++;
+            }
+
+            return null;
         }
     }
 }

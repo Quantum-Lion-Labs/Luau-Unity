@@ -64,6 +64,8 @@ return {
             Quaternion.Euler(vector.create(0, 0, -38)),
             Quaternion.Euler(vector.create(0, 0, minimumRotation)),
         }
+        -- Touch each capability once inside the generous start lane so the first
+        -- frame hook is not charged for JIT-ing its dispatch thunk.
         local _initialVelocity = body.linearVelocity
         local _flapHasClip = refs.flapAudio.hasClip
         local _hitHasClip = refs.hitAudio.hasClip

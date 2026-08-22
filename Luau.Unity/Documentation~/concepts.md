@@ -42,20 +42,20 @@ reflection, so it survives IL2CPP and AOT.
 
 **Capability / object handle** — a host library is global: every script in the
 root sees it. A capability is the opposite, a single object handed to a single
-script. Application-owned types can use a generated capability; external types
-use `root.CreateHandle(target, descriptor)`. The resulting `LuauObjectHandle`
-can reach only the members in that selected policy. There is no built-in
-`GameObject` or `Transform` surface and no `GameObject.Find` from Luau. If a
-script can reach an object, the host explicitly passed it in.
+script. For a type you own, a generated capability does the work; for anything
+else, `root.CreateHandle(target, descriptor)` says which policy applies. Either
+way the resulting `LuauObjectHandle` reaches only the members that policy lists.
+There is no `GameObject.Find` from Luau, by design — if a script can reach an
+object, it's because you passed it in.
 
 **Capability descriptor (`LuauObjectDescriptor<T>`)** — one immutable,
-reflection-free member policy for a managed type. The source generator creates
-one for an annotated application type; a host constructs one manually for an
-external type it cannot annotate. Descriptor identity is part of the authority,
-so separate narrow and wide descriptors over the same object do not upgrade one
-another. Luau.Unity supplies AOT-safe Unity value and destroyed-object helpers,
-but the editable `GameObject` and `Transform` policies live in the **Full Luau
-Scripting Demo** sample's reusable `Core/` rather than the runtime.
+reflection-free list of what a managed type exposes. The source generator writes
+one for a type you annotated; you write one by hand for a type you can't, like
+anything Unity owns. Identity is part of the authority, so a narrow and a wide
+descriptor over the same object stay separate capabilities and never upgrade
+each other. Note that there is no built-in `GameObject` or `Transform` surface —
+see [exposing C# to Luau](capability-bindings.md#object-capabilities) for why,
+and where to get a ready-made one.
 
 **Result scope (`LuauResultScope`)** — what you get back from executing a script.
 Numbers, strings, and booleans inside it are plain copies. Tables and functions

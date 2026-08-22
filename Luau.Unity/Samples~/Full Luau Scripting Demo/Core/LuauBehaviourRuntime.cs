@@ -2,8 +2,8 @@ using System;
 using System.Collections.Generic;
 using System.Threading;
 using Luau;
-using Luau.Unity;
 using UnityEngine;
+using UnityEngine.InputSystem;
 
 namespace Luau.Unity.Samples.FullLuauScriptingDemo
 {
@@ -119,19 +119,7 @@ namespace Luau.Unity.Samples.FullLuauScriptingDemo
                         state.OpenLibrary(new LuauInputLibrary());
                     },
                 });
-                using (root.DoString(
-                    "Input.GetKeyDown(\"Space\")\n" +
-                    "Input.GetKey(\"Space\")\n" +
-                    "Input.GetMouseButtonDown(0)\n" +
-                    "Input.GetMouseButton(0)\n" +
-                    "local _touchCount = Input.touchCount\n" +
-                    "Quaternion.Euler(vector.create(0, 0, 0))\n" +
-                    "return true",
-                    "@FullLuauScriptingDemo/HostApiWarmup.luau"))
-                {
-                    // Warm generated host-call thunks outside the 2 ms frame
-                    // lane so the first real input frame is not charged for JIT.
-                }
+                WarmHostApis();
                 shared = root.CreateTable();
                 scheduler = new LuauScriptScheduler(root);
                 updatePhase = CreatePhase("Update");
@@ -165,6 +153,47 @@ namespace Luau.Unity.Samples.FullLuauScriptingDemo
             startCalled = true;
             initializationRequested = true;
             BeginInitializationPump();
+        }
+
+        /// <summary>
+        /// Warms the generated host-call thunks outside the 2 ms frame lane so
+        /// the first real input frame is not charged for JIT. Warming is an
+        /// optimization: a failure here costs one frame of jitter, so it is
+        /// reported and swallowed rather than failing the whole runtime.
+        /// </summary>
+        void WarmHostApis()
+        {
+            if (InputSystem.devices.Count == 0)
+            {
+                Debug.LogWarning(
+                    "The Input System reports no devices, so this scene will not " +
+                    "receive key, mouse, or touch input. Set Active Input Handling " +
+                    "to \"Input System Package (New)\" or \"Both\" in Player Settings.",
+                    this);
+            }
+
+            try
+            {
+                using (root.DoString(
+                    "Input.GetKeyDown(\"Space\")\n" +
+                    "Input.GetKey(\"Space\")\n" +
+                    "Input.GetMouseButtonDown(0)\n" +
+                    "Input.GetMouseButton(0)\n" +
+                    "local _touchCount = Input.touchCount\n" +
+                    "Quaternion.Euler(vector.create(0, 0, 0))\n" +
+                    "return true",
+                    "@FullLuauScriptingDemo/HostApiWarmup.luau"))
+                {
+                }
+            }
+            catch (Exception exception)
+            {
+                Debug.LogWarning(
+                    "The Full Luau Scripting Demo host-API warmup failed. Scripts " +
+                    "still run; the first frame that calls Input or Quaternion may " +
+                    "hitch.\n" + exception,
+                    this);
+            }
         }
 
         LuauScriptPhase CreatePhase(string phaseName)

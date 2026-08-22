@@ -2,7 +2,8 @@
     "name": "Luau.Unity.Samples.FullLuauScriptingDemo.Core",
     "rootNamespace": "Luau.Unity.Samples.FullLuauScriptingDemo",
     "references": [
-        "GUID:c727d2ef8dd2e4846ab81fbe6ca1f508"
+        "GUID:c727d2ef8dd2e4846ab81fbe6ca1f508",
+        "Unity.InputSystem"
     ],
     "includePlatforms": [],
     "excludePlatforms": [],

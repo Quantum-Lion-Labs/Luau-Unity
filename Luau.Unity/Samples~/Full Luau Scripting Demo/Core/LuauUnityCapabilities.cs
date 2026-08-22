@@ -408,40 +408,6 @@ namespace Luau.Unity.Samples.FullLuauScriptingDemo
             }
         }
 
-        internal static void ReturnSupportedObject(
-            LuauCallContext context,
-            Object target)
-        {
-            switch (target)
-            {
-                case GameObject gameObject:
-                    ReturnHandle(context, gameObject, GameObjectDescriptor);
-                    break;
-                case Transform transform:
-                    ReturnHandle(context, transform, TransformDescriptor);
-                    break;
-                case Rigidbody2D rigidbody:
-                    ReturnHandle(context, rigidbody, Rigidbody2DDescriptor);
-                    break;
-                case Collider2D collider:
-                    ReturnHandle(context, collider, Collider2DDescriptor);
-                    break;
-                case SpriteRenderer spriteRenderer:
-                    ReturnHandle(context, spriteRenderer, SpriteRendererDescriptor);
-                    break;
-                case AudioSource audioSource:
-                    ReturnHandle(context, audioSource, AudioSourceDescriptor);
-                    break;
-                case TextMesh textMesh:
-                    ReturnHandle(context, textMesh, TextMeshDescriptor);
-                    break;
-                default:
-                    throw new LuauException(
-                        "The assigned reference type is not part of this sample's " +
-                        "Unity capability allowlist.");
-            }
-        }
-
         internal static bool IsSupportedObject(Object target)
         {
             return target is GameObject ||

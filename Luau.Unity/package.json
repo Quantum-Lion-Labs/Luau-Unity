@@ -31,12 +31,12 @@
     "samples": [
         {
             "displayName": "Getting Started",
-            "description": "Learn state ownership, execution, generated libraries and capabilities, manual descriptors, sandboxing, and owned results.",
+            "description": "Six short lessons: owning a state and its results, generated host libraries and capabilities, hand-written descriptors, and sandboxed injection.",
             "path": "Samples~/Getting Started"
         },
         {
             "displayName": "Full Luau Scripting Demo",
-            "description": "Build on reusable Luau behaviour components and Unity-analogous capabilities, then play a one-scene Flappy Bird game whose gameplay is scripted entirely in Luau.",
+            "description": "A reusable Luau behaviour kit with editable Unity capability policy, plus a one-scene Flappy Bird game whose gameplay is written entirely in Luau.",
             "path": "Samples~/Full Luau Scripting Demo"
         }
     ]

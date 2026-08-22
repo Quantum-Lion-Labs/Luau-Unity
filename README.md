@@ -21,8 +21,8 @@ modding in [NervBox](https://nervbox.com/).
 - **Luau is proven for exactly this.** Roblox built it to compile and run user scripts at massive scale, 
   and treats compiler crashes on hostile source as security vulnerabilities.
 - **Scripts reach only what you hand them.** No `GameObject.Find`, no filesystem,
-  no ambient authority. Application-owned types use generated bindings;
-  external types use explicit, immutable descriptors selected per handle.
+  no ambient authority. Types you own get generated bindings from two attributes;
+  types you don't get a small descriptor you write and name at each handle.
 - **Ships where your game ships.** No reflection, so IL2CPP and AOT work.
   Maintained plugins for Windows and Android.
 - **Fast iteration comes free.** Gameplay in text files your designers can own,
@@ -130,26 +130,26 @@ calls each frame — see [Getting started](Luau.Unity/Documentation~/getting-sta
 
 ## Samples
 
-Package Manager offers exactly two importable samples:
+Two samples ship with the package:
 
-- **Getting Started** teaches state and result ownership, generated host
-  libraries, generated capabilities for application-owned types, manual
-  descriptors for external Unity types, and explicit sandbox injection.
-- **Full Luau Scripting Demo** pairs a reusable `Core/` with a one-scene
-  Flappy Bird game implemented in Luau. The core provides lifecycle scheduling,
-  controlled prefab spawning, explicit references, input and quaternion
-  libraries, and editable Unity-analogous capability policies. Delete
-  `Demo Game/` to use the core as a starter kit for another game.
+- **Getting Started** teaches one mechanism at a time: state and result
+  ownership, generated host libraries, generated capabilities for types you own,
+  hand-written descriptors for the ones you don't, and explicit sandbox
+  injection.
+- **Full Luau Scripting Demo** pairs a reusable `Core/` with a one-scene Flappy
+  Bird game written entirely in Luau. The core handles lifecycle scheduling,
+  prefab spawning against a per-behaviour cap, explicit references, input and
+  quaternion libraries, and the Unity capability policy the game runs on. Delete
+  `Demo Game/` to use the core as a starter kit.
 
-Installing Luau.Unity alone exposes no predefined Unity object member surface
-to Luau. Importing a sample copies editable policy into the application; it does
-not enable ambient package authority.
+Those Unity policies are sample code you edit, not a package default switching
+on. The package itself defines no Luau-visible surface for any Unity type.
 
 ## Documentation
 
 | Guide | Covers |
 | --- | --- |
-| [Getting started](Luau.Unity/Documentation~/getting-started.md) | State ownership, generated APIs, manual descriptors, sandbox injection |
+| [Getting started](Luau.Unity/Documentation~/getting-started.md) | Install, hello world, and the six lessons behind a real setup |
 | [Concepts and vocabulary](Luau.Unity/Documentation~/concepts.md) | Every term used across these docs, in Unity terms |
 | [Exposing C# to Luau](Luau.Unity/Documentation~/capability-bindings.md) | Generated capabilities, manual descriptors, callbacks, ownership |
 | [Running scripts you didn't write](Luau.Unity/Documentation~/execution-and-trust.md) | Source vs compiler output vs bytecode; the mod path |
@@ -166,10 +166,10 @@ Untrusted mods drove the design, so the defaults assume the script is hostile:
   count, handle count, and logging rate all have ceilings out of the box.
   Removing them requires a visibly named profile like
   `LuauStateOptions.UnboundedResources`.
-- **No ambient authority.** There is no `GameObject.Find` from Luau, no
-  filesystem, no `Resources` or Addressables, and no package-defined
-  `GameObject` or `Transform` member surface. A script reaches an object because
-  you handed it a capability with an explicitly selected policy.
+- **No ambient authority.** No `GameObject.Find` from Luau, no filesystem, no
+  `Resources` or Addressables, and no package-defined `GameObject` or
+  `Transform` surface. A script reaches an object because you handed it a
+  capability, under a policy you named at that call site.
 - **Frozen globals.** Host APIs register before the root is sandboxed; after
   that, nothing can replace them.
 - **Source, not bytecode.** `LuauBytecodePolicy.Reject` is both the default and

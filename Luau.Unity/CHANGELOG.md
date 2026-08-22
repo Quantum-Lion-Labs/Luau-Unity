@@ -16,9 +16,10 @@ API or ABI breaks.
   configurable failure isolation.
 - An importable Full Luau Scripting Demo split into reusable `Core/` components
   and a one-scene Flappy Bird game whose gameplay scripts are entirely Luau.
-  The core demonstrates explicit `self` and scene-object capabilities,
-  controlled prefab spawning with owned cleanup, a shared trust-domain table,
-  and bounded Unity lifecycle phases.
+  The core demonstrates explicit `self` and scene-object capabilities, a shared
+  trust-domain table, and bounded Unity lifecycle phases; the game spawns its
+  pipe pairs through `spawnPrefab` under a per-behaviour cap of two, with owned
+  cleanup on shutdown.
 
 ### Changed
 
@@ -30,7 +31,12 @@ API or ABI breaks.
   `GameObject`, `Transform`, 2D physics, rendering, audio, and text surfaces
   used by its `self`, named-reference, and spawned-prefab handles.
 - Capability Binding has been folded into Getting Started. Package Manager now
-  presents exactly two samples: Getting Started and Full Luau Scripting Demo.
+  presents two samples: Getting Started and Full Luau Scripting Demo.
+- The Full Luau Scripting Demo `Input` library polls the Input System package
+  instead of the legacy Input Manager, and its `Core` assembly now references
+  `Unity.InputSystem`. The sample scene needs Active Input Handling set to
+  *Input System Package (New)* or *Both*; the runtime warns when it sees no
+  input devices. The Luau-visible member names are unchanged.
 
 ### Removed
 

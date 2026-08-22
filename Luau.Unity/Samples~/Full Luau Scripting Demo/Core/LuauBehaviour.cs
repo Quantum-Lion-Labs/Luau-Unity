@@ -5,7 +5,6 @@ using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using Luau;
-using Luau.Unity;
 using UnityEngine;
 using Object = UnityEngine.Object;
 using NumericsVector3 = System.Numerics.Vector3;
@@ -75,6 +74,7 @@ namespace Luau.Unity.Samples.FullLuauScriptingDemo
         readonly List<GameObject> spawnedObjects = new List<GameObject>();
 
         Dictionary<string, GameObject> prefabCatalog;
+        string stableSortKey;
         LuauScriptInstance instance;
         LuauScriptEntrypoint collisionEnterEntrypoint;
         LuauScriptEntrypoint collisionExitEntrypoint;
@@ -102,40 +102,68 @@ namespace Luau.Unity.Samples.FullLuauScriptingDemo
 
         internal bool IsDestroyed => Volatile.Read(ref destroyed) != 0;
 
+        /// <summary>
+        /// Gets the deterministic tie-break key for behaviours that share an
+        /// execution order: scene path, then root-to-leaf sibling indices, then
+        /// component slot. Built once and cached, both because the sort comparer
+        /// reads it repeatedly and because a behaviour's ordering identity
+        /// should not shift if a script reparents its GameObject later.
+        /// </summary>
         internal string StableSortKey
         {
             get
             {
-                var builder = new StringBuilder();
-                builder.Append(gameObject.scene.path);
-                builder.Append('|');
-
-                var current = transform;
-                while (current != null)
+                if (stableSortKey == null)
                 {
-                    builder.Insert(
-                        builder.ToString().IndexOf('|') + 1,
-                        current.GetSiblingIndex().ToString(
-                            "D8",
-                            CultureInfo.InvariantCulture) + "/");
-                    current = current.parent;
+                    stableSortKey = BuildStableSortKey();
                 }
 
-                var components = GetComponents<LuauBehaviour>();
-                for (var index = 0; index < components.Length; index++)
-                {
-                    if (ReferenceEquals(components[index], this))
-                    {
-                        builder.Append('|');
-                        builder.Append(index.ToString(
-                            "D4",
-                            CultureInfo.InvariantCulture));
-                        break;
-                    }
-                }
-
-                return builder.ToString();
+                return stableSortKey;
             }
+        }
+
+        string BuildStableSortKey()
+        {
+            var depth = 0;
+            for (var current = transform; current != null; current = current.parent)
+            {
+                depth++;
+            }
+
+            // Fill back to front so the key reads root first and sorts the way
+            // the hierarchy is drawn.
+            var siblingIndices = new int[depth];
+            var position = depth;
+            for (var current = transform; current != null; current = current.parent)
+            {
+                siblingIndices[--position] = current.GetSiblingIndex();
+            }
+
+            var builder = new StringBuilder();
+            builder.Append(gameObject.scene.path);
+            builder.Append('|');
+            for (var index = 0; index < siblingIndices.Length; index++)
+            {
+                builder.Append(siblingIndices[index].ToString(
+                    "D8",
+                    CultureInfo.InvariantCulture));
+                builder.Append('/');
+            }
+
+            builder.Append('|');
+            var components = GetComponents<LuauBehaviour>();
+            for (var index = 0; index < components.Length; index++)
+            {
+                if (ReferenceEquals(components[index], this))
+                {
+                    builder.Append(index.ToString(
+                        "D4",
+                        CultureInfo.InvariantCulture));
+                    break;
+                }
+            }
+
+            return builder.ToString();
         }
 
         void Awake()

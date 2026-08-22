@@ -1,12 +1,15 @@
 # Getting started
 
-Luau.Unity embeds the official Luau VM in your game, so you can ship behaviour
-as `.luau` text files instead of compiled C#. It supports first-party gameplay
-logic and untrusted source-based mods through the same bounded managed runtime.
+Luau.Unity embeds the official Luau VM in your game, so you can ship behaviour as
+`.luau` text files instead of compiled C#. It's useful for gameplay logic you want
+to iterate on without a domain reload, for content your designers own, and for
+mods your players write. All three run through the same bounded runtime; the only
+thing that changes for the ones you don't trust is how tight you set the limits.
 
-The package is a prebuilt managed runtime plus native plugins for Windows x64
-and Android ARM64/x86_64. Unity 6000.3.19f1 is the tested minimum. If a term on
-this page is unfamiliar, see [concepts and vocabulary](concepts.md).
+The package is a prebuilt managed runtime plus native plugins for Windows x64 and
+Android ARM64/x86_64. Unity 6000.3.19f1 is the tested minimum. If a term on this
+page is unfamiliar, [concepts and vocabulary](concepts.md) defines all of them in
+one place.
 
 ## Install
 
@@ -16,66 +19,84 @@ In Package Manager, choose **Add package from git URL** and enter:
 https://github.com/Quantum-Lion-Labs/Luau-Unity.git?path=Luau.Unity#v0.2.0
 ```
 
-Then import **Getting Started** from the package's Samples tab. The package has
-exactly two samples: Getting Started teaches individual mechanisms, while
-**Full Luau Scripting Demo** contains reusable game-scripting components,
-editable Unity capability policies, and a Luau-only Flappy Bird game.
+Two samples come with it. **Getting Started** is the one this page walks through.
+**Full Luau Scripting Demo** is a reusable game-scripting kit plus a Flappy Bird
+game whose gameplay is entirely Luau — worth importing once you've read this far.
 
-## The six lessons
+## Hello world
 
-The Getting Started sample keeps each boundary visible. Follow these lessons in
-order the first time; in an application you can split them across your own
-runtime owner and scripted components.
-
-### 1. Create and dispose a state
-
-A root `LuauState` is one VM and one trust domain. Create it on Unity's main
-thread so it captures the synchronization context, and dispose it after all
-child threads, results, and VM-backed values:
-
-```csharp
-using var root = LuauUnity.CreateState();
-```
-
-For a long-lived game runtime, store the root in an owning component and dispose
-it in `OnDestroy`. Create a few roots around trust boundaries, not one per
-GameObject: first-party scripts can share a root, while mutually untrusted mods
-belong in separate roots.
-
-### 2. Execute a LuauAsset and own its results
-
-Create `answer.luau` anywhere under `Assets`. Unity imports it as a `LuauAsset`
-and reports syntax errors in the Console:
+Create `hello.luau` anywhere under `Assets`. Unity imports it as a `LuauAsset`,
+compiling it once so syntax errors reach the Console immediately:
 
 ```luau
 return 21 * 2
 ```
 
-Assign the asset to a serialized field and execute it through the bounded
-background compiler lane:
+Drop this component on a GameObject and assign the asset:
 
 ```csharp
-[SerializeField] LuauAsset script;
+using Luau;
+using Luau.Unity;
+using UnityEngine;
 
-async void Start()
+public sealed class HelloLuau : MonoBehaviour
 {
-    using var root = LuauUnity.CreateState();
-    using var results = await root.ExecuteAsync(
-        script,
-        destroyCancellationToken);
+    [SerializeField] LuauAsset script;
 
-    Debug.Log(results[0].Read<int>()); // 42
+    async void Start()
+    {
+        using var root = LuauUnity.CreateState();
+        using var results = await root.ExecuteAsync(script, destroyCancellationToken);
+
+        Debug.Log(results[0].Read<int>()); // 42
+    }
 }
 ```
 
-`ExecuteAsync` compiles away from the Unity main thread and resumes on it. The
-`LuauResultScope` owns any VM-backed values directly in the result, so keep the
-scope in a `using` declaration even when you ignore the return values.
+`CreateState` spins up a Luau VM with the standard libraries open and a
+rate-limited `print` wired to `Debug.Log`. `ExecuteAsync` compiles on a background
+thread and resumes on the main one, so a large file won't hitch your frame.
+
+That's the whole API for running a script. Everything below is the setup you want
+once more than one script is involved.
+
+## Six lessons
+
+The **Getting Started** sample keeps each boundary visible, one mechanism at a
+time. Read them in order the first time. In a real project you'd split them
+between a runtime owner and the components that run scripts.
+
+### 1. Create and dispose a state
+
+A root `LuauState` is one VM and one trust domain. Create it on Unity's main
+thread so it captures the synchronization context, and dispose it after every
+child thread, result, and VM-backed value:
+
+```csharp
+using var root = LuauUnity.CreateState();
+```
+
+In a real game the root lives in an owning component and gets disposed in
+`OnDestroy`. Create a few of them around trust boundaries, not one per GameObject:
+your own scripts can share a root, but two mods that don't trust each other
+belong in separate ones.
+
+### 2. Execute a LuauAsset and own its results
+
+The hello world above already did this. What matters is the `using`:
+
+```csharp
+using var results = await root.ExecuteAsync(script, destroyCancellationToken);
+```
+
+`LuauResultScope` owns any VM-backed value in the result, so keep it in a `using`
+declaration even when you ignore what came back. Numbers and strings inside it are
+copies; tables and functions are live references that die with the scope.
 
 ### 3. Generate and register a host library
 
-A global host library is visible to every script in the root. Mark a partial
-application type and its allowed members:
+A global host library is visible to every script in the root. Mark a partial class
+and the members you want reachable:
 
 ```csharp
 [LuauLibrary("sample")]
@@ -86,9 +107,8 @@ public sealed partial class GettingStartedLibrary
 }
 ```
 
-The explicit member name matters. Without `[LuauMember("double")]`, the
-generated Luau name is the C# spelling `sample.Double`; it is not automatically
-converted to `sample.double`.
+The explicit name matters. Without `[LuauMember("double")]` the Luau name is the
+C# spelling, `sample.Double` — nothing converts it to camelCase for you.
 
 Register global libraries while the state is being created:
 
@@ -100,14 +120,14 @@ using var root = LuauUnity.CreateState(new LuauUnityOptions
 });
 ```
 
-`CreateState` freezes globals after `ConfigureHostApis` returns, so scripts
-cannot replace the registered API and the host cannot widen it later.
+It has to happen there, because `CreateState` freezes the globals as its last
+step. After that nobody can replace your API — scripts can't, and neither can you.
 
 ### 4. Generate a capability for a type you own
 
-An object capability is a per-object value rather than a root-wide global
-library. For an application-owned type, request capability exposure and mark
-only the members Luau may reach:
+A capability is a single object handed to a single script, rather than a global
+every script sees. For a type you own, ask for capability exposure and mark only
+the members Luau may touch:
 
 ```csharp
 [LuauLibrary("GettingStartedTarget",
@@ -125,22 +145,21 @@ public sealed partial class GettingStartedTarget : MonoBehaviour
 }
 ```
 
-The source generator creates an AOT-safe descriptor and implements the
-capability contract for this type. The generic `CreateHandle(target)` extension
-selects that generated descriptor:
+The generator writes an AOT-safe descriptor and implements the capability
+contract, so the plain `CreateHandle(target)` overload finds it:
 
 ```csharp
 using var targetHandle = root.CreateHandle(target);
 ```
 
-Unmarked members are absent. The script receives no managed pointer and cannot
-reflect over the target or discover other components.
+Unmarked members simply aren't there. The script gets no managed pointer, can't
+reflect over the target, and can't discover any other component.
 
 ### 5. Define a manual descriptor for an external type
 
-You cannot annotate Unity's `GameObject` class. Define a manual descriptor when
-you need to expose an external type. Getting Started grants only read/write
-access to one object's `name`:
+You can't annotate Unity's `GameObject`, so when you need to expose one you write
+the descriptor yourself. The sample grants read/write access to one object's
+`name` and nothing more:
 
 ```csharp
 public static class GettingStartedUnityCapabilities
@@ -160,19 +179,17 @@ public static class GettingStartedUnityCapabilities
 }
 ```
 
-The Unity guard runs before every access and rejects a destroyed target.
-`LuauUnityValue.ReadVector3` and `ReturnVector3` are available when an
-application descriptor needs vector conversion.
+The Unity guard runs before every access and rejects a destroyed target. When a
+descriptor needs to pass vectors, `LuauUnityValue.ReadVector3` and `ReturnVector3`
+handle the conversion AOT-safely.
 
-Descriptors are complete immutable policies. The runtime has no `AddMember`
-operation and never silently widens a descriptor. To expose another member,
-construct and review a new descriptor. Its identity remains separate from any
-narrower handle over the same managed object.
+Descriptors are complete, immutable policies — there's no `AddMember`, and nothing
+widens one behind your back. To expose another member, write a new descriptor and
+review the whole surface.
 
-### 6. Inject only selected handles into a sandboxed thread
+### 6. Inject only the handles you chose
 
-Create a child environment, select the generated and manual policies, and hand
-only those values to the script:
+Create a child environment, pick the policies, and hand over exactly those values:
 
 ```csharp
 using var thread = root.CreateSandboxedThread();
@@ -189,7 +206,7 @@ using var results = await thread.ExecuteAsync(
     destroyCancellationToken);
 ```
 
-The sample script can use precisely those surfaces:
+The script can use precisely those two surfaces:
 
 ```luau
 generatedTarget.score = sample.double(20)
@@ -199,58 +216,54 @@ namedTarget.name = "Named by a narrow Luau capability"
 return generatedTarget.score, namedTarget.name
 ```
 
-The first returned value is `42`; the second confirms the new name. The script
-cannot search the scene, enumerate components, or reach any other `GameObject`.
-Installing Luau.Unity alone grants no predefined `GameObject` or `Transform`
-members.
+The first value comes back `42`, the second confirms the rename. The script can't
+search the scene, enumerate components, or reach any other `GameObject`.
 
-Disposing each managed handle after assignment releases that wrapper; the value
-stored in the thread remains valid until Luau releases it. Dispose the thread
-before the root.
+Disposing each handle after you assign it releases the managed wrapper only; the
+value stored in the thread stays valid until Luau lets go of it. Dispose the
+thread before the root.
 
 ## Moving to a reusable behaviour
 
-Getting Started is intentionally instructional, not a production framework.
-Import **Full Luau Scripting Demo** for a complete `LuauScriptInstance`
-composition with a shared trust-domain root, one sandboxed thread per
-component, bounded `Update`, `FixedUpdate`, and `LateUpdate` phases, failure
-isolation, explicit Unity object references, and controlled prefab spawning
-with owned cleanup.
+Getting Started teaches mechanisms; it isn't a framework. Import **Full Luau
+Scripting Demo** for a real composition: a shared trust-domain root, one sandboxed
+thread per component, bounded `Update`, `FixedUpdate`, and `LateUpdate` phases,
+failure isolation that disables one component instead of the scene, explicit Unity
+object references, and prefab spawning against a per-behaviour cap.
 
-Its `Core/` directory contains the reusable host and editable
-`LuauUnityCapabilities` descriptors. `Demo Game/` is a Luau-only Flappy Bird
-example that can be deleted when starting another game. The descriptors remain
-application-owned policy, not package runtime defaults.
+Its `Core/` holds the reusable host and the `LuauUnityCapabilities` descriptors.
+`Demo Game/` is the Flappy Bird example, and you can delete it when starting
+something else.
 
-If migrating from the removed `state.CreateHandle(gameObject)` or
-`state.CreateHandle(transform)` overloads, see the options and direct mappings
-in [capability bindings](capability-bindings.md#migrating-package-provided-unity-handles).
+Migrating off the removed `state.CreateHandle(gameObject)` or
+`state.CreateHandle(transform)` overloads? The replacements are in
+[capability bindings](capability-bindings.md#migrating-package-provided-unity-handles).
 
 ## Optional: ship trusted scripts as bytecode
 
-Source is the safe default and remains the right format for mods. To skip
-runtime compilation for selected first-party assets:
+Source is the safe default and stays the right format for mods. To skip runtime
+compilation for selected first-party assets:
 
 1. Open **Project Settings > Luau.Unity**, choose **First-party precompile with
    generated manifest**, and enter your public provenance ID.
-2. Select trusted `.luau` assets and enable **Precompile** in each importer.
-   Leave mod or source-only assets unchecked.
+2. Select trusted `.luau` assets and enable **Precompile** in each importer. Leave
+   mod or source-only assets unchecked.
 3. Set `UseFirstPartyBytecode = true` in `LuauUnityOptions`.
 4. Build normally. Luau.Unity regenerates and embeds the manifest approving the
    current project snapshot.
 
 The generated manifest folder at `Assets/Generated/Luau.Unity` is package-owned
-and may be ignored by source control.
+and can be ignored by source control.
 
-Bytecode rebuilt or added after the player build, including
-remote Addressables or AssetBundle updates, needs a newly built player manifest. See
-[precompiled bytecode](artifacts.md) for the security boundary and custom
+Bytecode rebuilt or added after the player build needs a newly built player
+manifest. That includes remote Addressables or AssetBundle updates. See
+[precompiled bytecode](artifacts.md) for the security boundary and the custom
 validator path.
 
 ## Next steps
 
 - [Concepts and vocabulary](concepts.md) — every term in one page.
-- [Capability bindings](capability-bindings.md) — generated and manual object
+- [Exposing C# to Luau](capability-bindings.md) — generated and manual object
   policies, callbacks, and ownership.
 - [Script instances](script-instances.md) — reusable exports and schedulers.
 - [Execution and trust](execution-and-trust.md) — read this before running a

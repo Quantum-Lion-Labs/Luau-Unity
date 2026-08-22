@@ -581,7 +581,7 @@ Assert-Equal `
 Assert-SequenceEqual `
     "Full Demo Core assembly references" `
     @($fullDemoAsmdef.references) `
-    @("GUID:c727d2ef8dd2e4846ab81fbe6ca1f508")
+    @("GUID:c727d2ef8dd2e4846ab81fbe6ca1f508", "Unity.InputSystem")
 foreach ($required in @(
     "Core",
     "Demo Game",
@@ -789,9 +789,19 @@ foreach ($required in @(
     '[LuauMember("GetKey")]',
     '[LuauMember("GetMouseButtonDown")]',
     '[LuauMember("GetMouseButton")]',
-    '[LuauMember("GetTouchPhase")]'
+    '[LuauMember("GetTouchPhase")]',
+    "using UnityEngine.InputSystem;",
+    "Keyboard.current",
+    "Mouse.current",
+    "Touchscreen.current"
 )) {
     Assert-ContainsLiteral "Full Demo generated Input library" $fullDemoInput $required
+}
+foreach ($forbidden in @("KeyCode", "UnityEngine.Input.", "Input.GetTouch(")) {
+    Assert-NotContainsLiteral `
+        "Full Demo legacy input manager boundary" `
+        $fullDemoInput `
+        $forbidden
 }
 $fullDemoCoreSource = $fullDemoRuntime +
     $fullDemoBehaviour +
@@ -862,17 +872,35 @@ foreach ($required in @(
 }
 foreach ($required in @(
     "local gameState = shared",
-    "refs.pipePairOne",
-    "refs.pipePairTwo",
+    'local pipePairPrefab = "pipePair"',
+    "spawnPrefab(pipePairPrefab)",
+    "spawned.transform",
     "refs.bird.position.x",
     "math.random()",
-    "fixedUpdate = function(deltaTime)",
+    "fixedUpdate = function(fixedDeltaTime)",
     "nextX < recycleX",
     "nextX = pipePairs[otherIndex].position.x + pipeSpacing",
     "gameState.score = (gameState.score or 0) + 1",
     "refs.scoreAudio"
 )) {
     Assert-ContainsLiteral "Full Demo PipeController Luau" $fullDemoPipeController $required
+}
+
+# The demo scene must actually exercise the controlled-spawning path the docs
+# advertise, with a finite cap rather than an unbounded one.
+$fullDemoScene = Read-PackageText `
+    "Samples~/Full Luau Scripting Demo/Demo Game/Scenes/FlappyBird.unity"
+foreach ($required in @(
+    "referenceName: pipePair",
+    "maxSpawnedObjects: 2"
+)) {
+    Assert-ContainsLiteral "Full Demo scene prefab-spawning wiring" $fullDemoScene $required
+}
+foreach ($forbidden in @("referenceName: pipePairOne", "referenceName: pipePairTwo")) {
+    Assert-NotContainsLiteral `
+        "Full Demo scene spawns pipe pairs instead of placing them" `
+        $fullDemoScene `
+        $forbidden
 }
 $fullDemoGameScripts = $fullDemoGameController + $fullDemoPlayerController + $fullDemoPipeController
 Assert-NotContainsLiteral "Full Demo Luau shared alias" $fullDemoGameScripts "shared."

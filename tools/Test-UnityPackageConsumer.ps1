@@ -363,6 +363,9 @@ Copy-Item -LiteralPath $versionFile -Destination (
 $manifest = [ordered]@{
     dependencies = [ordered]@{
         "com.qll.luau.unity" = $resolvedPackageReference
+        # The retained Full Luau Scripting Demo Core polls the Input System, so
+        # a consumer that keeps Core needs this package to compile it.
+        "com.unity.inputsystem" = "1.19.0"
         "com.unity.modules.audio" = "1.0.0"
         "com.unity.modules.physics2d" = "1.0.0"
     }

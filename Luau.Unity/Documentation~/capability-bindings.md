@@ -1,12 +1,11 @@
 # Exposing C# to Luau
 
 Luau scripts can't see anything in your game until you hand it to them. There is
-no reflection and no ambient `GameObject.Find`. For types you own, two
-attributes let a source generator write the binding code. For external types
-you cannot annotate, an explicit descriptor provides the same reflection-free
-dispatch. Both paths work under IL2CPP and AOT. An application descriptor may
-deliberately add a fixed component allowlist, as Full Luau Scripting Demo does;
-that still reaches only components on a `GameObject` already handed to Luau.
+no reflection, no `GameObject.Find`, no component lookup by name. For a type you
+own, two attributes let a source generator write the binding code. For a type you
+can't annotate — anything Unity owns — you write a small descriptor by hand that
+dispatches the same way. Neither path uses reflection, which is also why both
+work under IL2CPP and AOT.
 
 There are two ways to expose something, and the difference matters:
 
@@ -95,9 +94,12 @@ A capability is a single object handed to a single script. It grants exactly the
 members you described and nothing else — no pointer, no registry token, no
 `GCHandle`, no way to walk from the object to the rest of the scene.
 
-Installing Luau.Unity does not define a Luau-visible surface for `GameObject`,
-`Transform`, or any other Unity object. The application owns that policy and
-selects it when creating each handle. There are two supported authoring paths.
+Luau.Unity ships no member surface for `GameObject`, `Transform`, or any other
+Unity type. That is deliberate: what a script may do to a Unity object is a
+decision about your game, not a default the package should make for you. You
+write that policy, and you name it explicitly every time you create a handle.
+
+You can author it two ways.
 
 ### Generated capability for a type you own
 
@@ -120,16 +122,16 @@ using var door = root.CreateHandle(GetComponent<DoorController>());
 thread["door"] = door;
 ```
 
-The generator implements the capability contract and creates its descriptor.
-The generic `CreateHandle(target)` extension selects that generated descriptor.
-One class is either a global library or an object capability, never implicitly
-both, and unmarked members do not exist to Luau.
+The generator implements the capability contract and builds the descriptor for
+you; the plain `CreateHandle(target)` overload picks it up. A class is either a
+global library or an object capability, never quietly both, and members you
+didn't mark don't exist as far as Luau is concerned.
 
 ### Manual descriptor for a type you cannot annotate
 
-Unity owns `GameObject`, so an application cannot add `[LuauLibrary]` to it.
-Define a deliberately small descriptor instead. This example grants read-only
-access to `name` and nothing else:
+Unity owns `GameObject`, so you can't put `[LuauLibrary]` on it. Write a small
+descriptor instead. This one grants read-only access to `name`, and nothing
+else:
 
 ```csharp
 public static class GameCapabilities
@@ -148,7 +150,7 @@ public static class GameCapabilities
 }
 ```
 
-Pass the target and selected policy explicitly:
+Then name the target and the policy together:
 
 ```csharp
 using var target = root.CreateHandle(
@@ -157,43 +159,46 @@ using var target = root.CreateHandle(
 thread["target"] = target;
 ```
 
-`LuauUnityObjectGuard.ThrowIfDestroyed` rejects both managed null and Unity's
-destroyed-object fake-null state before every access. `LuauUnityValue` provides
-AOT-safe conversions when a descriptor exposes `UnityEngine.Vector3` values.
+`LuauUnityObjectGuard.ThrowIfDestroyed` runs before every access and rejects
+both a plain null and Unity's destroyed-object fake-null. Reach for
+`LuauUnityValue` when a descriptor needs to move `UnityEngine.Vector3` values
+across the boundary; it does the conversion AOT-safely.
 
-The **Getting Started** sample includes both a generated application-owned
-capability and a minimal manual `GameObject` descriptor. Import **Full Luau
-Scripting Demo** for editable, reusable policies modeled after the supported
-parts of Unity's `GameObject`, `Transform`, 2D physics, rendering, audio, and
-text APIs. Those policies belong to the sample, not the Luau.Unity runtime.
+**Getting Started** has one of each: a generated capability for a component it
+owns, and a minimal hand-written `GameObject` descriptor. **Full Luau Scripting
+Demo** carries larger reusable policies covering the parts of `GameObject`,
+`Transform`, 2D physics, rendering, audio, and text its game actually needs.
+Importing a sample copies that code into your project where you can edit it. You
+are not switching on a package default — there isn't one.
+
+A descriptor can offer a fixed component allowlist, the way that sample's
+`GameObject:GetComponent` does. That stays bounded: the script reaches only the
+component types you listed, and only on a `GameObject` you already handed it.
 
 ### Descriptors are immutable authority
 
-A `LuauObjectDescriptor<T>` is a complete immutable policy. There is no
-`AddMember` API, and the runtime never mutates or silently widens an existing
-descriptor. If you want the Full Luau Scripting Demo surface plus another
-member, copy or adapt its core source, or construct a new descriptor in
-application code, and review the whole resulting surface.
+A `LuauObjectDescriptor<T>` is the whole policy. There is no `AddMember`, and
+nothing widens a descriptor behind your back. To expose one more member, build a
+new descriptor and read the resulting surface top to bottom — that review is the
+point.
 
-Descriptor identity is also part of the authority. Two descriptors over the
-same managed object create separate capability views; creating a wider view
-does not upgrade a narrower handle that Luau already holds.
+Identity counts too. Two descriptors over the same object are two different
+capabilities, so handing out a wider view later never upgrades the narrow handle
+a script is already holding.
 
 ### Migrating package-provided Unity handles
 
-The package previously provided `state.CreateHandle(gameObject)` and
-`state.CreateHandle(transform)`. Those overloads and their package-owned
-surfaces have been removed. Choose one of these replacements:
+`state.CreateHandle(gameObject)` and `state.CreateHandle(transform)` used to
+exist, backed by surfaces the package chose. Both are gone. Pick a replacement:
 
-- Import **Full Luau Scripting Demo** and explicitly use
-  `LuauUnityCapabilities.GameObjectDescriptor` or another descriptor from its
-  editable `Core/` policy.
-- Copy those sample descriptors into application code and customize the policy
-  there.
-- Define a narrower descriptor or an application-owned wrapper exposing only
-  what the script needs.
+- Import **Full Luau Scripting Demo** and name
+  `LuauUnityCapabilities.GameObjectDescriptor`, or another descriptor from its
+  `Core/` policy, at the call site.
+- Copy those descriptors into your own code and cut them down to taste.
+- Write a narrower descriptor, or a wrapper type you own that exposes only what
+  the script needs.
 
-For example, after importing Full Luau Scripting Demo:
+After importing the sample, the first option reads like this:
 
 ```csharp
 using var self = root.CreateHandle(
@@ -202,9 +207,8 @@ using var self = root.CreateHandle(
 thread["self"] = self;
 ```
 
-Keeping the descriptor visible at the call site makes the granted authority
-reviewable. Do not replace it with a generic application overload that hides
-which policy was selected.
+Keep the descriptor visible there. It's the one line that tells a reviewer what
+this script was granted — don't hide it behind a helper overload of your own.
 
 ### Lifetime
 
@@ -227,8 +231,9 @@ using (var handle = root.CreateHandle(gameObject, GameCapabilities.ReadableName)
 // the script's `self` still works here
 ```
 
-The target still comes from an explicit serialized reference or another
-host-controlled source. The descriptor does not grant scene discovery.
+Note where the target came from: a serialized inspector reference, or something
+else your code chose. A descriptor says what a script may do to an object you
+hand it; it never helps a script go find one.
 
 ## Manual callbacks
 

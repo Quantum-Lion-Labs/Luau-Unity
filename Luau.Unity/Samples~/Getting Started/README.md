@@ -2,56 +2,30 @@
 
 1. Import this sample from Package Manager.
 2. Add `GettingStartedSample` and `GettingStartedTarget` to a GameObject.
-3. Assign `GettingStarted.luau`, the `GettingStartedTarget` component, and an
-   explicit GameObject to the sample component's three fields.
-4. Enter Play Mode and observe the returned score `42` and the renamed target.
+3. Assign `GettingStarted.luau`, the `GettingStartedTarget` component, and any
+   GameObject to the sample component's three fields.
+4. Enter Play Mode. The Console reports the returned score `42` and the renamed
+   target.
 
-## Lessons
+## What to read
 
-### 1. Create and dispose a state
+[Getting started](../../Documentation~/getting-started.md) walks through this
+code as six lessons. The short version of what each file is for:
 
-`GettingStartedSample.Start` creates and deterministically disposes a root
-`LuauState`. A real game normally keeps a root alive across many scripts, but
-the owner must still dispose it after every child thread and VM-backed value.
+- **`GettingStartedSample.cs`** creates and disposes the root state, registers
+  the `sample` host library before the VM freezes its globals, builds a sandboxed
+  thread, and assigns exactly two handles to it. It also defines
+  `GameObjectNameDescriptor`, the hand-written policy that grants `name` on one
+  `GameObject` and nothing else — Unity's `GameObject` can't be annotated, so a
+  manual descriptor is the way in.
+- **`GettingStartedTarget.cs`** is a component the sample owns, so it can use
+  `LuauLibraryExposure.Capability` and let the generator write its descriptor.
+  Only `score` and `increment` are marked; the rest of `MonoBehaviour` stays
+  invisible.
+- **`GettingStarted.luau`** uses those two surfaces and nothing else. There is no
+  scene lookup available to it.
 
-### 2. Execute an asset and own its results
-
-The sample executes a `LuauAsset` and reads values only while the returned
-`LuauResultScope` is alive. Result values are references into the VM, so retain
-or copy what you need before disposing that scope.
-
-### 3. Generate and register a host library
-
-`GettingStartedLibrary` is annotated with `[LuauLibrary("sample")]` and is
-registered inside `ConfigureHostApis`, before the VM freezes its globals. The
-managed `Double` method has the explicit `[LuauMember("double")]` name override,
-so the script calls `sample.double(20)`.
-
-### 4. Generate a capability for an application type
-
-`GettingStartedTarget` is application-owned, so it can use
-`LuauLibraryExposure.Capability`. Only its annotated `score` property and
-`increment` method enter the generated, reflection-free descriptor. Creating a
-handle for that component does not expose the rest of `MonoBehaviour`.
-
-### 5. Describe an external type manually
-
-Unity's `GameObject` cannot be annotated by your application.
-`GettingStartedUnityCapabilities.GameObjectNameDescriptor` therefore constructs
-a manual `LuauObjectDescriptor<GameObject>` with only a `name` member and the
-Unity destroyed-object guard. Descriptors are immutable authority values: make
-a different descriptor when a script should receive a narrower or wider view.
-The **Full Luau Scripting Demo** sample contains broader, reusable policies
-modeled after the supported parts of Unity's GameObject, Transform, 2D physics,
-rendering, audio, and text APIs.
-
-### 6. Inject only explicit authority
-
-The component creates a sandboxed thread, assigns only the generated target and
-name-only GameObject handles, and executes the script there. The script has no
-ambient scene lookup and cannot reach Unity members that those two descriptors
-did not grant.
-
-See [Getting started](../../Documentation~/getting-started.md) for the setup you
-want in a real project: one VM shared across your game, and one sandboxed thread
-per scripted object.
+The sample creates and destroys a VM inside one method, which is fine here and
+wrong in a game. For the real shape — one VM shared across your game, one
+sandboxed thread per scripted object — see the doc above, then import **Full Luau
+Scripting Demo** for a working version of it.
