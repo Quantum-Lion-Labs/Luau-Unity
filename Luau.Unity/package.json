@@ -31,18 +31,13 @@
     "samples": [
         {
             "displayName": "Getting Started",
-            "description": "Create, configure, execute, read owned results, and dispose a bounded Luau state.",
+            "description": "Six short lessons: owning a state and its results, generated host libraries and capabilities, hand-written descriptors, and sandboxed injection.",
             "path": "Samples~/Getting Started"
         },
         {
-            "displayName": "Capability Binding",
-            "description": "Expose an explicit GameObject and Transform capability without ambient object discovery.",
-            "path": "Samples~/Capability Binding"
-        },
-        {
-            "displayName": "Luau Behaviour",
-            "description": "Compose sandboxed script instances with explicit scene references and controlled prefab spawning in a shared, bounded Unity Update phase.",
-            "path": "Samples~/Luau Behaviour"
+            "displayName": "Full Luau Scripting Demo",
+            "description": "A reusable Luau behaviour kit with editable Unity capability policy, plus a one-scene Flappy Bird game whose gameplay is written entirely in Luau.",
+            "path": "Samples~/Full Luau Scripting Demo"
         }
     ]
 }

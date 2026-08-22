@@ -63,6 +63,14 @@ assets remain source, so first-party scripts and mods can coexist. See
 [Persistent artifacts](Documentation~/artifacts.md) for the snapshot and remote
 content security boundary.
 
+## Capability policy
+
+There is no built-in Luau surface for `GameObject` or `Transform`. What a script
+may do to a Unity object is your decision: generate a capability for a type you
+annotated, or write a `LuauObjectDescriptor<T>` for one you can't and name it at
+`state.CreateHandle(target, descriptor)`. See
+[exposing C# to Luau](Documentation~/capability-bindings.md#object-capabilities).
+
 ## Learn more
 
 - [Getting started](Documentation~/getting-started.md)
@@ -76,5 +84,9 @@ content security boundary.
 - [Changelog](CHANGELOG.md)
 - [Third-party notices](Third%20Party%20Notices.md)
 
-The Package Manager **Samples** tab offers three small importable examples. Only
-Windows x64 and Android ARM64/x86_64 are maintained targets.
+The Package Manager **Samples** tab has two importable examples: **Getting
+Started** for focused API lessons, and **Full Luau Scripting Demo** for reusable
+game-scripting components plus a Luau-only Flappy Bird game — keep its `Core/`
+and delete `Demo Game/` to start your own.
+
+Only Windows x64 and Android ARM64/x86_64 are maintained targets.

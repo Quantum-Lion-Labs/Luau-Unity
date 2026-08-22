@@ -42,10 +42,20 @@ reflection, so it survives IL2CPP and AOT.
 
 **Capability / object handle** — a host library is global: every script in the
 root sees it. A capability is the opposite, a single object handed to a single
-script. `root.CreateHandle(someGameObject)` produces a `LuauObjectHandle` you
-assign to one thread's global, and that script can then touch that one object
-and nothing else. There is no `GameObject.Find` from Luau, by design — if a
-script can reach an object, it's because you passed it in.
+script. For a type you own, a generated capability does the work; for anything
+else, `root.CreateHandle(target, descriptor)` says which policy applies. Either
+way the resulting `LuauObjectHandle` reaches only the members that policy lists.
+There is no `GameObject.Find` from Luau, by design — if a script can reach an
+object, it's because you passed it in.
+
+**Capability descriptor (`LuauObjectDescriptor<T>`)** — one immutable,
+reflection-free list of what a managed type exposes. The source generator writes
+one for a type you annotated; you write one by hand for a type you can't, like
+anything Unity owns. Identity is part of the authority, so a narrow and a wide
+descriptor over the same object stay separate capabilities and never upgrade
+each other. Note that there is no built-in `GameObject` or `Transform` surface —
+see [exposing C# to Luau](capability-bindings.md#object-capabilities) for why,
+and where to get a ready-made one.
 
 **Result scope (`LuauResultScope`)** — what you get back from executing a script.
 Numbers, strings, and booleans inside it are plain copies. Tables and functions

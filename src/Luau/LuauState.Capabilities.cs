@@ -36,9 +36,10 @@ public static class LuauObjectExtensions
 public partial class LuauState
 {
     /// <summary>
-    /// Creates a capability using an explicit generated descriptor. Descriptor
-    /// identity remains part of the authority, allowing intentionally narrower
-    /// views over the same target without upgrading either handle.
+    /// Creates a capability using an explicit immutable descriptor, whether
+    /// source-generated or constructed manually by the host. Descriptor identity
+    /// remains part of the authority, allowing intentionally narrower views over
+    /// the same target without upgrading either handle.
     /// </summary>
     public LuauObjectHandle CreateHandle<T>(T target, LuauObjectDescriptor<T> descriptor)
         where T : class

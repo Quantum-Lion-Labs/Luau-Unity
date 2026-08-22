@@ -9,7 +9,9 @@ native/luau-host/out. The standalone Luau.Unity package is staged under the
 disposable project's Packages directory, and the copied manifest and lock file
 are normalized to that self-contained package copy. The script builds the
 managed runtime and installs the selected luau_host native plugins with the
-existing reviewed Unity importer metadata.
+existing reviewed Unity importer metadata. Both declared package samples are
+imported into the disposable Assets tree so Editor compilation and every
+supported IL2CPP smoke build compile the same public sample sources.
 
 With no validation switches, the script only prepares the disposable project.
 Unity is launched in batch mode only when Compile, EditModeTests, or a smoke
@@ -848,6 +850,97 @@ function Set-DisposablePackageReferences {
     }
 }
 
+function Import-DeclaredPackageSamples {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string] $StagedPackage,
+        [Parameter(Mandatory = $true)]
+        [string] $ProjectRoot,
+        [Parameter(Mandatory = $true)]
+        [string] $PackageName
+    )
+
+    $packageJsonPath = Join-Path $StagedPackage "package.json"
+    if (!(Test-Path -LiteralPath $packageJsonPath -PathType Leaf)) {
+        throw "Staged package metadata was not found: $packageJsonPath"
+    }
+
+    $package = Get-Content -LiteralPath $packageJsonPath -Raw | ConvertFrom-Json
+    if ($package.name -cne $PackageName) {
+        throw "Staged package has an unexpected identity: $($package.name)"
+    }
+    if ([string]::IsNullOrWhiteSpace($package.version) -or
+        $package.version -notmatch '^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$') {
+        throw "Staged package has an unsafe or invalid version: $($package.version)"
+    }
+
+    $declaredSamples = @($package.samples)
+    $expectedSampleNames = @("Getting Started", "Full Luau Scripting Demo")
+    $expectedSamplePaths = @(
+        "Samples~/Getting Started",
+        "Samples~/Full Luau Scripting Demo")
+    if ($declaredSamples.Count -ne $expectedSampleNames.Count) {
+        throw (
+            "The staged package must declare exactly the two maintained samples; " +
+            "found $($declaredSamples.Count).")
+    }
+    for ($sampleIndex = 0; $sampleIndex -lt $expectedSampleNames.Count; $sampleIndex++) {
+        $sample = $declaredSamples[$sampleIndex]
+        if ($sample.displayName -cne $expectedSampleNames[$sampleIndex] -or
+            $sample.path -cne $expectedSamplePaths[$sampleIndex]) {
+            throw (
+                "Declared package sample mismatch at index $sampleIndex. Expected " +
+                "'$($expectedSampleNames[$sampleIndex])' at '$($expectedSamplePaths[$sampleIndex])'; " +
+                "found '$($sample.displayName)' at '$($sample.path)'.")
+        }
+    }
+
+    $assetsRoot = [System.IO.Path]::GetFullPath((Join-Path $ProjectRoot "Assets"))
+    if (!(Test-Path -LiteralPath $assetsRoot -PathType Container)) {
+        throw "Disposable Unity Assets directory was not found: $assetsRoot"
+    }
+    $sampleImportRoot = [System.IO.Path]::GetFullPath((Join-Path $assetsRoot (
+        "Samples/Luau.Unity/" + $package.version)))
+    Assert-StrictDescendantPath `
+        -Path $sampleImportRoot `
+        -Parent $assetsRoot `
+        -Description "Disposable sample import root"
+    if (Test-Path -LiteralPath $sampleImportRoot) {
+        throw "Disposable sample import root already exists: $sampleImportRoot"
+    }
+
+    New-Item -ItemType Directory -Path $sampleImportRoot -Force | Out-Null
+    foreach ($sample in $declaredSamples) {
+        $sampleSource = [System.IO.Path]::GetFullPath((Join-Path $StagedPackage $sample.path))
+        Assert-StrictDescendantPath `
+            -Path $sampleSource `
+            -Parent $StagedPackage `
+            -Description "Declared package sample source"
+        if (!(Test-Path -LiteralPath $sampleSource -PathType Container)) {
+            throw "Declared package sample is missing: $($sample.path)"
+        }
+
+        $sampleDestination = [System.IO.Path]::GetFullPath((
+            Join-Path $sampleImportRoot $sample.displayName))
+        Assert-StrictDescendantPath `
+            -Path $sampleDestination `
+            -Parent $sampleImportRoot `
+            -Description "Declared package sample destination"
+        New-Item -ItemType Directory -Path $sampleDestination -Force | Out-Null
+        Get-ChildItem -LiteralPath $sampleSource -Force | ForEach-Object {
+            Copy-Item `
+                -LiteralPath $_.FullName `
+                -Destination $sampleDestination `
+                -Recurse `
+                -Force
+        }
+
+        Write-Host (
+            "Imported declared package sample for disposable player builds: " +
+            "$($sample.displayName) -> $sampleDestination")
+    }
+}
+
 function Invoke-UnityBatch {
     param(
         [Parameter(Mandatory = $true)]
@@ -948,6 +1041,11 @@ $stagedPackageManifestMeta = Join-Path $stagedPackage "package.json.meta"
 if (Test-Path -LiteralPath $stagedPackageManifestMeta -PathType Leaf) {
     Remove-Item -LiteralPath $stagedPackageManifestMeta -Force
 }
+
+Import-DeclaredPackageSamples `
+    -StagedPackage $stagedPackage `
+    -ProjectRoot $projectRoot `
+    -PackageName $luauPackageName
 
 # Do not carry generated assembly folders nested under project Assets or the
 # staged package into the disposable copy.

@@ -393,11 +393,14 @@ foreach ($urlProperty in @("licensesUrl", "documentationUrl", "changelogUrl")) {
 }
 $sampleNames = @($package.samples | ForEach-Object displayName)
 $samplePaths = @($package.samples | ForEach-Object path)
-Assert-SequenceEqual "Unity package sample names" $sampleNames @("Getting Started", "Capability Binding", "Luau Behaviour")
+Assert-SequenceEqual `
+    "Unity package sample names" `
+    $sampleNames `
+    @("Getting Started", "Full Luau Scripting Demo")
 Assert-SequenceEqual `
     "Unity package sample paths" `
     $samplePaths `
-    @("Samples~/Getting Started", "Samples~/Capability Binding", "Samples~/Luau Behaviour")
+    @("Samples~/Getting Started", "Samples~/Full Luau Scripting Demo")
 $dependencyProperty = $package.PSObject.Properties["dependencies"]
 if ($null -ne $dependencyProperty -and @($dependencyProperty.Value.PSObject.Properties).Count -ne 0) {
     throw "The Unity package must not rely on development-project dependencies."
@@ -418,15 +421,39 @@ $requiredReleaseFiles = @(
     "Documentation~/artifacts.md",
     "Documentation~/compiler-security.md",
     "Samples~/Getting Started/GettingStartedSample.cs",
+    "Samples~/Getting Started/GettingStartedTarget.cs",
     "Samples~/Getting Started/GettingStarted.luau",
-    "Samples~/Capability Binding/CapabilityBindingSample.cs",
-    "Samples~/Capability Binding/CapabilityBinding.luau",
-    "Samples~/Luau Behaviour/LuauBehaviourRuntimeSample.cs",
-    "Samples~/Luau Behaviour/LuauBehaviourSample.cs",
-    "Samples~/Luau Behaviour/LuauBehaviour.luau"
+    "Samples~/Full Luau Scripting Demo/README.md",
+    "Samples~/Full Luau Scripting Demo/Core/FullLuauScriptingDemo.Core.asmdef",
+    "Samples~/Full Luau Scripting Demo/Core/LuauBehaviourRuntime.cs",
+    "Samples~/Full Luau Scripting Demo/Core/LuauBehaviour.cs",
+    "Samples~/Full Luau Scripting Demo/Core/LuauUnityCapabilities.cs",
+    "Samples~/Full Luau Scripting Demo/Core/LuauUnityTableValues.cs",
+    "Samples~/Full Luau Scripting Demo/Core/LuauQuaternionLibrary.cs",
+    "Samples~/Full Luau Scripting Demo/Core/LuauInputLibrary.cs",
+    "Samples~/Full Luau Scripting Demo/Core/README.md",
+    "Samples~/Full Luau Scripting Demo/Demo Game/Prefabs/Bird.prefab",
+    "Samples~/Full Luau Scripting Demo/Demo Game/Prefabs/PipePair.prefab",
+    "Samples~/Full Luau Scripting Demo/Demo Game/Scenes/FlappyBird.unity",
+    "Samples~/Full Luau Scripting Demo/Demo Game/Scripts/GameController.luau",
+    "Samples~/Full Luau Scripting Demo/Demo Game/Scripts/PlayerController.luau",
+    "Samples~/Full Luau Scripting Demo/Demo Game/Scripts/PipeController.luau",
+    "Samples~/Full Luau Scripting Demo/Demo Game/Art/Bird.png",
+    "Samples~/Full Luau Scripting Demo/Demo Game/Art/Pipe.png",
+    "Samples~/Full Luau Scripting Demo/Demo Game/Art/Ground.png",
+    "Samples~/Full Luau Scripting Demo/Demo Game/Audio/README.md",
+    "Samples~/Full Luau Scripting Demo/Demo Game/README.md"
 )
 foreach ($releaseFile in $requiredReleaseFiles) {
     Get-PackageFile $releaseFile | Out-Null
+}
+$demoGameRoot = Join-Path $packageRoot "Samples~/Full Luau Scripting Demo/Demo Game"
+$demoGameCSharpFiles = @(
+    Get-ChildItem -LiteralPath $demoGameRoot -Recurse -File -Filter "*.cs")
+if ($demoGameCSharpFiles.Count -ne 0) {
+    throw (
+        "Full Luau Scripting Demo gameplay must remain C#-free; found: " +
+        (($demoGameCSharpFiles | ForEach-Object FullName) -join ", "))
 }
 $packageReadme = Read-PackageText "README.md"
 Assert-ContainsLiteral `
@@ -480,62 +507,406 @@ foreach ($documentationPath in $trackedDocumentation) {
     }
 }
 $gettingStartedSample = Read-PackageText "Samples~/Getting Started/GettingStartedSample.cs"
+$gettingStartedTarget = Read-PackageText "Samples~/Getting Started/GettingStartedTarget.cs"
+$gettingStartedScript = Read-PackageText "Samples~/Getting Started/GettingStarted.luau"
 foreach ($required in @(
     '[LuauLibrary("sample")]',
+    '[LuauMember("double")]',
+    "public static readonly LuauObjectDescriptor<GameObject> GameObjectNameDescriptor",
+    "LuauUnityObjectGuard.ThrowIfDestroyed",
     "ConfigureHostApis = state =>",
     "using var root = LuauUnity.CreateState(",
-    "using var results = await root.ExecuteAsync(",
+    "using var sandbox = root.CreateSandboxedThread();",
+    "using var generatedHandle = root.CreateHandle(generatedTarget);",
+    "GettingStartedUnityCapabilities.GameObjectNameDescriptor",
+    'sandbox["generatedTarget"] = generatedHandle;',
+    'sandbox["namedTarget"] = namedHandle;',
+    "using var results = await sandbox.ExecuteAsync(",
     "destroyCancellationToken"
 )) {
     Assert-ContainsLiteral "Getting Started sample" $gettingStartedSample $required
 }
-$capabilitySample = Read-PackageText "Samples~/Capability Binding/CapabilityBindingSample.cs"
+Assert-LiteralCount `
+    "Getting Started narrow GameObject descriptor member surface" `
+    $gettingStartedSample `
+    "LuauObjectMember<GameObject>." `
+    1
 foreach ($required in @(
-    "GameObject target;",
-    "using var sandbox = root.CreateSandboxedThread();",
-    "using var targetHandle = root.CreateHandle(target);",
-    'sandbox["target"] = targetHandle;',
-    "using var results = await sandbox.ExecuteAsync("
+    '[LuauLibrary("GettingStartedTarget", Exposure = LuauLibraryExposure.Capability)]',
+    "public sealed partial class GettingStartedTarget : MonoBehaviour",
+    '[LuauMember("score")]',
+    "public int Score { get; set; }",
+    '[LuauMember("increment")]',
+    "public void Increment(int amount)",
+    "Score = checked(Score + amount);"
 )) {
-    Assert-ContainsLiteral "Capability Binding sample" $capabilitySample $required
+    Assert-ContainsLiteral "Getting Started generated capability target" $gettingStartedTarget $required
 }
+Assert-NotContainsLiteral `
+    "Getting Started MonoBehaviour filename ownership" `
+    $gettingStartedSample `
+    "public sealed partial class GettingStartedTarget"
+Assert-ContainsLiteral "Getting Started Luau member override" $gettingStartedScript "sample.double("
+Assert-NotContainsLiteral "Getting Started Luau member override" $gettingStartedScript "sample.Double("
+Assert-NotContainsLiteral "Getting Started manual descriptor selection" $gettingStartedSample "CreateHandle(namedTarget);"
 foreach ($forbidden in @("GameObject.Find", "FindObjectOfType", "FindFirstObjectByType", "Resources.Load")) {
-    Assert-NotContainsLiteral "Capability Binding sample" $capabilitySample $forbidden
+    Assert-NotContainsLiteral "Getting Started sample" $gettingStartedSample $forbidden
 }
-$luauBehaviourRuntimeSample = Read-PackageText "Samples~/Luau Behaviour/LuauBehaviourRuntimeSample.cs"
-$luauBehaviourSample = Read-PackageText "Samples~/Luau Behaviour/LuauBehaviourSample.cs"
+$fullDemoAsmdef = Read-PackageJson `
+    "Samples~/Full Luau Scripting Demo/Core/FullLuauScriptingDemo.Core.asmdef"
+$fullDemoRuntime = Read-PackageText `
+    "Samples~/Full Luau Scripting Demo/Core/LuauBehaviourRuntime.cs"
+$fullDemoBehaviour = Read-PackageText `
+    "Samples~/Full Luau Scripting Demo/Core/LuauBehaviour.cs"
+$fullDemoCapabilities = Read-PackageText `
+    "Samples~/Full Luau Scripting Demo/Core/LuauUnityCapabilities.cs"
+$fullDemoTableValues = Read-PackageText `
+    "Samples~/Full Luau Scripting Demo/Core/LuauUnityTableValues.cs"
+$fullDemoQuaternion = Read-PackageText `
+    "Samples~/Full Luau Scripting Demo/Core/LuauQuaternionLibrary.cs"
+$fullDemoInput = Read-PackageText `
+    "Samples~/Full Luau Scripting Demo/Core/LuauInputLibrary.cs"
+$fullDemoReadme = Read-PackageText `
+    "Samples~/Full Luau Scripting Demo/README.md"
+$fullDemoCoreReadme = Read-PackageText `
+    "Samples~/Full Luau Scripting Demo/Core/README.md"
+Assert-Equal `
+    "Full Demo Core assembly name" `
+    $fullDemoAsmdef.name `
+    "Luau.Unity.Samples.FullLuauScriptingDemo.Core"
+Assert-Equal `
+    "Full Demo Core root namespace" `
+    $fullDemoAsmdef.rootNamespace `
+    "Luau.Unity.Samples.FullLuauScriptingDemo"
+Assert-SequenceEqual `
+    "Full Demo Core assembly references" `
+    @($fullDemoAsmdef.references) `
+    @("GUID:c727d2ef8dd2e4846ab81fbe6ca1f508", "Unity.InputSystem")
 foreach ($required in @(
+    "Core",
+    "Demo Game",
+    "contains no C#",
+    "keep **Core** and delete",
+    "Demo Game/Scenes/FlappyBird.unity"
+)) {
+    Assert-ContainsLiteral "Full Demo separation guide" $fullDemoReadme $required
+}
+foreach ($required in @(
+    "LuauBehaviourRuntime",
+    "LuauBehaviour",
+    "Every lifecycle export is optional",
+    "GameObject:GetComponent(typeName)",
+    "Max Spawned Objects",
+    'same mutable `shared` table',
+    "mutually untrusted publishers",
+    "local gameState = shared",
+    'direct global access such as `shared.phase`'
+)) {
+    Assert-ContainsLiteral "Full Demo reusable Core guide" $fullDemoCoreReadme $required
+}
+foreach ($required in @(
+    "public sealed class LuauBehaviourRuntime : MonoBehaviour",
+    "BoundedInitializationOptions",
+    "UseFirstPartyBytecode = useFirstPartyBytecode",
+    "state.OpenLibrary(new LuauQuaternionLibrary())",
+    "state.OpenLibrary(new LuauInputLibrary())",
+    "shared = root.CreateTable();",
     "new LuauScriptScheduler(root)",
     '"Update"',
+    '"FixedUpdate"',
+    '"LateUpdate"',
     "WallClockLimit = TimeSpan.FromMilliseconds(2)",
     "InterruptCountLimit = 10_000",
+    "MaxResultCount = 0",
     "AggregateWallClockBudget = TimeSpan.FromMilliseconds(4)",
-    "LuauScriptPhaseFailureMode.DisableAndContinue"
+    "LuauScriptPhaseFailureMode.DisableAndContinue",
+    "Array.Sort(batch, CompareBehaviours);",
+    "await behaviour.InitializeAsync(",
+    "updatePhase.Dispatch((LuauValue)(double)Time.deltaTime);",
+    "fixedUpdatePhase.Dispatch((LuauValue)(double)Time.fixedDeltaTime);",
+    "lateUpdatePhase.Dispatch((LuauValue)(double)Time.deltaTime);",
+    "owner.DisableAfterFailure(exception);"
 )) {
-    Assert-ContainsLiteral "Luau Behaviour runtime sample" $luauBehaviourRuntimeSample $required
+    Assert-ContainsLiteral "Full Demo reusable runtime" $fullDemoRuntime $required
 }
+Assert-LiteralOrder `
+    "Full Demo runtime dependency-order teardown" `
+    $fullDemoRuntime `
+    @(
+        "scheduler?.Dispose();",
+        "snapshot[index]?.ShutdownFromRuntime();",
+        "shared?.Dispose();",
+        "root?.Dispose();")
 foreach ($required in @(
-    "LuauBehaviourRuntimeSample runtimeHost;",
+    "public sealed class LuauBehaviour : MonoBehaviour",
+    "LuauBehaviourRuntime runtimeHost;",
     "LuauAsset script;",
-    "SceneObjectReference[] sceneObjectReferences",
+    "int executionOrder;",
+    "ObjectReference[] objectReferences",
     "PrefabReference[] prefabReferences",
+    "int maxSpawnedObjects = 32;",
+    "spawnedObjects.Count >= maxSpawnedObjects",
     "CreateScriptInstanceAsync(",
     'thread["self"] = self;',
     'thread["refs"] = refs;',
+    'thread["shared"] = host.Shared;',
     'thread["spawnPrefab"] = spawnPrefab;',
-    "context.State.CreateHandle(spawned)",
-    'GetRequiredEntrypoint("update")',
-    "runtimeHost.Register(this, update, updateOrder)",
-    'TryGetEntrypoint("destroy"',
+    "LuauUnityCapabilities.CreateSupportedHandle(",
+    'TryGetEntrypoint(',
+    '"start"',
+    '"update"',
+    '"fixedUpdate"',
+    '"lateUpdate"',
+    '"collisionEnter2D"',
+    '"collisionExit2D"',
+    '"triggerEnter2D"',
+    '"triggerExit2D"',
+    '"destroy"',
+    "host.RegisterUpdate(",
+    "host.RegisterFixedUpdate(",
+    "host.RegisterLateUpdate(",
+    "collision.GetContact(0)",
+    "new NumericsVector3(point.x, point.y, 0f)",
+    "new NumericsVector3(normal.x, normal.y, 0f)",
+    "runtimeHost.InvocationOptions",
     "DestroySpawnedObjects();",
     "instance?.Dispose();"
 )) {
-    Assert-ContainsLiteral "Luau Behaviour component sample" $luauBehaviourSample $required
+    Assert-ContainsLiteral "Full Demo reusable behaviour" $fullDemoBehaviour $required
 }
-foreach ($forbidden in @("GameObject.Find", "FindObjectOfType", "FindFirstObjectByType", "Resources.Load", "static LuauBehaviourRuntimeSample")) {
-    Assert-NotContainsLiteral "Luau Behaviour sample" ($luauBehaviourRuntimeSample + $luauBehaviourSample) $forbidden
+foreach ($required in @(
+    "public static readonly LuauObjectDescriptor<GameObject> GameObjectDescriptor",
+    "public static readonly LuauObjectDescriptor<Transform> TransformDescriptor",
+    "public static readonly LuauObjectDescriptor<Rigidbody2D> Rigidbody2DDescriptor",
+    "public static readonly LuauObjectDescriptor<Collider2D> Collider2DDescriptor",
+    "public static readonly LuauObjectDescriptor<SpriteRenderer> SpriteRendererDescriptor",
+    "public static readonly LuauObjectDescriptor<AudioSource> AudioSourceDescriptor",
+    "public static readonly LuauObjectDescriptor<TextMesh> TextMeshDescriptor",
+    "LuauUnityObjectGuard.ThrowIfDestroyed",
+    '"name"',
+    '"tag"',
+    '"layer"',
+    '"activeSelf"',
+    '"activeInHierarchy"',
+    '"transform"',
+    '"SetActive"',
+    '"CompareTag"',
+    '"GetComponent"',
+    '"position"',
+    '"localPosition"',
+    '"rotation"',
+    '"localRotation"',
+    '"eulerAngles"',
+    '"localEulerAngles"',
+    '"localScale"',
+    '"forward"',
+    '"right"',
+    '"up"',
+    '"gameObject"',
+    '"Translate"',
+    '"Rotate"',
+    '"TransformPoint"',
+    '"InverseTransformPoint"',
+    '"linearVelocity"',
+    '"angularVelocity"',
+    '"gravityScale"',
+    '"simulated"',
+    '"AddForce"',
+    '"MovePosition"',
+    '"MoveRotation"',
+    '"WakeUp"',
+    '"Sleep"',
+    '"enabled"',
+    '"isTrigger"',
+    '"color"',
+    '"flipX"',
+    '"flipY"',
+    '"sortingOrder"',
+    '"hasClip"',
+    '"volume"',
+    '"pitch"',
+    '"loop"',
+    '"isPlaying"',
+    '"Play"',
+    '"Pause"',
+    '"Stop"',
+    '"text"',
+    '"fontSize"',
+    'case "Transform":',
+    'case "Rigidbody2D":',
+    'case "Collider2D":',
+    'case "SpriteRenderer":',
+    'case "AudioSource":',
+    'case "TextMesh":',
+    "ReturnOptionalHandle(",
+    "context.Return(LuauValue.Nil);",
+    "GameObject:GetComponent does not allow component type",
+    "requires finite vector components",
+    "internal static bool IsSupportedObject(",
+    "internal static LuauObjectHandle CreateSupportedHandle("
+)) {
+    Assert-ContainsLiteral "Full Demo Unity capability policy" $fullDemoCapabilities $required
 }
-Write-Host "PASS: tracked package docs, legal notices, trust guidance, and all three importable public-contract samples are complete."
+foreach ($forbidden in @(
+    '"parent"',
+    '"childCount"',
+    '"GetChild"',
+    '"Find"'
+)) {
+    Assert-NotContainsLiteral `
+        "Full Demo Transform capability traversal boundary" `
+        $fullDemoCapabilities `
+        $forbidden
+}
+foreach ($required in @(
+    "public static Quaternion ReadQuaternion(",
+    "public static void ReturnQuaternion(",
+    "public static Color ReadColor(",
+    "public static void ReturnColor(",
+    'ReadFiniteNumber(table, "x", "Quaternion")',
+    'ReadFiniteNumber(table, "w", "Quaternion")',
+    'ReadFiniteNumber(table, "r", "Color")',
+    'ReadFiniteNumber(table, "a", "Color")'
+)) {
+    Assert-ContainsLiteral "Full Demo copied table values" $fullDemoTableValues $required
+}
+foreach ($required in @(
+    '[LuauLibrary("Quaternion")]',
+    '[LuauMember("Euler")]',
+    '[LuauMember("AngleAxis")]',
+    '[LuauMember("Inverse")]',
+    '[LuauMember("Lerp")]',
+    '[LuauMember("Slerp")]',
+    '[LuauMember("Multiply")]',
+    '[LuauMember("ToEulerAngles")]'
+)) {
+    Assert-ContainsLiteral "Full Demo generated Quaternion library" $fullDemoQuaternion $required
+}
+foreach ($required in @(
+    '[LuauLibrary("Input")]',
+    '[LuauMember("touchCount")]',
+    '[LuauMember("GetKeyDown")]',
+    '[LuauMember("GetKey")]',
+    '[LuauMember("GetMouseButtonDown")]',
+    '[LuauMember("GetMouseButton")]',
+    '[LuauMember("GetTouchPhase")]',
+    "using UnityEngine.InputSystem;",
+    "Keyboard.current",
+    "Mouse.current",
+    "Touchscreen.current"
+)) {
+    Assert-ContainsLiteral "Full Demo generated Input library" $fullDemoInput $required
+}
+foreach ($forbidden in @("KeyCode", "UnityEngine.Input.", "Input.GetTouch(")) {
+    Assert-NotContainsLiteral `
+        "Full Demo legacy input manager boundary" `
+        $fullDemoInput `
+        $forbidden
+}
+$fullDemoCoreSource = $fullDemoRuntime +
+    $fullDemoBehaviour +
+    $fullDemoCapabilities +
+    $fullDemoTableValues +
+    $fullDemoQuaternion +
+    $fullDemoInput
+foreach ($forbidden in @(
+    "GameObject.Find",
+    "FindObjectOfType",
+    "FindFirstObjectByType",
+    "Resources.Load",
+    "System.Reflection",
+    "LuauEntity",
+    "Demo Game/"
+)) {
+    Assert-NotContainsLiteral "Full Demo reusable core" $fullDemoCoreSource $forbidden
+}
+$fullDemoGameReadme = Read-PackageText `
+    "Samples~/Full Luau Scripting Demo/Demo Game/README.md"
+$fullDemoGameController = Read-PackageText `
+    "Samples~/Full Luau Scripting Demo/Demo Game/Scripts/GameController.luau"
+$fullDemoPlayerController = Read-PackageText `
+    "Samples~/Full Luau Scripting Demo/Demo Game/Scripts/PlayerController.luau"
+$fullDemoPipeController = Read-PackageText `
+    "Samples~/Full Luau Scripting Demo/Demo Game/Scripts/PipeController.luau"
+foreach ($required in @(
+    '| `GameController.luau` | `-100`',
+    '| `PlayerController.luau` | `0`',
+    '| `PipeController.luau` | `100`',
+    '`shared.phase`',
+    '`shared.score`',
+    '`shared.round`',
+    "needs no hierarchy traversal",
+    "intentionally have no clips"
+)) {
+    Assert-ContainsLiteral "Full Demo game setup guide" $fullDemoGameReadme $required
+}
+foreach ($required in @(
+    'Input.GetKeyDown("Space")',
+    "Input.GetMouseButtonDown(0)",
+    "Input.touchCount > 0",
+    "local gameState = shared",
+    "refs.scoreText.text",
+    "refs.messageText.text",
+    'gameState.phase = "ready"',
+    "gameState.score = 0",
+    "gameState.round = 1",
+    "gameOverElapsed >= restartDelaySeconds"
+)) {
+    Assert-ContainsLiteral "Full Demo GameController Luau" $fullDemoGameController $required
+}
+foreach ($required in @(
+    'self:GetComponent("Rigidbody2D")',
+    "local gameState = shared",
+    "body.simulated = false",
+    "body.linearVelocity = vector.create(0, flapVelocity, 0)",
+    "body.gravityScale = gravityScale",
+    "birdTransform = self.transform",
+    "birdTransform.localRotation =",
+    "Quaternion.Euler(vector.create(",
+    "refs.flapAudio",
+    "refs.hitAudio",
+    "collisionEnter2D = function(",
+    'gameState.phase = "gameOver"'
+)) {
+    Assert-ContainsLiteral "Full Demo PlayerController Luau" $fullDemoPlayerController $required
+}
+foreach ($required in @(
+    "local gameState = shared",
+    'local pipePairPrefab = "pipePair"',
+    "spawnPrefab(pipePairPrefab)",
+    "spawned.transform",
+    "refs.bird.position.x",
+    "math.random()",
+    "fixedUpdate = function(fixedDeltaTime)",
+    "nextX < recycleX",
+    "nextX = pipePairs[otherIndex].position.x + pipeSpacing",
+    "gameState.score = (gameState.score or 0) + 1",
+    "refs.scoreAudio"
+)) {
+    Assert-ContainsLiteral "Full Demo PipeController Luau" $fullDemoPipeController $required
+}
+
+# The demo scene must actually exercise the controlled-spawning path the docs
+# advertise, with a finite cap rather than an unbounded one.
+$fullDemoScene = Read-PackageText `
+    "Samples~/Full Luau Scripting Demo/Demo Game/Scenes/FlappyBird.unity"
+foreach ($required in @(
+    "referenceName: pipePair",
+    "maxSpawnedObjects: 2"
+)) {
+    Assert-ContainsLiteral "Full Demo scene prefab-spawning wiring" $fullDemoScene $required
+}
+foreach ($forbidden in @("referenceName: pipePairOne", "referenceName: pipePairTwo")) {
+    Assert-NotContainsLiteral `
+        "Full Demo scene spawns pipe pairs instead of placing them" `
+        $fullDemoScene `
+        $forbidden
+}
+$fullDemoGameScripts = $fullDemoGameController + $fullDemoPlayerController + $fullDemoPipeController
+Assert-NotContainsLiteral "Full Demo Luau shared alias" $fullDemoGameScripts "shared."
+Assert-PackagePathAbsent "Samples~/Capability Binding"
+Assert-PackagePathAbsent "Samples~/Luau Behaviour"
+Write-Host "PASS: tracked package docs, legal notices, trust guidance, and both importable public-contract samples are complete."
 
 $forbiddenDirectoryNames = @(
     "Assets",
@@ -724,7 +1095,7 @@ Write-Host "PASS: the managed artifact envelope is versioned, bounded before all
 
 $artifactBaselines = @(
     @{ Path = "Runtime/Luau.dll"; Length = 276992L; Sha256 = "2EA5972C5205268275CA52CC3B87367E8FECC49F71CFCF534EBD36E2735A489D" },
-    @{ Path = "Runtime/Luau.xml"; Length = 175918L; Sha256 = "AFEF6ABD26CAA0167DD5FD2CABEE5AAFB64CF066D8446AAE20336AC78760C714" },
+    @{ Path = "Runtime/Luau.xml"; Length = 176129L; Sha256 = "645240C5529543C6484A03D1187D9CAE833BE2A255A3EEC158A487E33AB8CA57" },
     @{ Path = "Runtime/Luau.SourceGenerator.dll"; Length = 63488L; Sha256 = "E6EC90D4A4152CEE1D5EC5F5F48D6ACCB4DAFFEB2560183B08D0CD233101D419" },
     @{ Path = "Runtime/Plugins/win-x64/luau_host.dll"; Length = 995328L; Sha256 = "429671AE55387F2783C70526D18CAFB68253B04EEB278B638D57ED13C724F0D0" },
     @{ Path = "Runtime/Plugins/android-arm64/libluau_host.so"; Length = 866704L; Sha256 = "382907D397A5B3AEED0E7F74B8E917B027A9B563B3988EE080B147B7D4CC6266" },
@@ -895,7 +1266,12 @@ $assemblyNames = @(
 Assert-SequenceEqual `
     "Package assembly inventory" `
     $assemblyNames `
-    @("Luau.Interop", "Luau.Unity", "Luau.Unity.EditModeTests", "Luau.Unity.Editor")
+    @(
+        "Luau.Interop",
+        "Luau.Unity",
+        "Luau.Unity.EditModeTests",
+        "Luau.Unity.Editor",
+        "Luau.Unity.Samples.FullLuauScriptingDemo.Core")
 Write-Host "PASS: all package assemblies have explicit package-local dependency boundaries."
 
 $verificationRuntimeAsmdef = Read-IntegrationJson "Assets/Verification/Runtime/Luau.Unity.Verification.asmdef"
@@ -1143,6 +1519,40 @@ foreach ($required in @(
 }
 Assert-LiteralCount "Luau source access fail-closed guards" $asset "if (!IsSource)" 2
 Write-Host "PASS: public source access fails closed for bytecode and unknown serialized content kinds."
+
+$unityAuthoring = Read-PackageText "Runtime/LuauUnityAuthoring.cs"
+foreach ($required in @(
+    "public static class LuauUnityValue",
+    "public static Vector3 ReadVector3(LuauCallContext context, int index)",
+    "public static void ReturnVector3(LuauCallContext context, Vector3 value)",
+    "public static class LuauUnityObjectGuard",
+    "public static void ThrowIfDestroyed<T>(T target)",
+    "where T : UnityEngine.Object"
+)) {
+    Assert-ContainsLiteral "Unity capability authoring utilities" $unityAuthoring $required
+}
+foreach ($forbidden in @(
+    "LuauObjectDescriptor<GameObject>",
+    "LuauObjectDescriptor<Transform>",
+    "CreateHandle("
+)) {
+    Assert-NotContainsLiteral "Unity capability authoring utilities" $unityAuthoring $forbidden
+}
+$unityRuntimeSource = [string]::Join(
+    "`n",
+    @(Get-ChildItem -LiteralPath (Join-Path $packageRoot "Runtime") -Recurse -File -Filter "*.cs" |
+        ForEach-Object { [IO.File]::ReadAllText($_.FullName) }))
+foreach ($forbidden in @(
+    "LuauObjectDescriptor<GameObject>",
+    "LuauObjectDescriptor<Transform>",
+    "CreateHandle(this LuauState state, GameObject",
+    "CreateHandle(this LuauState state, Transform"
+)) {
+    Assert-NotContainsLiteral "Unity runtime capability policy" $unityRuntimeSource $forbidden
+}
+Assert-PackagePathAbsent "Runtime/LuauUnityObjectBindings.cs"
+Assert-PackagePathAbsent "Runtime/LuauUnityObjectBindings.cs.meta"
+Write-Host "PASS: Unity authoring utilities ship without package-owned GameObject or Transform capability policies."
 
 $stateExtensions = Read-PackageText "Runtime/LuauStateExtensions.cs"
 Assert-ContainsLiteral "Luau asset execution extensions" $stateExtensions "state.DoString("
@@ -1494,11 +1904,16 @@ Assert-ContainsLiteral `
 Assert-ContainsLiteral `
     "Unity public API approval inventory" `
     $unityPublicApiTests `
-    '"faa1316c54571151a0964575c33debce2f82d9893fe9e259e99df9d5c38bcb72"'
-Assert-NotContainsLiteral `
-    "Unity public API approval inventory" `
-    $unityPublicApiTests `
+    '"dce9e76473037c313507561fc889b2eb3bc6c4c9765b9b49efecf866fb2b541b"'
+foreach ($retiredApiHash in @(
+    '"faa1316c54571151a0964575c33debce2f82d9893fe9e259e99df9d5c38bcb72"',
     '"5918500aa9d9ec052e02606634530620de3f5f5f47e6b83d1b8901554de87692"'
+)) {
+    Assert-NotContainsLiteral `
+        "Unity public API approval inventory" `
+        $unityPublicApiTests `
+        $retiredApiHash
+}
 Write-Host "PASS: managed and Unity public API approval inventories match the Stage 6 ownership surface."
 
 $headerPath = Get-RequiredFile $hostRoot "include/luau_host.h" "Native host ABI header"
@@ -1641,7 +2056,70 @@ Assert-ContainsLiteral `
     "Package consumer module-bundle adapter" `
     $consumerApiProbe `
     "return LuauUnity.CompileModuleBundleAsync("
-Write-Host "PASS: the integration project consumes the standalone package and the generated-consumer fixture remains a source-only probe."
+$consumerRuntimeProbe = Read-RepositoryText "tests/Luau.Unity.PackageConsumerProbe/Editor/RunConsumerProbe.cs"
+foreach ($required in @(
+    "ValidateImportedGettingStartedLibrary();",
+    "Luau.Unity.Samples.GettingStarted.GettingStartedLibrary, Assembly-CSharp",
+    "return sample.double(21), sample.Double == nil",
+    "sample.double name override.",
+    "ValidateImportedFullDemo();",
+    "Luau.Unity.Samples.FullLuauScriptingDemo.Core",
+    'namespaceName + "LuauBehaviourRuntime, " + coreAssembly',
+    'namespaceName + "LuauBehaviour, " + coreAssembly',
+    "ValidateUnsupportedBehaviourReference(behaviourType);",
+    '"ValidateBindingsAndCreatePrefabCatalog"',
+    '"unsupportedCamera"',
+    '"unsupported type ''Camera''"',
+    "Luau.Unity.Samples.FullLuauScriptingDemo.LuauUnityCapabilities",
+    '"GameObjectDescriptor"',
+    '"TransformDescriptor"',
+    '"Rigidbody2DDescriptor"',
+    '"Collider2DDescriptor"',
+    '"SpriteRendererDescriptor"',
+    '"AudioSourceDescriptor"',
+    '"TextMeshDescriptor"',
+    "ValidateGeneratedFullDemoLibraries(thread);",
+    "Quaternion.AngleAxis",
+    "Quaternion.Inverse",
+    "Quaternion.Lerp",
+    "Quaternion.Slerp",
+    "Quaternion.Multiply",
+    "Quaternion.ToEulerAngles",
+    "type(Input.GetKeyDown) == 'function'",
+    "Input.touchCount >= 0",
+    "ValidateSharedTable(root);",
+    "local sharedState = shared",
+    "sharedState.score += 1",
+    "privateValue == nil",
+    "local object = gameObject",
+    "object:SetActive(false)",
+    "object:GetComponent('Rigidbody2D')",
+    "local textObject = textGameObject",
+    "textObject:GetComponent('TextMesh')",
+    "local object = emptyGameObject",
+    "object:GetComponent('AudioSource') == nil",
+    "object:GetComponent('Camera')",
+    "local target = transform",
+    "target.localPosition = vector.create(1, 2, 3)",
+    "target.localScale = vector.create(2, 3, 4)",
+    "target:Translate(vector.create(4, 5, 6))",
+    "target.localRotation = ",
+    "target.gameObject",
+    "local body = rigidbody",
+    "body.linearVelocity = vector.create(4, 5, 99)",
+    "target.isTrigger = true",
+    "local renderer = spriteRenderer",
+    "renderer.color = { r = 0.1",
+    "local audio = audioSource",
+    "audio:Play()",
+    "local text = textMesh",
+    "text.text = 'Score: 42'",
+    "UnityEngine.Object.DestroyImmediate(destroyedTarget)",
+    "exception.InnerException is MissingReferenceException"
+)) {
+    Assert-ContainsLiteral "Imported Full Demo capability probe" $consumerRuntimeProbe $required
+}
+Write-Host "PASS: the integration project consumes the standalone package and the generated consumer compiles the reusable Core and exercises all of its exported Unity capability policies."
 
 $operationalFiles = @(
     "README.md",
@@ -1803,7 +2281,19 @@ foreach ($required in @(
     "function Resolve-PackageContentRoot",
     'PackageSource',
     '$resolvedPackageJsonPath = Join-Path $packageContentRoot "package.json"',
+    '$declaredSamples = @($packageMetadata.samples)',
+    '$expectedSampleNames = @("Getting Started", "Full Luau Scripting Demo")',
+    '$expectedSamplePaths = @(',
+    '"Samples~/Full Luau Scripting Demo")',
+    'foreach ($sample in $declaredSamples)',
     '$sampleSource = [System.IO.Path]::GetFullPath((Join-Path $packageContentRoot $sample.path))',
+    '$demoGameImport = [System.IO.Path]::GetFullPath(',
+    '(Join-Path $fullDemoImport "Demo Game"))',
+    'Assert-StrictDescendant $demoGameImport $projectPath',
+    'Remove-Item -LiteralPath $demoGameImport -Recurse -Force',
+    'Remove-Item -LiteralPath $demoGameMetaImport -Force',
+    '"com.unity.modules.audio" = "1.0.0"',
+    '"com.unity.modules.physics2d" = "1.0.0"',
     '(Join-Path $packageContentRoot "Runtime/Luau.xml")',
     '[int] $UnityTimeoutMinutes = 20',
     '$timeoutMilliseconds = [int]([TimeSpan]::FromMinutes($UnityTimeoutMinutes).TotalMilliseconds)',
@@ -1832,6 +2322,27 @@ $disposableHost = Read-RepositoryText "tools/Test-UnityHost.ps1"
 Assert-ContainsLiteral "Disposable host integration source" $disposableHost 'Join-Path $repositoryRoot "tests/Luau.Unity.Integration"'
 Assert-ContainsLiteral "Disposable host package source" $disposableHost 'Join-Path $repositoryRoot "Luau.Unity"'
 Assert-ContainsLiteral "Disposable host staged package" $disposableHost 'Join-Path $projectRoot "Packages/$luauPackageName"'
+foreach ($required in @(
+    "function Import-DeclaredPackageSamples",
+    '$declaredSamples = @($package.samples)',
+    '$expectedSampleNames = @("Getting Started", "Full Luau Scripting Demo")',
+    '$expectedSamplePaths = @(',
+    '"Samples~/Full Luau Scripting Demo")',
+    '"Samples/Luau.Unity/" + $package.version',
+    'Join-Path $StagedPackage $sample.path',
+    'Join-Path $sampleImportRoot $sample.displayName',
+    'foreach ($sample in $declaredSamples)',
+    '-StagedPackage $stagedPackage'
+)) {
+    Assert-ContainsLiteral "Disposable host imported samples" $disposableHost $required
+}
+Assert-LiteralOrder `
+    "Disposable host imports samples before every Unity gate" `
+    $disposableHost `
+    @(
+        '-StagedPackage $stagedPackage',
+        '$runUnity =')
+Write-Host "PASS: disposable Windows and Android IL2CPP host gates compile both exact imported package samples."
 Write-Host "PASS: operational scripts use only final package, integration-project, interop, plugin, and upstream paths."
 
 $managedWorkflow = Read-RepositoryText ".github/workflows/validate-managed-package.yml"
