@@ -13,7 +13,7 @@ breaking changes.
 In Package Manager, choose **Add package from git URL** and use the exact tag:
 
 ```text
-https://github.com/Quantum-Lion-Labs/Luau-Unity.git?path=Luau.Unity#v0.2.0
+https://github.com/Quantum-Lion-Labs/Luau-Unity.git?path=Luau.Unity#v0.3.0
 ```
 
 The package ID is `com.qll.luau.unity`. Luau.Unity is developed by

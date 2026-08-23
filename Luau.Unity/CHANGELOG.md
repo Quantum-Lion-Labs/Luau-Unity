@@ -4,7 +4,7 @@ All notable package changes are recorded here. The package follows semantic
 versioning while in preview; preview releases may make explicitly documented
 API or ABI breaks.
 
-## [Unreleased]
+## [0.3.0] - 2026-08-22
 
 ### Added
 
@@ -84,4 +84,5 @@ API or ABI breaks.
   paths.
 - Verification-only smoke types from the product API inventory.
 
+[0.3.0]: https://github.com/Quantum-Lion-Labs/Luau-Unity/releases/tag/v0.3.0
 [0.2.0]: https://github.com/Quantum-Lion-Labs/Luau-Unity/releases/tag/v0.2.0

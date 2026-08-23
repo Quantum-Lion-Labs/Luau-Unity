@@ -53,7 +53,7 @@ loudly rather than at a random call site.
 In Unity Package Manager, choose **Add package from git URL** and enter:
 
 ```text
-https://github.com/Quantum-Lion-Labs/Luau-Unity.git?path=Luau.Unity#v0.2.0
+https://github.com/Quantum-Lion-Labs/Luau-Unity.git?path=Luau.Unity#v0.3.0
 ```
 
 Or add it to `Packages/manifest.json`:
@@ -61,7 +61,7 @@ Or add it to `Packages/manifest.json`:
 ```json
 {
   "dependencies": {
-    "com.qll.luau.unity": "https://github.com/Quantum-Lion-Labs/Luau-Unity.git?path=Luau.Unity#v0.2.0"
+    "com.qll.luau.unity": "https://github.com/Quantum-Lion-Labs/Luau-Unity.git?path=Luau.Unity#v0.3.0"
   }
 }
 ```
