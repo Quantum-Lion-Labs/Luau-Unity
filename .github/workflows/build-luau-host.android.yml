@@ -36,6 +36,11 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y ninja-build
 
+      - name: Install .NET SDK
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          dotnet-version: 9.0.306
+
       - name: Install approved Android NDK
         id: setup-ndk
         uses: nttld/setup-ndk@ed92fe6cadad69be94a966a7ee3271275e62f779 # v1.6.0
@@ -61,28 +66,13 @@ jobs:
         run: cmake --install out/build/${{ matrix.preset }}
 
       - name: Write validated artifact and ABI manifest
-        shell: pwsh
-        run: |
-          & ./native/luau-host/cmake/Write-ArtifactManifest.ps1 `
-            -BinaryPath native/luau-host/out/install/${{ matrix.preset }}/libluau_host.so `
-            -Platform ${{ matrix.platform }} `
-            -Configuration Release `
-            -AndroidApi 26 `
-            -AndroidNdk 27.2.12479018 `
-            -OutputPath native/luau-host/out/install/${{ matrix.preset }}/luau_host.manifest.json
+        run: dotnet run --project tools/Luau.Tooling --configuration Release -- artifact-manifest --binary native/luau-host/out/install/${{ matrix.preset }}/libluau_host.so --platform ${{ matrix.platform }} --configuration Release --android-api 26 --android-ndk 27.2.12479018 --output native/luau-host/out/install/${{ matrix.preset }}/luau_host.manifest.json
 
       - name: Require current shipped Android plugin
-        shell: pwsh
-        run: >-
-          & ./tools/Copy-NativeArtifactsToUnity.ps1
-          -Platform ${{ matrix.platform }}
-          -Check
+        run: dotnet run --project tools/Luau.Tooling --configuration Release -- native-artifacts --platform ${{ matrix.platform }} --check
 
       - name: Shape stripped shipping host and external symbols
-        shell: pwsh
-        run: >-
-          & ./tools/Copy-NativeArtifactsToUnity.ps1
-          -Platform ${{ matrix.platform }}
+        run: dotnet run --project tools/Luau.Tooling --configuration Release -- native-artifacts --platform ${{ matrix.platform }}
 
       - name: Upload unstripped host, audited shipping output, and symbols
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

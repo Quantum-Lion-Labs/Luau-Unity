@@ -63,6 +63,19 @@
       }
     },
     {
+      "name": "linux-x64",
+      "displayName": "Linux x64 Luau host for local development",
+      "inherits": "host-base",
+      "generator": "Ninja",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_C_COMPILER": "clang-18",
+        "CMAKE_CXX_COMPILER": "clang++-18",
+        "LUAU_HOST_ENABLE_SANITIZERS": "OFF",
+        "LUAU_HOST_BUILD_FUZZERS": "OFF"
+      }
+    },
+    {
       "name": "android-arm64",
       "displayName": "Android ARM64 Luau host",
       "inherits": "android-host-base",
@@ -129,6 +142,18 @@
         "luau_host_export_audit",
         "luau_host_compatibility_audit"
       ]
+    },
+    {
+      "name": "linux-x64",
+      "configurePreset": "linux-x64",
+      "targets": [
+        "luau_host",
+        "luau_host_c_header_compile",
+        "luau_host_conformance",
+        "luau_host_invalid_abi_fixtures",
+        "luau_host_export_audit",
+        "luau_host_compatibility_audit"
+      ]
     }
   ],
   "testPresets": [
@@ -143,6 +168,13 @@
     {
       "name": "linux-sanitize",
       "configurePreset": "linux-sanitize",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "linux-x64",
+      "configurePreset": "linux-x64",
       "output": {
         "outputOnFailure": true
       }

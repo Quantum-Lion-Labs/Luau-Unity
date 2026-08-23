@@ -121,9 +121,14 @@ namespace Luau.Unity
             return GetRecommendedCompilationOptions(RuntimePlatform.WindowsPlayer);
 #elif UNITY_ANDROID
             return GetRecommendedCompilationOptions(RuntimePlatform.Android);
+#elif UNITY_EDITOR_LINUX
+            return GetRecommendedCompilationOptions(RuntimePlatform.LinuxEditor);
+#elif UNITY_STANDALONE_LINUX
+            return GetRecommendedCompilationOptions(RuntimePlatform.LinuxPlayer);
 #else
             throw new PlatformNotSupportedException(
-                "Background Luau compilation is maintained for Windows x64 and Android ARM64/x64 only; " +
+                "Background Luau compilation is maintained for Windows x64 and Android ARM64/x64, " +
+                "with Linux x64 enabled for development validation; " +
                 "the current Unity target is not maintained.");
 #endif
         }
@@ -133,18 +138,21 @@ namespace Luau.Unity
         {
             var windows = platform == RuntimePlatform.WindowsEditor ||
                 platform == RuntimePlatform.WindowsPlayer;
-            if (!windows && platform != RuntimePlatform.Android)
+            var linux = platform == RuntimePlatform.LinuxEditor ||
+                platform == RuntimePlatform.LinuxPlayer;
+            if (!windows && !linux && platform != RuntimePlatform.Android)
             {
                 throw new PlatformNotSupportedException(
-                    "Background Luau compilation is maintained for Windows x64 and Android ARM64/x64 only; " +
+                    "Background Luau compilation is maintained for Windows x64 and Android ARM64/x64, " +
+                    "with Linux x64 enabled for development validation; " +
                     "the current Unity platform is " + platform + ".");
             }
 
             return new LuauThreadedCompilationOptions
             {
                 WorkerCount = 1,
-                MaxQueuedRequestCount = windows ? 32 : 16,
-                MaxQueuedSourceBytes = windows ? 8L * 1024 * 1024 : 4L * 1024 * 1024,
+                MaxQueuedRequestCount = windows || linux ? 32 : 16,
+                MaxQueuedSourceBytes = windows || linux ? 8L * 1024 * 1024 : 4L * 1024 * 1024,
                 MaxSourceBytesPerRequest = 1024 * 1024,
                 MaxBytecodeBytesPerResult = 4 * 1024 * 1024,
                 ShutdownTimeout = CompilationServiceDrainTimeout,

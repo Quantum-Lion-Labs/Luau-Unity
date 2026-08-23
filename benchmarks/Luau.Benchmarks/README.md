@@ -3,17 +3,17 @@
 This net9 console harness measures the same `netstandard2.1` managed assembly
 consumed by Unity. It has no benchmark-framework or product dependency beyond
 the repository projects, and the harness interop project copies the explicitly
-selected checked-in Windows native plugin.
+selected platform-native host.
 
 Run a quick validation pass from the repository root:
 
-```powershell
+```bash
 dotnet run --project benchmarks/Luau.Benchmarks -c Release -- --quick
 ```
 
 Run the release evidence pass with an explicit sample count and output:
 
-```powershell
+```bash
 dotnet run --project benchmarks/Luau.Benchmarks -c Release -- --warmup 250 --iterations 5000 --output artifacts/stage-6-benchmarks/release.json
 ```
 

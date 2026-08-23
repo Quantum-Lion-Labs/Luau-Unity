@@ -13,6 +13,8 @@ namespace Luau.Unity.Tests
     {
         [TestCase(RuntimePlatform.WindowsEditor, 32, 8L * 1024 * 1024)]
         [TestCase(RuntimePlatform.WindowsPlayer, 32, 8L * 1024 * 1024)]
+        [TestCase(RuntimePlatform.LinuxEditor, 32, 8L * 1024 * 1024)]
+        [TestCase(RuntimePlatform.LinuxPlayer, 32, 8L * 1024 * 1024)]
         [TestCase(RuntimePlatform.Android, 16, 4L * 1024 * 1024)]
         public void RecommendedOptionsMatchMaintainedPlatformPolicy(
             RuntimePlatform platform,
@@ -33,7 +35,7 @@ namespace Luau.Unity.Tests
         public void RecommendedOptionsRejectUnsupportedUnityPlatforms()
         {
             Assert.Throws<PlatformNotSupportedException>(() =>
-                LuauUnity.GetRecommendedCompilationOptions(RuntimePlatform.LinuxEditor));
+                LuauUnity.GetRecommendedCompilationOptions(RuntimePlatform.OSXEditor));
         }
 
         [Test]

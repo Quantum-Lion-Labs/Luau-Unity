@@ -7,7 +7,10 @@
     <Nullable>enable</Nullable>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <IsPackable>false</IsPackable>
-    <LuauHostNativePath Condition="'$(LuauHostNativePath)' == ''">$([System.IO.Path]::GetFullPath('$(MSBuildThisFileDirectory)..\..\Luau.Unity\Runtime\Plugins\win-x64\luau_host.dll'))</LuauHostNativePath>
+    <LuauHostNativeFileName Condition="$([MSBuild]::IsOSPlatform('Windows'))">luau_host.dll</LuauHostNativeFileName>
+    <LuauHostNativeFileName Condition="$([MSBuild]::IsOSPlatform('Linux'))">libluau_host.so</LuauHostNativeFileName>
+    <LuauHostNativePath Condition="'$(LuauHostNativePath)' == '' and $([MSBuild]::IsOSPlatform('Windows'))">$([System.IO.Path]::GetFullPath('$(MSBuildThisFileDirectory)..\..\Luau.Unity\Runtime\Plugins\win-x64\luau_host.dll'))</LuauHostNativePath>
+    <LuauHostNativePath Condition="'$(LuauHostNativePath)' == '' and $([MSBuild]::IsOSPlatform('Linux'))">$([System.IO.Path]::GetFullPath('$(MSBuildThisFileDirectory)..\..\native\luau-host\out\install\linux-x64\libluau_host.so'))</LuauHostNativePath>
   </PropertyGroup>
 
   <ItemGroup>
@@ -21,11 +24,13 @@
 
   <ItemGroup>
     <None Include="$(LuauHostNativePath)"
-          Link="luau_host.dll"
+          Link="$(LuauHostNativeFileName)"
           CopyToOutputDirectory="Always" />
   </ItemGroup>
 
   <Target Name="ValidateLuauHostNativeArtifact" BeforeTargets="PrepareForBuild">
+    <Error Condition="'$(LuauHostNativeFileName)' == ''"
+           Text="Luau.Interop does not define a native host layout for this operating system. Set LuauHostNativePath and LuauHostNativeFileName explicitly." />
     <Error Condition="!$([System.IO.Path]::IsPathRooted('$(LuauHostNativePath)'))"
            Text="LuauHostNativePath must be an absolute path. Selected value: '$(LuauHostNativePath)'." />
     <Error Condition="!Exists('$(LuauHostNativePath)')"

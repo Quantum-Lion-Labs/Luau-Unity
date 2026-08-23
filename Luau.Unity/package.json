@@ -4,7 +4,7 @@
     "displayName": "Luau.Unity",
     "description": "A bounded, Unity-first managed host for the official Luau VM, with source-generated APIs and maintained Windows and Android native plugins.",
     "unity": "6000.3",
-    "unityRelease": "19f1",
+    "unityRelease": "0f1",
     "license": "MIT",
     "licensesUrl": "https://github.com/Quantum-Lion-Labs/Luau-Unity/blob/v0.2.0/Luau.Unity/LICENSE.md",
     "documentationUrl": "https://github.com/Quantum-Lion-Labs/Luau-Unity/blob/v0.2.0/Luau.Unity/Documentation~/getting-started.md",

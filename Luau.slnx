@@ -15,8 +15,10 @@
     <Project Path="tests/Luau.HostSoak/Luau.HostSoak.csproj" />
     <Project Path="tests/Luau.SourceGenerator.Tests/Luau.SourceGenerator.Tests.csproj" />
     <Project Path="tests/Luau.Tests/Luau.Tests.csproj" />
+    <Project Path="tests/Luau.Tooling.Tests/Luau.Tooling.Tests.csproj" />
   </Folder>
   <Folder Name="/tools/">
+    <Project Path="tools/Luau.Tooling/Luau.Tooling.csproj" />
     <Project Path="tools/harness/Luau.Interop.csproj" />
   </Folder>
 </Solution>

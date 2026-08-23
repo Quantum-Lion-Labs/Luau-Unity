@@ -96,9 +96,9 @@ covers:
 - required feature flags and value tags;
 - pinned upstream revision and approved host build fingerprint.
 
-An incompatible plugin fails before VM use. Keep
-`native/luau-host/cmake/Write-ArtifactManifest.ps1` pointed at the canonical
-package interop types and the managed ABI verifier whenever those files move.
+An incompatible plugin fails before VM use. Keep the `artifact-manifest`
+command in `tools/Luau.Tooling` pointed at the canonical package interop types
+and the managed ABI verifier whenever those files move.
 
 ### 3.4 Maintained artifacts
 
@@ -110,6 +110,11 @@ package interop types and the managed ABI verifier whenever those files move.
 
 These are the only maintained targets. Preserve each binary's `.meta` file and
 review CPU/platform importer settings when installing a rebuilt artifact.
+
+Linux x64 is a development-validation target, not a fourth package target. Its
+Release `.so` is installed under `native/luau-host/out`, then copied only into
+generated disposable Unity projects. Package validation rejects Linux plugin
+content under `Luau.Unity`.
 
 ## 4. Package interop
 
@@ -407,8 +412,8 @@ The final build relationship is:
 - `src/Luau` builds one `netstandard2.1` artifact for Unity;
 - net9 tests consume that exact target rather than a separate net9 library build;
 - `Luau.SourceGenerator` remains a Unity-compatible analyzer assembly;
-- the explicit artifact script checks/copies only `Luau.dll` and
-  `Luau.SourceGenerator.dll`;
+- the explicit .NET tooling command checks/copies only `Luau.dll`, `Luau.xml`,
+  and `Luau.SourceGenerator.dll`;
 - package interop source is never copied because the package owns it;
 - ordinary build/test commands never mutate package artifacts.
 
@@ -419,28 +424,33 @@ checked-in package DLLs. Do not hide refresh behavior in an MSBuild target.
 
 ### 12.1 Fast managed validation
 
-```powershell
+```bash
+dotnet restore Luau.slnx
 dotnet test Luau.slnx --no-restore
 ```
 
 This covers managed values, lifecycle, hardening, operation modes, require,
 callbacks, ABI rejection, background-compilation admission/cancellation races,
 parallel determinism, and generator behavior without launching Unity.
+On Linux, install the `linux-x64` preset first so the harness has its local
+development host; `validate-linux` performs that ordering automatically.
 
 ### 12.2 Explicit managed refresh
 
-```powershell
-powershell -ExecutionPolicy Bypass -File tools/Copy-DotNetArtifactsToUnity.ps1 -Configuration Release
+```bash
+dotnet run --project tools/Luau.Tooling -- managed-artifacts --configuration Release
+dotnet run --project tools/Luau.Tooling -- managed-artifacts --configuration Release --check
 ```
 
-The command is the only normal path that may update the two checked-in managed
-artifacts. Its check mode must fail when source and package outputs differ.
+The command is the only normal path that may update the checked-in managed
+artifacts and XML documentation. Its check mode must fail when source and
+package outputs differ.
 
 ### 12.3 Native validation
 
 Run from `native/luau-host`:
 
-```powershell
+```bash
 cmake --preset windows-x64
 cmake --build --preset windows-x64 --parallel
 ctest --preset windows-x64
@@ -450,6 +460,12 @@ cmake --build --preset android-arm64 --parallel
 
 cmake --preset android-x64
 cmake --build --preset android-x64 --parallel
+
+# Local Linux development host; never copied into the package.
+cmake --preset linux-x64
+cmake --build --preset linux-x64 --parallel
+ctest --preset linux-x64
+cmake --install out/build/linux-x64
 ```
 
 Installing a rebuilt plugin is a deliberate action separate from managed
@@ -459,9 +475,12 @@ calls and exact serial/parallel output comparison.
 
 ### 12.4 Package validation
 
-```powershell
-powershell -ExecutionPolicy Bypass -File tools/Test-UnityPackageStatic.ps1
-powershell -ExecutionPolicy Bypass -File tools/Test-UnityPackageConsumer.ps1
+```bash
+dotnet run --project tools/Luau.Tooling -- package-static
+dotnet run --project tools/Luau.Tooling -- package-release
+dotnet run --project tools/Luau.Tooling -- package-consumer \
+  --unity /path/to/6000.3.xf1/Editor/Unity \
+  --unity-version 6000.3.xf1
 ```
 
 The static check validates package boundaries and importer metadata without
@@ -473,12 +492,24 @@ second maintained Unity project.
 
 ### 12.5 Unity validation
 
-Run from `tests/Luau.Unity.Integration`:
+On Linux, run the integration tests through a disposable staged project:
 
-```powershell
-ucp compile
-ucp run-tests --mode edit
+```bash
+dotnet run --project tools/Luau.Tooling -- unity-test \
+  --compile --editmode --linux-smoke \
+  --unity /path/to/6000.3.xf1/Editor/Unity \
+  --unity-version 6000.3.xf1
 ```
+
+`validate-linux` combines the native build/install, complete .NET suite, host
+soak, package gates, generated consumer, Unity compile/EditMode suite, and Linux
+x64 IL2CPP smoke. See [Linux development](linux-development.md).
+
+The same `unity-test` command preserves the maintained player-smoke entry
+points: use `--windows-smoke`, `--android-arm64-smoke`, or
+`--android-x64-smoke`. Android gates accept `--adb` plus the corresponding
+`--android-arm64-serial` or `--android-x64-serial`; target selection still
+requires a uniquely eligible online Quest or x64 emulator.
 
 The required player gates are Windows x64 IL2CPP, Android ARM64 IL2CPP on a
 device, and Android x64 on an emulator. The disposable smoke temporarily enables
