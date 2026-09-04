@@ -15,7 +15,7 @@ static class ArtifactSeedCorpus
     // parser seed explicit makes an ABI/codec change require a reviewed corpus
     // update instead of silently losing deep parser coverage.
     const ulong UpstreamRevisionHash = 0xc45f010aabf167acUL;
-    const ulong HostBuildFingerprint = 0xe22f181ac247f52aUL;
+    const ulong HostBuildFingerprint = 0x2a4ca2b50dc114daUL;
 
     public static IReadOnlyList<ArtifactSeed> CreateStructuralSeeds()
     {

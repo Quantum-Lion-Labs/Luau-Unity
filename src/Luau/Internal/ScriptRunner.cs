@@ -257,7 +257,7 @@ internal static class ScriptRunner
                 return GetResultCount(operation, state, baseTop);
             }
 
-            if (status != LuauHostStatus.Yielded)
+            if (status != LuauHostStatus.Yielded && status != LuauHostStatus.Break)
             {
                 ThrowExecutionFailure(operation, state);
             }
@@ -341,7 +341,7 @@ internal static class ScriptRunner
                     }).ConfigureAwait(false);
             }
 
-            if (status != LuauHostStatus.Yielded)
+            if (status != LuauHostStatus.Yielded && status != LuauHostStatus.Break)
             {
                 await LuauContinuationDispatcher.InvokeAsync(
                     scheduler,
@@ -396,7 +396,7 @@ internal static class ScriptRunner
                         var invocation = await LuauContinuationDispatcher.InvokeAsync(
                             scheduler,
                             () => callback(
-                                operation.State,
+                                GetCallbackState(operation),
                                 operation.CancellationToken)).ConfigureAwait(false);
                         argumentCount = await invocation.ConfigureAwait(false);
                     }
@@ -417,7 +417,7 @@ internal static class ScriptRunner
                             var callbackResultCount = argumentCount;
                             await LuauContinuationDispatcher.InvokeAsync(
                                 scheduler,
-                                () => ValidateResultCount(operation, state, callbackResultCount)).ConfigureAwait(false);
+                                () => ValidateResultCount(operation, GetResumeTarget(operation, state), callbackResultCount)).ConfigureAwait(false);
                         }
                         catch (Exception exception)
                         {
@@ -587,20 +587,21 @@ internal static class ScriptRunner
         IntPtr from)
     {
         using var access = operation.Context.EnterOperationNativeAccess(operation);
+        var target = luau_host_resume_target((LuauHostState*)state);
         // The value itself is allocation-free, but the protected bridge also
         // reserves its stack slot inside a native error frame. Rich callback
         // details remain attached to the managed exception; a Luau pcall
         // receives only this opaque non-nil failure token.
         LuauNativeProtection.Prepare(operation.Context);
         var pushStatus = luau_host_push_light_userdata(
-            (LuauHostState*)state,
+            target,
             operation.CallbackFailureToken.ToPointer(),
             0);
         try
         {
             LuauNativeProtection.ThrowIfFailed(
                 operation.State,
-                (LuauHostState*)state,
+                target,
                 pushStatus,
                 "inject a managed callback failure",
                 operation.ChunkName);
@@ -724,6 +725,19 @@ internal static class ScriptRunner
     {
         using var access = operation.Context.EnterOperationNativeAccess(operation);
         return luau_host_stack_get_top((LuauHostState*)state);
+    }
+
+    static unsafe IntPtr GetResumeTarget(ScriptOperation operation, IntPtr state)
+    {
+        using var access = operation.Context.EnterOperationNativeAccess(operation);
+        return (IntPtr)luau_host_resume_target((LuauHostState*)state);
+    }
+
+    static unsafe LuauState GetCallbackState(ScriptOperation operation)
+    {
+        using var access = operation.Context.EnterOperationNativeAccess(operation);
+        var target = luau_host_resume_target((LuauHostState*)operation.ThreadPointer);
+        return LuauState.GetCachedState(target, operation.Context);
     }
 
     static unsafe void SetTop(ScriptOperation operation, IntPtr state, int top)

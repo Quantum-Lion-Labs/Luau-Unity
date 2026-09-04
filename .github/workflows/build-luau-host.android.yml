@@ -3,6 +3,11 @@ name: Build Luau Host - Android
 on:
   workflow_call:
   workflow_dispatch:
+    inputs:
+      refresh-artifacts:
+        description: Build replacement shipping artifacts for a source change
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -69,6 +74,7 @@ jobs:
         run: dotnet run --project tools/Luau.Tooling --configuration Release -- artifact-manifest --binary native/luau-host/out/install/${{ matrix.preset }}/libluau_host.so --platform ${{ matrix.platform }} --configuration Release --android-api 26 --android-ndk 27.2.12479018 --output native/luau-host/out/install/${{ matrix.preset }}/luau_host.manifest.json
 
       - name: Require current shipped Android plugin
+        if: ${{ !inputs.refresh-artifacts }}
         run: dotnet run --project tools/Luau.Tooling --configuration Release -- native-artifacts --platform ${{ matrix.platform }} --check
 
       - name: Shape stripped shipping host and external symbols

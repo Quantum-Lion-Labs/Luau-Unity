@@ -3,6 +3,11 @@ name: Build Luau Host - Windows
 on:
   workflow_call:
   workflow_dispatch:
+    inputs:
+      refresh-artifacts:
+        description: Build replacement shipping artifacts for a source change
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -72,6 +77,7 @@ jobs:
         run: dotnet run --project tools/Luau.Tooling --configuration Release -- artifact-manifest --binary native/luau-host/out/install/windows-x64/luau_host.dll --platform win-x64 --configuration Release --output native/luau-host/out/install/windows-x64/luau_host.manifest.json
 
       - name: Require current shipped Windows plugin
+        if: ${{ !inputs.refresh-artifacts }}
         run: dotnet run --project tools/Luau.Tooling --configuration Release -- native-artifacts --platform win-x64 --check
 
       - name: Shape shipping host and external symbols

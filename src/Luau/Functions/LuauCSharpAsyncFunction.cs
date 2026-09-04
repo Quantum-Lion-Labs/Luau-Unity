@@ -72,11 +72,9 @@ internal sealed unsafe class LuauCSharpAsyncFunction : LuauFunction, ILuauManage
             // observed LUA_YIELD, so synchronous portions and fast continuations
             // can safely use the callback state.
             operation.QueueAsyncCallback(registration);
-            // Preserve the Luau arguments as the internal yield payload. The
-            // runner does not expose this yield to the host; it dispatches the
-            // managed callback after luau_host_resume has unwound, where generated
-            // async wrappers can safely read the original argument stack.
-            return luau_host_yield(l, luau_host_stack_get_top(l));
+            // A host suspension keeps the argument stack on this coroutine and
+            // propagates through coroutine.resume/wrap without exposing a yield.
+            return luau_host_suspend(l);
         }
         catch (Exception ex)
         {
@@ -89,7 +87,7 @@ internal sealed unsafe class LuauCSharpAsyncFunction : LuauFunction, ILuauManage
     {
         if (luau_host_is_yieldable(state) != 0)
         {
-            return luau_host_yield(state, 0);
+            return luau_host_suspend(state);
         }
 
         if (operation == null)

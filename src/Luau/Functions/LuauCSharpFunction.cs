@@ -49,6 +49,14 @@ internal sealed unsafe class LuauCSharpFunction : LuauFunction, ILuauManagedCall
                 return YieldFailureIfPossible(l, operation);
             }
 
+            // Import resolution may call __index while loading sandboxed bytecode.
+            // Host callbacks are dynamic: leave the import nil so Luau performs
+            // the lookup during execution instead of caching a getter's value.
+            if (context.IsLoadingBytecode)
+            {
+                return 0;
+            }
+
             var state = LuauState.GetCachedState(l, context);
             var resultCount = registration.SynchronousCallback(state, operation.CancellationToken);
             if (resultCount < 0 || resultCount > luau_host_stack_get_top(l))
@@ -70,7 +78,7 @@ internal sealed unsafe class LuauCSharpFunction : LuauFunction, ILuauManagedCall
     {
         if (luau_host_is_yieldable(state) != 0)
         {
-            return luau_host_yield(state, 0);
+            return luau_host_suspend(state);
         }
 
         if (operation == null)

@@ -15,9 +15,9 @@ internal static unsafe class LuauNativeProtection
     internal const ushort ExpectedAbiMajor = 2;
     internal const ushort MinimumAbiMinor = 0;
     internal const uint ExpectedAbiRecordSize = 112;
-    internal const uint ExpectedFeatureFlags = 0xfffU;
+    internal const uint ExpectedFeatureFlags = 0x1fffU;
     internal const ulong ExpectedUpstreamRevisionHash = 0xc45f010aabf167acUL;
-    internal const ulong ExpectedHostBuildFingerprint = 0xe22f181ac247f52aUL;
+    internal const ulong ExpectedHostBuildFingerprint = 0x2a4ca2b50dc114daUL;
     internal const int AbiQueryOk = (int)LuauHostStatus.Ok;
     internal const int AbiQueryInvalidArgument = (int)LuauHostStatus.InvalidArgument;
 
@@ -225,6 +225,7 @@ internal sealed unsafe class LuauNativeAbiVerifier
         (LuauHostFeature.TerminalReset, "terminal reset"),
         (LuauHostFeature.IntegerValues, "integer values"),
         (LuauHostFeature.Sandbox, "sandbox"),
+        (LuauHostFeature.CoroutineSuspension, "coroutine suspension"),
     ];
 
     readonly LuauNativeAbiInfoQuery query;

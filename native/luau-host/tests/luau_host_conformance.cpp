@@ -1421,6 +1421,74 @@ void test_callback_and_destructor_lifetime()
     REQUIRE(maximumOwnerDestructions == 1);
 }
 
+luau_host_state* suspendedCallbackState = nullptr;
+
+int32_t LUAU_HOST_CALL suspending_callback(luau_host_state* state)
+{
+    suspendedCallbackState = state;
+    return luau_host_suspend(state);
+}
+
+void test_nested_callback_suspension()
+{
+    Root root = create_root();
+    REQUIRE(luau_host_suspend(nullptr) == 0);
+    REQUIRE(luau_host_suspend(root.state) == 0);
+    REQUIRE(luau_host_resume_target(nullptr) == nullptr);
+    REQUIRE(luau_host_resume_target(root.state) == root.state);
+    int32_t count = 0;
+    REQUIRE(luau_host_open_library(root.state, LUAU_HOST_LIBRARY_BASE, &count) == LUAU_HOST_STATUS_OK);
+    REQUIRE(luau_host_open_library(root.state, LUAU_HOST_LIBRARY_COROUTINE, &count) == LUAU_HOST_STATUS_OK);
+    REQUIRE(luau_host_stack_set_top(root.state, 0) == LUAU_HOST_STATUS_OK);
+    auto callbacks = callback_table();
+    callbacks.managed_function = suspending_callback;
+    REQUIRE(luau_host_push_callback(root.state, &callbacks, nullptr, 0, 0, nullptr, nullptr) == LUAU_HOST_STATUS_OK);
+    REQUIRE(luau_host_global_set(root.state, bytes("host")) == LUAU_HOST_STATUS_OK);
+
+    for (int action = 0; action < 3; ++action)
+    {
+        suspendedCallbackState = nullptr;
+        REQUIRE(compile_and_load(root.state,
+            "return coroutine.wrap(function() "
+            "local co = coroutine.create(function() return host(42) end) "
+            "return coroutine.resume(co) end)()", "@nested-host-suspension") == LUAU_HOST_STATUS_OK);
+        REQUIRE(luau_host_resume(root.state, nullptr, 0) == LUAU_HOST_STATUS_BREAK);
+        auto target = luau_host_resume_target(root.state);
+        REQUIRE(target == suspendedCallbackState);
+        REQUIRE(target != root.state);
+        REQUIRE(luau_host_stack_get_top(target) == 1);
+        int32_t isNumber = 0;
+        REQUIRE(luau_host_to_number(target, 1, &isNumber) == 42.0);
+        REQUIRE(isNumber != 0);
+        // The waiting Lua frames must retain all intermediate coroutines.
+        REQUIRE(luau_host_collect(root.state) == LUAU_HOST_STATUS_OK);
+        if (action == 0)
+        {
+            REQUIRE(luau_host_push_number(target, 43) == LUAU_HOST_STATUS_OK);
+            REQUIRE(luau_host_resume(root.state, nullptr, 1) == LUAU_HOST_STATUS_OK);
+            REQUIRE(luau_host_stack_get_top(root.state) == 2);
+            REQUIRE(luau_host_to_boolean(root.state, 1) != 0);
+            REQUIRE(luau_host_to_number(root.state, 2, &isNumber) == 43.0);
+        }
+        else if (action == 1)
+        {
+            REQUIRE(luau_host_push_string(target, bytes("failure"), 7) == LUAU_HOST_STATUS_OK);
+            REQUIRE(luau_host_resume_error(root.state, nullptr) == LUAU_HOST_STATUS_OK);
+            REQUIRE(luau_host_stack_get_top(root.state) == 2);
+            REQUIRE(luau_host_to_boolean(root.state, 1) == 0);
+            REQUIRE(string_at(root.state, 2) == "failure");
+        }
+        else
+        {
+            REQUIRE(luau_host_thread_reset(root.state) == LUAU_HOST_STATUS_OK);
+            REQUIRE(luau_host_stack_get_top(target) == 0);
+            REQUIRE(luau_host_thread_status(target) == LUAU_HOST_STATUS_OK);
+        }
+        REQUIRE(luau_host_resume_target(root.state) == root.state);
+        REQUIRE(luau_host_stack_set_top(root.state, 0) == LUAU_HOST_STATUS_OK);
+    }
+}
+
 void test_callback_return_validation_and_recovery()
 {
     Root root = create_root();
@@ -1634,11 +1702,11 @@ void test_interrupt_yield_and_recovery()
     const luau_host_status result = luau_host_resume(child, root.state, 0);
     luau_host_interrupt_uninstall(child);
 
-    REQUIRE(result == LUAU_HOST_STATUS_YIELDED);
+    REQUIRE(result == LUAU_HOST_STATUS_BREAK);
     REQUIRE(interruptPolls > 0);
     REQUIRE(invalidInterruptKinds == 0);
     REQUIRE(executionInterruptKinds + gcInterruptKinds == interruptPolls);
-    REQUIRE(luau_host_thread_status(child) == LUAU_HOST_STATUS_YIELDED);
+    REQUIRE(luau_host_thread_status(child) == LUAU_HOST_STATUS_BREAK);
     REQUIRE(luau_host_thread_reset(child) == LUAU_HOST_STATUS_OK);
     REQUIRE(luau_host_thread_status(child) == LUAU_HOST_STATUS_OK);
 
@@ -1720,7 +1788,7 @@ void test_multi_root_interrupt_uninstall_preserves_other_root()
     // Independent roots own independent poll pointers. Removing one must not
     // disturb the other's installation.
     luau_host_interrupt_uninstall(firstChild);
-    REQUIRE(luau_host_resume(secondChild, secondRoot.state, 0) == LUAU_HOST_STATUS_YIELDED);
+    REQUIRE(luau_host_resume(secondChild, secondRoot.state, 0) == LUAU_HOST_STATUS_BREAK);
     REQUIRE(interruptPolls == 0);
     REQUIRE(alternateInterruptPolls > 0);
     REQUIRE(invalidInterruptKinds == 0);
@@ -1781,6 +1849,7 @@ int main()
     failures += run_test("managed callback and userdata-destructor lifetime", test_callback_and_destructor_lifetime);
     failures += run_test("managed callback return validation and recovery", test_callback_return_validation_and_recovery);
     failures += run_test("userdata wrapper visibility and destructor lifetime", test_userdata_wrapper_visibility_and_destructor_lifetime);
+    failures += run_test("nested callback suspension", test_nested_callback_suspension);
     failures += run_test("GC interrupt notifications are observation-only", test_gc_interrupt_is_observation_only);
     failures += run_test("interrupt-driven coroutine yield and reset", test_interrupt_yield_and_recovery);
     failures += run_test(
