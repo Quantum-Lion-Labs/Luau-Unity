@@ -143,8 +143,8 @@ internal static class ArtifactManifestCommand
             .Select(static line => line.Trim())
             .Where(static line => line.Length > 0 && !line.StartsWith('#'))
             .ToArray();
-        Require(approvedExports.Length == 80 && approvedExports.Distinct(StringComparer.Ordinal).Count() == 80,
-            "Approved export allowlist must contain 80 unique symbols.");
+        Require(approvedExports.Length == 82 && approvedExports.Distinct(StringComparer.Ordinal).Count() == 82,
+            "Approved export allowlist must contain 82 unique symbols.");
         await AuditExportsAsync(repository, platform, binary, exportsPath);
         var sourceCommit = (await ProcessRunner.RequireAsync("git", ["rev-parse", "HEAD"], repository.Root, echo: false)).StandardOutput.Trim().ToLowerInvariant();
         var status = await ProcessRunner.RequireAsync("git", ["status", "--porcelain=v1", "--untracked-files=all"], repository.Root, echo: false);

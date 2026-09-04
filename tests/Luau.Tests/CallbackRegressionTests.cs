@@ -69,6 +69,54 @@ public sealed class CallbackRegressionTests
     }
 
     [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task NestedCallbacksPreserveReferenceArgumentsAndMultipleResults(bool awaitCompletion)
+    {
+        using var root = CreateRoot();
+        using var host = root.CreateAsyncFunction("host", async context =>
+        {
+            Assert.Equal(2, context.ArgumentCount);
+            if (awaitCompletion)
+            {
+                await Task.Yield();
+            }
+            GC.Collect();
+            GC.WaitForPendingFinalizers();
+            root.CollectGarbage();
+            var table = context.Read<LuauTable>(0);
+            Assert.Equal(42, table["value"].Read<int>());
+            Assert.Equal("argument", context.Read<string>(1));
+            context.Return(table);
+            context.Return<string>(null);
+            context.Return(43);
+        });
+        root["host"] = host;
+        using var result = await root.DoStringAsync("""
+            local value = {value = 42}
+            local actual, empty, number = coroutine.wrap(function()
+                return host(value, 'argument')
+            end)()
+            return actual == value, empty == nil, number
+            """).AsTask().WaitAsync(TimeSpan.FromSeconds(10));
+        Assert.True(result[0].Read<bool>());
+        Assert.True(result[1].Read<bool>());
+        Assert.Equal(43, result[2].Read<int>());
+    }
+
+    [Fact]
+    public async Task NestedCallbacksCanReturnNoValues()
+    {
+        using var root = CreateRoot();
+        using var host = root.CreateAsyncFunction("host", _ => default);
+        root["host"] = host;
+        using var result = await root.DoStringAsync("""
+            return select('#', coroutine.wrap(function() return host(42) end)())
+            """).AsTask().WaitAsync(TimeSpan.FromSeconds(10));
+        Assert.Equal(0, Assert.Single(result).Read<int>());
+    }
+
+    [Theory]
     [InlineData("local co = coroutine.create(function() return host() end); return coroutine.resume(co)")]
     [InlineData("return pcall(coroutine.wrap(function() return host() end))")]
     [InlineData("local co = coroutine.create(function() return pcall(host) end); local ok, caught, failure = coroutine.resume(co); assert(ok); return caught, failure")]
