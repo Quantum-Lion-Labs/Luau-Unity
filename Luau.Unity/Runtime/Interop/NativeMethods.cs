@@ -237,6 +237,12 @@ namespace Luau.Internal.Interop
         [DllImport(__DllName, EntryPoint = "luau_host_yield", CallingConvention = Call, ExactSpelling = true)]
         internal static extern int luau_host_yield(LuauHostState* state, int resultCount);
 
+        [DllImport(__DllName, EntryPoint = "luau_host_suspend", CallingConvention = Call, ExactSpelling = true)]
+        internal static extern int luau_host_suspend(LuauHostState* state);
+
+        [DllImport(__DllName, EntryPoint = "luau_host_resume_target", CallingConvention = Call, ExactSpelling = true)]
+        internal static extern LuauHostState* luau_host_resume_target(LuauHostState* state);
+
         [DllImport(__DllName, EntryPoint = "luau_host_collect", CallingConvention = Call, ExactSpelling = true)]
         internal static extern LuauHostStatus luau_host_collect(LuauHostState* state);
 

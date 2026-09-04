@@ -39,6 +39,7 @@ luau_host_reference_push
 luau_host_reference_release
 luau_host_resume
 luau_host_resume_error
+luau_host_resume_target
 luau_host_sandbox_root
 luau_host_sandbox_thread
 luau_host_stack_abs_index
@@ -51,6 +52,7 @@ luau_host_stack_replace
 luau_host_stack_set_top
 luau_host_state_close
 luau_host_state_create
+luau_host_suspend
 luau_host_table_clear
 luau_host_table_clone
 luau_host_table_create

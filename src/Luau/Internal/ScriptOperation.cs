@@ -45,6 +45,7 @@ internal sealed class ScriptOperation : IDisposable
 
     Timer? deadlineTimer;
     LuauManagedCallbackRegistration? pendingCallback;
+    IntPtr pendingCallbackThread;
     string? pendingCallbackName;
     Exception? callbackFailure;
     string? callbackFailureName;
@@ -197,7 +198,9 @@ internal sealed class ScriptOperation : IDisposable
         Volatile.Write(ref asyncCallbackPhase, (int)AsyncCallbackPhase.None);
     }
 
-    internal void QueueAsyncCallback(LuauManagedCallbackRegistration callback)
+    internal IntPtr PendingCallbackThread => pendingCallbackThread;
+
+    internal void QueueAsyncCallback(LuauManagedCallbackRegistration callback, IntPtr thread)
     {
         pendingCallbackName = callback.Name;
         if (Interlocked.CompareExchange(ref pendingCallback, callback, null) != null)
@@ -209,6 +212,7 @@ internal sealed class ScriptOperation : IDisposable
             return;
         }
 
+        pendingCallbackThread = thread;
         Volatile.Write(ref asyncCallbackPhase, (int)AsyncCallbackPhase.PendingDispatch);
         Volatile.Write(ref yieldReason, (int)ScriptYieldReason.AsyncCallback);
     }
@@ -235,6 +239,7 @@ internal sealed class ScriptOperation : IDisposable
 
     internal LuauManagedCallbackRegistration? TakePendingCallback()
     {
+        pendingCallbackThread = IntPtr.Zero;
         return Interlocked.Exchange(ref pendingCallback, null);
     }
 

@@ -129,7 +129,8 @@ constexpr uint32_t kRequiredFeatures =
     LUAU_HOST_FEATURE_SANDBOX |
     LUAU_HOST_FEATURE_OPAQUE_REFERENCE_TOKENS |
     LUAU_HOST_FEATURE_DIRECT_CALLBACK_IDENTITY |
-    LUAU_HOST_FEATURE_OBSERVATION_ONLY_GC_INTERRUPT;
+    LUAU_HOST_FEATURE_OBSERVATION_ONLY_GC_INTERRUPT |
+    LUAU_HOST_FEATURE_COROUTINE_SUSPENSION;
 
 constexpr uint64_t fnv1a(const char* text, uint64_t value = UINT64_C(14695981039346656037))
 {
@@ -754,7 +755,34 @@ struct ResumeContext
 
 void opcheckstack(lua_State* state, void* userdata) { IndexContext* c = static_cast<IndexContext*>(userdata); c->result = lua_checkstack(state, c->index); }
 void opnewthread(lua_State* state, void* userdata) { *static_cast<lua_State**>(userdata) = lua_newthread(state); }
-void opresetthread(lua_State* state, void*) { lua_resetthread(state); }
+// The host owns thread userdata. While coroutine.resume/wrap propagates a
+// break, its Lua frame retains the child; this link needs no allocation or GC
+// root of its own. Clear it before resetting or completing the continuation.
+void recordcoroutinebreak(lua_State* parent, lua_Debug* debug)
+{
+    // interruptThread calls this hook before lua_break checks the parent.
+    // A rejected break unwinds the frame that retains the child, so it must
+    // never leave a continuation link behind.
+    if (lua_isyieldable(parent))
+        parent->userdata = debug->userdata;
+}
+
+lua_State* resumetarget(lua_State* state)
+{
+    while (state && state->userdata)
+        state = static_cast<lua_State*>(state->userdata);
+    return state;
+}
+
+void opresetthread(lua_State* state, void*)
+{
+    if (lua_State* child = static_cast<lua_State*>(state->userdata))
+    {
+        opresetthread(child, nullptr);
+        state->userdata = nullptr;
+    }
+    lua_resetthread(state);
+}
 void oppushvalue(lua_State* state, void* userdata) { lua_pushvalue(state, static_cast<IndexContext*>(userdata)->index); }
 void oppushnil(lua_State* state, void*) { lua_pushnil(state); }
 void oppushboolean(lua_State* state, void* userdata) { lua_pushboolean(state, static_cast<IntContext*>(userdata)->value); }
@@ -874,7 +902,30 @@ void oppcall(lua_State* state, void* userdata)
 
     c->status = lua_pcall(state, c->arguments, c->results, c->errorFunction);
 }
-void opresume(lua_State* state, void* userdata) { ResumeContext* c = static_cast<ResumeContext*>(userdata); c->status = c->withError ? lua_resumeerror(state, c->from) : lua_resume(state, c->from, c->arguments); }
+void opresume(lua_State* state, void* userdata)
+{
+    ResumeContext* c = static_cast<ResumeContext*>(userdata);
+    // Resume the actual suspended callback first, then let each native
+    // coroutine.resume/wrap continuation consume its child's results/error.
+    // A new break leaves the chain intact for the next host dispatch.
+    for (;;)
+    {
+        lua_State* target = state;
+        lua_State* parent = c->from;
+        while (target->userdata)
+        {
+            parent = target;
+            target = static_cast<lua_State*>(target->userdata);
+        }
+        c->status = c->withError ? lua_resumeerror(target, parent) : lua_resume(target, parent, c->arguments);
+        if (target == state || c->status == LUA_BREAK)
+            return;
+
+        parent->userdata = nullptr;
+        c->arguments = 0;
+        c->withError = false;
+    }
+}
 
 void opopenlibrary(lua_State* state, void* userdata)
 {
@@ -979,7 +1030,7 @@ void interrupttrampoline(lua_State* state, int gc)
 
     if (lua_isyieldable(state))
     {
-        lua_yield(state, 0);
+        lua_break(state);
         return;
     }
 
@@ -1156,6 +1207,7 @@ luau_host_status LUAU_HOST_CALL luau_host_state_create(
         return status;
     }
 
+    lua_callbacks(state)->debuginterrupt = recordcoroutinebreak;
     *output = host(state);
     return LUAU_HOST_STATUS_OK;
 }
@@ -1823,7 +1875,7 @@ luau_host_status LUAU_HOST_CALL luau_host_pcall(luau_host_state* state, int32_t 
 
 luau_host_status LUAU_HOST_CALL luau_host_resume(luau_host_state* state, luau_host_state* from, int32_t argumentCount)
 {
-    if (!state || argumentCount < 0 || argumentCount > lua_gettop(native(state)) ||
+    if (!state || argumentCount < 0 || argumentCount > lua_gettop(resumetarget(native(state))) ||
         (from && lua_mainthread(native(state)) != lua_mainthread(native(from))))
         return LUAU_HOST_STATUS_INVALID_ARGUMENT;
     ResumeContext c = {native(from), argumentCount, LUA_OK, false};
@@ -1833,7 +1885,7 @@ luau_host_status LUAU_HOST_CALL luau_host_resume(luau_host_state* state, luau_ho
 
 luau_host_status LUAU_HOST_CALL luau_host_resume_error(luau_host_state* state, luau_host_state* from)
 {
-    if (!state || lua_gettop(native(state)) < 1 ||
+    if (!state || lua_gettop(resumetarget(native(state))) < 1 ||
         (from && lua_mainthread(native(state)) != lua_mainthread(native(from))))
         return LUAU_HOST_STATUS_INVALID_ARGUMENT;
     ResumeContext c = {native(from), 0, LUA_OK, true};
@@ -1849,6 +1901,19 @@ int32_t LUAU_HOST_CALL luau_host_yield(luau_host_state* state, int32_t resultCou
     if (!validcallbackframe(target) || !lua_isyieldable(target) || resultCount < 0 || resultCount > lua_gettop(target))
         return 0;
     return lua_yield(target, resultCount);
+}
+
+int32_t LUAU_HOST_CALL luau_host_suspend(luau_host_state* state)
+{
+    lua_State* target = native(state);
+    if (!validcallbackframe(target) || !lua_isyieldable(target))
+        return 0;
+    return lua_break(target);
+}
+
+luau_host_state* LUAU_HOST_CALL luau_host_resume_target(luau_host_state* state)
+{
+    return host(resumetarget(native(state)));
 }
 
 luau_host_status LUAU_HOST_CALL luau_host_collect(luau_host_state* state)

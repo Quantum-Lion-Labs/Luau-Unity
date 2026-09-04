@@ -37,7 +37,8 @@ static uint32_t fixture_feature_flags(void)
         LUAU_HOST_FEATURE_INTERRUPT |
         LUAU_HOST_FEATURE_TERMINAL_RESET |
         LUAU_HOST_FEATURE_INTEGER_VALUES |
-        LUAU_HOST_FEATURE_SANDBOX;
+        LUAU_HOST_FEATURE_SANDBOX |
+        LUAU_HOST_FEATURE_COROUTINE_SUSPENSION;
 }
 
 static luau_host_abi_info fixture_abi_info(void)

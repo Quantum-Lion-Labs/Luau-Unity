@@ -20,3 +20,18 @@ copied into native closure metadata and observed only during the corresponding
 active callback. GC interrupt notifications are observation-only. Destructor
 callbacks may only release or enqueue their opaque token and must not call the
 host, block, allocate substantially, access Unity APIs, or unwind.
+
+Host suspension uses Luau's break continuations. `luau_host_suspend` preserves
+arguments on the calling coroutine and stops its waiting `coroutine.resume` or
+`coroutine.wrap` ancestors. `luau_host_resume_target` identifies the borrowed
+thread on which callback results or errors must be pushed. Resuming the outer
+state completes that thread before its ancestors; resetting it resets the
+suspended chain. Ordinary `luau_host_yield` and script yields retain their
+existing script-visible behavior. The host reserves native thread userdata
+and the debug-interrupt hook for these continuation links.
+
+For a native source change, manually dispatch the Windows and Android build
+workflows with `refresh-artifacts=true` to generate audited replacement plugins.
+Download their shipping outputs and commit them with the matching managed DLL.
+Normal pull-request and main-branch CI always checks that committed plugins
+match a fresh build; the manual refresh option only generates replacements.

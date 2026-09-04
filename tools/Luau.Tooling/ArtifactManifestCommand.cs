@@ -8,10 +8,10 @@ namespace Luau.Tooling;
 
 internal static class ArtifactManifestCommand
 {
-    private const string ApprovedBuildInputSha256 = "2ac37a6c388dd1ed39a450d2eebaad679d8bb38ca752623069eecc48d38d79dc";
+    private const string ApprovedBuildInputSha256 = "6bb4b40d8084100f2409fb292d2839ab89618e00828c427b3e3bcf8a2c3afb34";
     private const ulong ApprovedUpstreamRevisionHash = 0xc45f010aabf167ac;
-    private const ulong ApprovedHostBuildFingerprint = 0xe22f181ac247f52a;
-    private const uint ApprovedFeatureFlags = 0xfff;
+    private const ulong ApprovedHostBuildFingerprint = 0x6a1565ce91ec38a2;
+    private const uint ApprovedFeatureFlags = 0x1fff;
 
     internal sealed record BinaryIdentity(
         uint RecordSize,
@@ -143,8 +143,8 @@ internal static class ArtifactManifestCommand
             .Select(static line => line.Trim())
             .Where(static line => line.Length > 0 && !line.StartsWith('#'))
             .ToArray();
-        Require(approvedExports.Length == 80 && approvedExports.Distinct(StringComparer.Ordinal).Count() == 80,
-            "Approved export allowlist must contain 80 unique symbols.");
+        Require(approvedExports.Length == 82 && approvedExports.Distinct(StringComparer.Ordinal).Count() == 82,
+            "Approved export allowlist must contain 82 unique symbols.");
         await AuditExportsAsync(repository, platform, binary, exportsPath);
         var sourceCommit = (await ProcessRunner.RequireAsync("git", ["rev-parse", "HEAD"], repository.Root, echo: false)).StandardOutput.Trim().ToLowerInvariant();
         var status = await ProcessRunner.RequireAsync("git", ["status", "--porcelain=v1", "--untracked-files=all"], repository.Root, echo: false);

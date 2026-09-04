@@ -90,6 +90,8 @@ public sealed class ContinuationSchedulerTests
                         DefaultExecutionOptions = new LuauExecutionOptions
                         {
                             ContinuationScheduler = scheduler,
+                            // Thread affinity is independent of runner load.
+                            WallClockLimit = TimeSpan.FromSeconds(10),
                         },
                     });
                     try

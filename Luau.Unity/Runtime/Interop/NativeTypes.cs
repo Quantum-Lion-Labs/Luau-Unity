@@ -96,6 +96,7 @@ namespace Luau.Internal.Interop
         OpaqueReferenceTokens = 1U << 9,
         DirectCallbackIdentity = 1U << 10,
         ObservationOnlyGcInterrupt = 1U << 11,
+        CoroutineSuspension = 1U << 12,
     }
 
     [Flags]

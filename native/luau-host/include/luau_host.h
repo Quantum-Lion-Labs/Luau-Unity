@@ -118,6 +118,7 @@ enum
     LUAU_HOST_FEATURE_OPAQUE_REFERENCE_TOKENS = 1U << 9,
     LUAU_HOST_FEATURE_DIRECT_CALLBACK_IDENTITY = 1U << 10,
     LUAU_HOST_FEATURE_OBSERVATION_ONLY_GC_INTERRUPT = 1U << 11,
+    LUAU_HOST_FEATURE_COROUTINE_SUSPENSION = 1U << 12,
 };
 
 enum
@@ -574,7 +575,8 @@ LUAU_HOST_API luau_host_status LUAU_HOST_CALL luau_host_load(
  * function and argument_count values, then appends exactly result_count results
  * (or all results), or exactly one top error on LUA_ERROR/allocation/cancel.
  * resume consumes the initial function/argument values or prior yielded frame;
- * OK leaves returned values, YIELDED/BREAK leaves yielded values, and LUA_ERROR
+ * OK leaves returned values, YIELDED leaves script yield values, BREAK
+ * preserves the suspended frame (see resume_target), and LUA_ERROR
  * leaves exactly one top error. resume_error consumes one top error input and
  * continues the suspended handler with the same outcome contract. After any
  * resume error/cancel, reset before reuse. Invalid arguments are stack-neutral.
@@ -594,6 +596,17 @@ LUAU_HOST_API luau_host_status LUAU_HOST_CALL luau_host_resume_error(
     luau_host_state* state,
     luau_host_state* from);
 LUAU_HOST_API int32_t LUAU_HOST_CALL luau_host_yield(luau_host_state* state, int32_t result_count);
+
+/* Host-only suspension preserves callback arguments and propagates through
+ * coroutine.resume/wrap without exposing a script yield. No-fail; valid only
+ * in a yieldable managed callback; returns -1 on suspension, otherwise 0.
+ * resume_target is a no-fail borrowed observer of the innermost suspended
+ * thread (or state itself). Push callback results/error on that thread, then
+ * resume/resume_error the original outer state. Those operations resume the
+ * child and its waiting ancestors until completion, script yield, or another
+ * host suspension. Resetting the outer state also resets waiting children. */
+LUAU_HOST_API int32_t LUAU_HOST_CALL luau_host_suspend(luau_host_state* state);
+LUAU_HOST_API luau_host_state* LUAU_HOST_CALL luau_host_resume_target(luau_host_state* state);
 
 /* Protected full collection. This is the only exposed collector control.
  * Success is stack-neutral. Failure restores the entry top then appends one
@@ -619,7 +632,7 @@ LUAU_HOST_API luau_host_status LUAU_HOST_CALL luau_host_sandbox_thread(luau_host
  * returning without busy-waiting. The poll code/delegate must stay callable
  * from successful install through completed uninstall/root close. Polls are
  * stack-neutral unless they call documented callback-safe APIs. For EXECUTION,
- * zero continues and nonzero requests yield when possible or a sticky CANCELED
+ * zero continues and nonzero requests host suspension when possible or a sticky CANCELED
  * hard stop otherwise. GC notifications are observation-only: their return
  * value is ignored and they cannot alter VM control flow. Each root owns its poll pointer, so
  * independent roots may install different functions concurrently. Uninstall must
