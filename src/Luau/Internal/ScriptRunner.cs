@@ -327,6 +327,13 @@ internal static class ScriptRunner
                     () => Resume(operation, state, from, resumeArgumentCount)).ConfigureAwait(false);
             }
 
+            if (operation.PendingCallbackThread != IntPtr.Zero)
+            {
+                await LuauContinuationDispatcher.InvokeAsync(
+                    scheduler,
+                    () => ValidatePendingCallbackSuspension(operation, state, status)).ConfigureAwait(false);
+            }
+
             if (status == LuauHostStatus.Ok)
             {
                 operation.CompleteCoroutineDead();
@@ -436,6 +443,29 @@ internal static class ScriptRunner
                     throw new LuauException("Unknown Luau yield reason.", operation.ChunkName);
             }
         }
+    }
+
+    static void ValidatePendingCallbackSuspension(ScriptOperation operation, IntPtr state, LuauHostStatus status)
+    {
+        var callbackThread = operation.PendingCallbackThread;
+        if (callbackThread == IntPtr.Zero ||
+            ((status == LuauHostStatus.Break || status == LuauHostStatus.Yielded) &&
+                GetResumeTarget(operation, state) == callbackThread))
+        {
+            return;
+        }
+
+        // A non-yieldable ancestor can reject the child's break and catch the
+        // resulting Lua error. A later interrupt may then suspend the parent;
+        // dispatching the child's callback there would use the wrong stack.
+        // Compare the saved pointer only: the rejected child may be collected.
+        operation.TakePendingCallback();
+        var callbackName = operation.TakePendingCallbackName();
+        operation.FinishAsyncCallback();
+        ThrowIfHardStopped(operation, state);
+        operation.RecordCallbackFailure(callbackName, new InvalidOperationException(
+            "An asynchronous managed callback requires yieldable Luau execution through all parent coroutines."));
+        ThrowIfUninjectedCallbackFailure(operation, state);
     }
 
     static int GetResultCount(ScriptOperation operation, IntPtr state, int baseTop)

@@ -17,7 +17,7 @@ internal static unsafe class LuauNativeProtection
     internal const uint ExpectedAbiRecordSize = 112;
     internal const uint ExpectedFeatureFlags = 0x1fffU;
     internal const ulong ExpectedUpstreamRevisionHash = 0xc45f010aabf167acUL;
-    internal const ulong ExpectedHostBuildFingerprint = 0x2a4ca2b50dc114daUL;
+    internal const ulong ExpectedHostBuildFingerprint = 0x6a1565ce91ec38a2UL;
     internal const int AbiQueryOk = (int)LuauHostStatus.Ok;
     internal const int AbiQueryInvalidArgument = (int)LuauHostStatus.InvalidArgument;
 

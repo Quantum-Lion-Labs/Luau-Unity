@@ -71,7 +71,7 @@ internal sealed unsafe class LuauCSharpAsyncFunction : LuauFunction, ILuauManage
             // native stack. The runner dispatches the delegate only after it has
             // observed LUA_YIELD, so synchronous portions and fast continuations
             // can safely use the callback state.
-            operation.QueueAsyncCallback(registration);
+            operation.QueueAsyncCallback(registration, (IntPtr)l);
             // A host suspension keeps the argument stack on this coroutine and
             // propagates through coroutine.resume/wrap without exposing a yield.
             return luau_host_suspend(l);

@@ -760,7 +760,11 @@ void opnewthread(lua_State* state, void* userdata) { *static_cast<lua_State**>(u
 // root of its own. Clear it before resetting or completing the continuation.
 void recordcoroutinebreak(lua_State* parent, lua_Debug* debug)
 {
-    parent->userdata = debug->userdata;
+    // interruptThread calls this hook before lua_break checks the parent.
+    // A rejected break unwinds the frame that retains the child, so it must
+    // never leave a continuation link behind.
+    if (lua_isyieldable(parent))
+        parent->userdata = debug->userdata;
 }
 
 lua_State* resumetarget(lua_State* state)
