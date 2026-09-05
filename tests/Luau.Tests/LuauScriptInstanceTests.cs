@@ -3,6 +3,73 @@ namespace Luau.Tests;
 public sealed class LuauScriptInstanceTests
 {
     [Theory]
+    [InlineData(false, "scope")]
+    [InlineData(true, "scope")]
+    [InlineData(false, "destination")]
+    [InlineData(true, "destination")]
+    [InlineData(false, "void")]
+    [InlineData(true, "void")]
+    public async Task RejectedEntrypointArgumentsRestoreStackBeforeExecution(
+        bool singleArgument,
+        string resultMode)
+    {
+        using var root = CreateSandboxedRoot();
+        using var instance = await CreateInstanceAsync(root, "rejected-arguments",
+            "local calls = 0; return { run = function() calls += 1 end, count = function() return calls end }");
+        var entrypoint = instance.GetRequiredEntrypoint("run");
+        using var table = root.CreateTable();
+        var rejected = LuauValue.FromTable(table);
+        table.Dispose();
+        var arguments = new LuauValue[] { 42, rejected };
+        var destination = new LuauValue[] { 99 };
+        var baseTop = root.GetTop();
+
+        Assert.Throws<ObjectDisposedException>(() =>
+        {
+            switch (resultMode)
+            {
+                case "scope":
+                    using (singleArgument ? entrypoint.Invoke(rejected) : entrypoint.Invoke(arguments)) { }
+                    break;
+                case "destination":
+                    if (singleArgument) entrypoint.InvokeInto(rejected, destination);
+                    else entrypoint.InvokeInto(arguments, destination);
+                    break;
+                default:
+                    if (singleArgument) entrypoint.InvokeVoid(rejected);
+                    else entrypoint.InvokeVoid(arguments);
+                    break;
+            }
+        });
+        Assert.Equal(baseTop, root.GetTop());
+
+        await Assert.ThrowsAsync<ObjectDisposedException>(async () =>
+        {
+            switch (resultMode)
+            {
+                case "scope":
+                    using (singleArgument
+                        ? await entrypoint.InvokeAsync(rejected)
+                        : await entrypoint.InvokeAsync(arguments)) { }
+                    break;
+                case "destination":
+                    if (singleArgument) await entrypoint.InvokeIntoAsync(rejected, destination);
+                    else await entrypoint.InvokeIntoAsync(arguments, destination);
+                    break;
+                default:
+                    if (singleArgument) await entrypoint.InvokeVoidAsync(rejected);
+                    else await entrypoint.InvokeVoidAsync(arguments);
+                    break;
+            }
+        });
+        Assert.Equal(baseTop, root.GetTop());
+        Assert.Equal(99, destination[0].Read<int>());
+        using var count = instance.GetRequiredEntrypoint("count").Invoke();
+        Assert.Equal(0, count.Read<int>(0));
+        entrypoint.InvokeVoid();
+    }
+
+    [Theory]
     [InlineData("return")]
     [InlineData("return {}, {}")]
     [InlineData("return nil")]

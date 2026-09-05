@@ -19,7 +19,8 @@ namespace Luau.Unity.Editor
             bool isManifestCurrent,
             bool isEmptyManifest,
             bool manifestChanged,
-            IEnumerable<string> errors)
+            IEnumerable<string> errors,
+            bool hasAssetSnapshot = true)
         {
             TotalLuauAssets = totalLuauAssets;
             OptedInAssets = optedInAssets;
@@ -28,6 +29,7 @@ namespace Luau.Unity.Editor
             IsManifestCurrent = isManifestCurrent;
             IsEmptyManifest = isEmptyManifest;
             ManifestChanged = manifestChanged;
+            HasAssetSnapshot = hasAssetSnapshot;
             Errors = (errors ?? Array.Empty<string>())
                 .Where(error => !string.IsNullOrWhiteSpace(error))
                 .Distinct(StringComparer.Ordinal)
@@ -42,6 +44,7 @@ namespace Luau.Unity.Editor
         internal bool IsManifestCurrent { get; }
         internal bool IsEmptyManifest { get; }
         internal bool ManifestChanged { get; }
+        internal bool HasAssetSnapshot { get; }
         internal IReadOnlyList<string> Errors { get; }
     }
 
@@ -62,6 +65,22 @@ namespace Luau.Unity.Editor
             throwOnInvalidBytes: true);
 
         internal static LuauFirstPartyManifestStatus LastStatus { get; private set; }
+
+        internal static LuauFirstPartyManifestStatus RecordRefreshFailure(Exception exception)
+        {
+            FirstPartyBytecodeManifestCache.Reload(null);
+            LastStatus = new LuauFirstPartyManifestStatus(
+                totalLuauAssets: 0,
+                optedInAssets: 0,
+                precompiledAssets: 0,
+                hasProvenanceId: false,
+                isManifestCurrent: false,
+                isEmptyManifest: false,
+                manifestChanged: false,
+                errors: new[] { "Manifest refresh did not complete: " + exception.Message },
+                hasAssetSnapshot: false);
+            return LastStatus;
+        }
 
         internal static LuauFirstPartyManifestStatus RefreshForCurrentPolicy()
         {

@@ -69,7 +69,7 @@ authority above.
 - links only the required upstream static libraries;
 - builds the repository-owned `luau_host` dynamic library;
 - runs native conformance tests;
-- audits the final binary against the 80-symbol allowlist.
+- audits the final binary against the [export allowlist](../native/luau-host/exports/luau_host.exports).
 
 Do not add a second build orchestrator or expose upstream `lua_*` functions.
 Every managed/native capability must be reviewable in `luau_host.h`.
@@ -520,9 +520,6 @@ Unity-owner scheduler handoff, and same-process output execution. The build
 helper must restore project settings and package-owned generated assets in its
 `finally` path. A successful build without the stable runtime pass marker is not
 a smoke pass.
-
-See [Stage 4 implementation notes](stage-4-implementation-notes.md) for the
-decision record and final verification record.
 
 ## 13. Common changes
 
