@@ -20,24 +20,7 @@ internal static class ScriptRunner
             throw new ArgumentException("Destination is too short.", nameof(destination));
         }
 
-        var remaining = resultCount;
-        var writtenStart = resultCount;
-        try
-        {
-            ValidateDestinationSlots(destination, resultCount);
-            for (var i = resultCount - 1; i >= 0; i--)
-            {
-                destination[i] = state.Pop();
-                writtenStart = i;
-                remaining--;
-            }
-        }
-        catch
-        {
-            DisposeResultValues(destination.Slice(writtenStart, resultCount - writtenStart));
-            DiscardResults(operation, operation.ThreadPointer, remaining);
-            throw;
-        }
+        PopResultsInto(operation, state, destination, resultCount);
 
         return resultCount;
     }
@@ -65,21 +48,7 @@ internal static class ScriptRunner
             throw;
         }
 
-        var remaining = resultCount;
-        try
-        {
-            for (var i = resultCount - 1; i >= 0; i--)
-            {
-                results[i] = state.Pop();
-                remaining--;
-            }
-        }
-        catch
-        {
-            DisposeResultValues(results);
-            DiscardResults(operation, operation.ThreadPointer, remaining);
-            throw;
-        }
+        PopOwnedResults(operation, state, results, resultCount);
 
         return new LuauResultScope(results);
     }
@@ -119,25 +88,17 @@ internal static class ScriptRunner
             operation.Options.ContinuationScheduler,
             () =>
             {
-                var remaining = resultCount;
-                var writtenStart = resultCount;
+                Span<LuauValue> slots;
                 try
                 {
-                    ValidateDestinationSlots(destination.Span, resultCount);
-                    for (var i = resultCount - 1; i >= 0; i--)
-                    {
-                        destination.Span[i] = state.Pop();
-                        writtenStart = i;
-                        remaining--;
-                    }
+                    slots = destination.Span;
                 }
                 catch
                 {
-                    DisposeResultValues(
-                        destination.Span.Slice(writtenStart, resultCount - writtenStart));
-                    DiscardResults(operation, operation.ThreadPointer, remaining);
+                    DiscardResults(operation, operation.ThreadPointer, resultCount);
                     throw;
                 }
+                PopResultsInto(operation, state, slots, resultCount);
             }).ConfigureAwait(false);
 
         return resultCount;
@@ -170,24 +131,7 @@ internal static class ScriptRunner
 
         await LuauContinuationDispatcher.InvokeAsync(
             operation.Options.ContinuationScheduler,
-            () =>
-            {
-                var remaining = resultCount;
-                try
-                {
-                    for (var i = resultCount - 1; i >= 0; i--)
-                    {
-                        results[i] = state.Pop();
-                        remaining--;
-                    }
-                }
-                catch
-                {
-                    DisposeResultValues(results);
-                    DiscardResults(operation, operation.ThreadPointer, remaining);
-                    throw;
-                }
-            }).ConfigureAwait(false);
+            () => PopOwnedResults(operation, state, results, resultCount)).ConfigureAwait(false);
 
         return new LuauResultScope(results);
     }
@@ -527,6 +471,55 @@ internal static class ScriptRunner
 
         var top = GetTop(operation, state);
         SetTop(operation, state, Math.Max(0, top - resultCount));
+    }
+
+    static void PopResultsInto(
+        ScriptOperation operation,
+        LuauState state,
+        Span<LuauValue> destination,
+        int resultCount)
+    {
+        var remaining = resultCount;
+        var writtenStart = resultCount;
+        try
+        {
+            ValidateDestinationSlots(destination, resultCount);
+            for (var i = resultCount - 1; i >= 0; i--)
+            {
+                destination[i] = state.Pop();
+                writtenStart = i;
+                remaining--;
+            }
+        }
+        catch
+        {
+            DisposeResultValues(destination.Slice(writtenStart, resultCount - writtenStart));
+            DiscardResults(operation, operation.ThreadPointer, remaining);
+            throw;
+        }
+    }
+
+    static void PopOwnedResults(
+        ScriptOperation operation,
+        LuauState state,
+        LuauValue[] results,
+        int resultCount)
+    {
+        var remaining = resultCount;
+        try
+        {
+            for (var i = resultCount - 1; i >= 0; i--)
+            {
+                results[i] = state.Pop();
+                remaining--;
+            }
+        }
+        catch
+        {
+            DisposeResultValues(results);
+            DiscardResults(operation, operation.ThreadPointer, remaining);
+            throw;
+        }
     }
 
     static void DisposeResultValues(Span<LuauValue> values)

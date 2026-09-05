@@ -35,16 +35,7 @@ internal sealed class LuauScriptFunction(
             cancellationToken: default,
             isAsync: false);
 
-        var baseTop = state.GetTop();
-        try
-        {
-            PushInvocation(state, arguments);
-        }
-        catch
-        {
-            state.SetTop(baseTop);
-            throw;
-        }
+        PushInvocation(state, arguments);
 
         return ScriptRunner.Run(operation, state, arguments.Length);
     }
@@ -62,16 +53,7 @@ internal sealed class LuauScriptFunction(
             cancellationToken: default,
             isAsync: false);
 
-        var baseTop = state.GetTop();
-        try
-        {
-            PushInvocation(state, argument);
-        }
-        catch
-        {
-            state.SetTop(baseTop);
-            throw;
-        }
+        PushInvocation(state, argument);
 
         return ScriptRunner.Run(operation, state, argumentCount: 1);
     }
@@ -90,16 +72,7 @@ internal sealed class LuauScriptFunction(
             cancellationToken: default,
             isAsync: false);
 
-        var baseTop = state.GetTop();
-        try
-        {
-            PushInvocation(state, arguments);
-        }
-        catch
-        {
-            state.SetTop(baseTop);
-            throw;
-        }
+        PushInvocation(state, arguments);
 
         return ScriptRunner.Run(operation, state, arguments.Length, destination);
     }
@@ -118,16 +91,7 @@ internal sealed class LuauScriptFunction(
             cancellationToken: default,
             isAsync: false);
 
-        var baseTop = state.GetTop();
-        try
-        {
-            PushInvocation(state, argument);
-        }
-        catch
-        {
-            state.SetTop(baseTop);
-            throw;
-        }
+        PushInvocation(state, argument);
 
         return ScriptRunner.Run(operation, state, argumentCount: 1, destination);
     }
@@ -145,16 +109,7 @@ internal sealed class LuauScriptFunction(
             cancellationToken: default,
             isAsync: false);
 
-        var baseTop = state.GetTop();
-        try
-        {
-            PushInvocation(state, arguments);
-        }
-        catch
-        {
-            state.SetTop(baseTop);
-            throw;
-        }
+        PushInvocation(state, arguments);
 
         ScriptRunner.RunVoid(operation, arguments.Length);
     }
@@ -172,16 +127,7 @@ internal sealed class LuauScriptFunction(
             cancellationToken: default,
             isAsync: false);
 
-        var baseTop = state.GetTop();
-        try
-        {
-            PushInvocation(state, argument);
-        }
-        catch
-        {
-            state.SetTop(baseTop);
-            throw;
-        }
+        PushInvocation(state, argument);
 
         ScriptRunner.RunVoid(operation, argumentCount: 1);
     }
@@ -211,16 +157,7 @@ internal sealed class LuauScriptFunction(
             cancellationToken,
             isAsync: true);
 
-        var baseTop = state.GetTop();
-        try
-        {
-            PushInvocation(state, arguments.Span);
-        }
-        catch
-        {
-            state.SetTop(baseTop);
-            throw;
-        }
+        PushInvocation(state, arguments.Span);
 
         return await ScriptRunner.RunAsync(operation, state, arguments.Length).ConfigureAwait(false);
     }
@@ -239,16 +176,7 @@ internal sealed class LuauScriptFunction(
             cancellationToken,
             isAsync: true);
 
-        var baseTop = state.GetTop();
-        try
-        {
-            PushInvocation(state, argument);
-        }
-        catch
-        {
-            state.SetTop(baseTop);
-            throw;
-        }
+        PushInvocation(state, argument);
 
         return await ScriptRunner.RunAsync(operation, state, argumentCount: 1).ConfigureAwait(false);
     }
@@ -268,16 +196,7 @@ internal sealed class LuauScriptFunction(
             cancellationToken,
             isAsync: true);
 
-        var baseTop = state.GetTop();
-        try
-        {
-            PushInvocation(state, arguments.Span);
-        }
-        catch
-        {
-            state.SetTop(baseTop);
-            throw;
-        }
+        PushInvocation(state, arguments.Span);
 
         return await ScriptRunner.RunAsync(
             operation,
@@ -301,16 +220,7 @@ internal sealed class LuauScriptFunction(
             cancellationToken,
             isAsync: true);
 
-        var baseTop = state.GetTop();
-        try
-        {
-            PushInvocation(state, argument);
-        }
-        catch
-        {
-            state.SetTop(baseTop);
-            throw;
-        }
+        PushInvocation(state, argument);
 
         return await ScriptRunner.RunAsync(
             operation,
@@ -333,16 +243,7 @@ internal sealed class LuauScriptFunction(
             cancellationToken,
             isAsync: true);
 
-        var baseTop = state.GetTop();
-        try
-        {
-            PushInvocation(state, arguments.Span);
-        }
-        catch
-        {
-            state.SetTop(baseTop);
-            throw;
-        }
+        PushInvocation(state, arguments.Span);
 
         await ScriptRunner.RunVoidAsync(operation, arguments.Length).ConfigureAwait(false);
     }
@@ -361,33 +262,42 @@ internal sealed class LuauScriptFunction(
             cancellationToken,
             isAsync: true);
 
-        var baseTop = state.GetTop();
-        try
-        {
-            PushInvocation(state, argument);
-        }
-        catch
-        {
-            state.SetTop(baseTop);
-            throw;
-        }
+        PushInvocation(state, argument);
 
         await ScriptRunner.RunVoidAsync(operation, argumentCount: 1).ConfigureAwait(false);
     }
 
     void PushInvocation(LuauState state, ReadOnlySpan<LuauValue> arguments)
     {
-        state.Push(this);
-        for (var i = 0; i < arguments.Length; i++)
+        var baseTop = state.GetTop();
+        try
         {
-            state.Push(arguments[i]);
+            state.Push(this);
+            for (var i = 0; i < arguments.Length; i++)
+            {
+                state.Push(arguments[i]);
+            }
+        }
+        catch
+        {
+            state.SetTop(baseTop);
+            throw;
         }
     }
 
     void PushInvocation(LuauState state, LuauValue argument)
     {
-        state.Push(this);
-        state.Push(argument);
+        var baseTop = state.GetTop();
+        try
+        {
+            state.Push(this);
+            state.Push(argument);
+        }
+        catch
+        {
+            state.SetTop(baseTop);
+            throw;
+        }
     }
 
     static LuauExecutionOptions RequireZeroResults(LuauExecutionOptions? executionOptions)
