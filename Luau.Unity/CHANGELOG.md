@@ -4,6 +4,31 @@ All notable package changes are recorded here. The package follows semantic
 versioning while in preview; preview releases may make explicitly documented
 API or ABI breaks.
 
+## [0.3.1] - 2026-09-05
+
+### Fixed
+
+- Keep host property reads dynamic instead of caching getter values during
+  bytecode loading.
+- Allow unreachable VMs with managed callbacks to finalize while retaining
+  callback release tokens through native cleanup.
+- Resume asynchronous managed callbacks on the correct coroutine, preserve
+  callback arguments and result ownership, and reject continuations across
+  non-yieldable parent coroutines.
+- Reject ordinary script yields from root execution and function invocations;
+  explicit coroutine APIs retain their yield behavior.
+- Restore the coroutine stack when resume arguments fail validation so a
+  subsequent resume remains usable.
+- Bound decoded UTF-8 print output even when malformed input expands into
+  replacement characters.
+- Bound retained module-cache key and diagnostic-string payloads per root with
+  `MaxCachedModuleBytes` (16 MiB by default), including Unity state configuration.
+
+### Compatibility
+
+- Update the managed DLL and bundled native plugins together. The managed
+  runtime now requires the native coroutine-suspension capability.
+
 ## [0.3.0] - 2026-08-22
 
 ### Added
@@ -84,5 +109,6 @@ API or ABI breaks.
   paths.
 - Verification-only smoke types from the product API inventory.
 
+[0.3.1]: https://github.com/Quantum-Lion-Labs/Luau-Unity/releases/tag/v0.3.1
 [0.3.0]: https://github.com/Quantum-Lion-Labs/Luau-Unity/releases/tag/v0.3.0
 [0.2.0]: https://github.com/Quantum-Lion-Labs/Luau-Unity/releases/tag/v0.2.0

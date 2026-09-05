@@ -16,7 +16,7 @@ If a term on this page is unfamiliar,
 In Package Manager, choose **Add package from git URL** and enter:
 
 ```text
-https://github.com/Quantum-Lion-Labs/Luau-Unity.git?path=Luau.Unity#v0.3.0
+https://github.com/Quantum-Lion-Labs/Luau-Unity.git?path=Luau.Unity#v0.3.1
 ```
 
 Two samples come with it. **Getting Started** is the one this page walks through.

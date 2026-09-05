@@ -110,7 +110,7 @@ jobs:
           dotnet-version: 9.0.306
 
       - name: Validate deterministic release package
-        run: dotnet run --project tools/Luau.Tooling --configuration Release -- package-release --output native/luau-host/out/release/com.qll.luau.unity-0.3.0.tgz
+        run: dotnet run --project tools/Luau.Tooling --configuration Release -- package-release --output native/luau-host/out/release/com.qll.luau.unity-0.3.1.tgz
 
       - name: Upload deterministic package and file manifest
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -118,5 +118,5 @@ jobs:
           name: luau-unity-upm-release-candidate
           if-no-files-found: error
           path: |
-            native/luau-host/out/release/com.qll.luau.unity-0.3.0.tgz
-            native/luau-host/out/release/com.qll.luau.unity-0.3.0.tgz.manifest.json
+            native/luau-host/out/release/com.qll.luau.unity-0.3.1.tgz
+            native/luau-host/out/release/com.qll.luau.unity-0.3.1.tgz.manifest.json
