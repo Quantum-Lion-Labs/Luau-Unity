@@ -12,6 +12,7 @@ public sealed class HardeningConfigurationTests
         Assert.Equal(1024 * 1024, options.MaxSourceBytes);
         Assert.Equal(4 * 1024 * 1024, options.MaxBytecodeBytes);
         Assert.Equal(1024, options.MaxManagedHandleCount);
+        Assert.Equal(16L * 1024 * 1024, options.MaxCachedModuleBytes);
         Assert.Equal(TimeSpan.FromMilliseconds(250), execution.WallClockLimit);
         Assert.Equal(100_000, execution.InterruptCountLimit);
         Assert.Equal(64, execution.MaxResultCount);

@@ -15,6 +15,7 @@ public sealed record LuauStateOptions
     long? maxDecodedBytesPerOperation = 4L * 1024 * 1024;
     int maxDiagnosticBytes = 16 * 1024;
     int? maxCachedModuleCount = 256;
+    long? maxCachedModuleBytes = 16L * 1024 * 1024;
     int? maxModuleDependencyDepth = 32;
     LuauExecutionOptions defaultExecutionOptions = LuauExecutionOptions.Default;
     LuauBytecodePolicy bytecodePolicy = LuauBytecodePolicy.Reject;
@@ -40,6 +41,7 @@ public sealed record LuauStateOptions
         MaxDecodedBytesPerOperation = null,
         MaxDiagnosticBytes = 16 * 1024,
         MaxCachedModuleCount = null,
+        MaxCachedModuleBytes = null,
         MaxModuleDependencyDepth = null,
         DefaultExecutionOptions = LuauExecutionOptions.Unbounded,
         BytecodePolicy = LuauBytecodePolicy.Reject,
@@ -218,6 +220,29 @@ public sealed record LuauStateOptions
                     "A module-cache limit must be positive.");
             }
             maxCachedModuleCount = value;
+        }
+    }
+
+    /// <summary>
+    /// Gets the maximum retained UTF-16 payload bytes of cache keys and
+    /// string-valued module results in this root, or <see langword="null"/>
+    /// when explicitly unbounded. The default is 16 MiB. Object and dictionary
+    /// overhead is bounded separately by <see cref="MaxCachedModuleCount"/>;
+    /// referenced Luau objects remain subject to the native VM memory limit.
+    /// </summary>
+    public long? MaxCachedModuleBytes
+    {
+        get => maxCachedModuleBytes;
+        init
+        {
+            if (value.HasValue && value.Value <= 0)
+            {
+                throw new ArgumentOutOfRangeException(
+                    nameof(MaxCachedModuleBytes),
+                    value,
+                    "A module-cache byte limit must be positive.");
+            }
+            maxCachedModuleBytes = value;
         }
     }
 

@@ -66,7 +66,7 @@ So mods that shouldn't be able to see each other need separate roots, even when
 their module names happen to collide. Especially then.
 
 Module policy caps module count, admitted source and bytecode, dependency depth,
-diagnostics, and how many results stay cached. See
+diagnostics, cached result count, and retained managed cache string bytes. See
 [resource limits](resource-limits.md).
 
 ## Immutability

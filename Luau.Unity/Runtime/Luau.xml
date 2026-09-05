@@ -107,7 +107,8 @@
             <summary>
             Central UTF-8 decoder for native diagnostics and deliberately truncated
             display text. It never reads beyond the configured bound and never ends a
-            truncation in the middle of a UTF-8 sequence.
+            truncation in the middle of a UTF-8 sequence. Decoded text also fits the
+            bound when encoded as UTF-8, including replacement characters.
             </summary>
         </member>
         <member name="T:Luau.LuauContinuationDispatcher">
@@ -1105,6 +1106,9 @@
         </member>
         <member name="F:Luau.LuauModuleLimitKind.CachedResultCount">
             <summary>Retained module results in one root VM cache.</summary>
+        </member>
+        <member name="F:Luau.LuauModuleLimitKind.CachedResultBytes">
+            <summary>Retained UTF-16 payload bytes of root-cache keys and string results.</summary>
         </member>
         <member name="T:Luau.LuauModuleLimitException">
             <summary>Reports a finite module quota failure.</summary>
@@ -2243,6 +2247,15 @@
             <summary>
             Gets the maximum retained module results in this root VM's shared
             module cache, or <see langword="null"/> when explicitly unbounded.
+            </summary>
+        </member>
+        <member name="P:Luau.LuauStateOptions.MaxCachedModuleBytes">
+            <summary>
+            Gets the maximum retained UTF-16 payload bytes of cache keys and
+            string-valued module results in this root, or <see langword="null"/>
+            when explicitly unbounded. The default is 16 MiB. Object and dictionary
+            overhead is bounded separately by <see cref="P:Luau.LuauStateOptions.MaxCachedModuleCount"/>;
+            referenced Luau objects remain subject to the native VM memory limit.
             </summary>
         </member>
         <member name="P:Luau.LuauStateOptions.MaxModuleDependencyDepth">

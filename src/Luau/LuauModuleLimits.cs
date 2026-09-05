@@ -101,6 +101,8 @@ public enum LuauModuleLimitKind
     DependencyDepth = 5,
     /// <summary>Retained module results in one root VM cache.</summary>
     CachedResultCount = 6,
+    /// <summary>Retained UTF-16 payload bytes of root-cache keys and string results.</summary>
+    CachedResultBytes = 7,
 }
 
 /// <summary>Reports a finite module quota failure.</summary>
