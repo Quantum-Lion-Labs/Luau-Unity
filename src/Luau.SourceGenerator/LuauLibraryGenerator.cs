@@ -690,7 +690,7 @@ public sealed class LuauLibraryGenerator : IIncrementalGenerator
                     builder.AppendLine("{");
                     using (builder.BeginIndent())
                     {
-                        EmitCapabilityReturn(
+                        EmitReturn(
                             builder,
                             member.ValueKind,
                             $"target.{member.ManagedName}");
@@ -709,7 +709,7 @@ public sealed class LuauLibraryGenerator : IIncrementalGenerator
                     using (builder.BeginIndent())
                     {
                         builder.AppendLine(
-                            $"target.{member.ManagedName} = {CapabilityReadExpression(member.TypeName, member.ValueKind, 2)};");
+                            $"target.{member.ManagedName} = {ReadExpression(member.TypeName, member.ValueKind, 2)};");
                     }
                     builder.AppendLine("}),");
                 }
@@ -733,16 +733,18 @@ public sealed class LuauLibraryGenerator : IIncrementalGenerator
             builder.AppendLine("{");
             using (builder.BeginIndent())
             {
-                EmitCapabilityMethodBody(builder, library, member);
+                EmitMethodBody(builder, library, member, "target", firstArgumentIndex: 1);
             }
             builder.AppendLine("}),");
         }
     }
 
-    static void EmitCapabilityMethodBody(
+    static void EmitMethodBody(
         CodeBuilder builder,
         LuauLibraryContext library,
-        LuauLibraryMember method)
+        LuauLibraryMember method,
+        string target,
+        int firstArgumentIndex)
     {
         var argumentCount = method.Parameters.Count(
             static parameter => parameter.Kind == LuauLibraryParameterKind.Argument);
@@ -750,20 +752,20 @@ public sealed class LuauLibraryGenerator : IIncrementalGenerator
         {
             var callbackName = $"{library.LibraryName}.{method.LuauName}";
             var message = $"Host function '{callbackName}' expects at least {argumentCount} argument(s).";
-            using (builder.BeginBlock($"if (context.ArgumentCount < {argumentCount + 1})"))
+            using (builder.BeginBlock($"if (context.ArgumentCount < {argumentCount + firstArgumentIndex})"))
             {
                 builder.AppendLine($"throw new global::Luau.LuauException({Literal(message)});");
             }
         }
 
-        var argumentIndex = 1;
+        var argumentIndex = firstArgumentIndex;
         for (var parameterIndex = 0; parameterIndex < method.Parameters.Length; parameterIndex++)
         {
             var parameter = method.Parameters[parameterIndex];
             var expression = parameter.Kind switch
             {
                 LuauLibraryParameterKind.Argument =>
-                    CapabilityReadExpression(parameter.TypeName, parameter.ValueKind, argumentIndex++),
+                    ReadExpression(parameter.TypeName, parameter.ValueKind, argumentIndex++),
                 LuauLibraryParameterKind.CallContext => "context",
                 LuauLibraryParameterKind.CancellationToken => "context.CancellationToken",
                 LuauLibraryParameterKind.State => "context.State",
@@ -775,7 +777,7 @@ public sealed class LuauLibraryGenerator : IIncrementalGenerator
         var arguments = string.Join(
             ", ",
             Enumerable.Range(0, method.Parameters.Length).Select(static index => $"arg{index}"));
-        var invocation = $"target.{method.ManagedName}({arguments})";
+        var invocation = $"{target}.{method.ManagedName}({arguments})";
         switch (method.ReturnKind)
         {
             case LuauLibraryReturnKind.None:
@@ -783,28 +785,28 @@ public sealed class LuauLibraryGenerator : IIncrementalGenerator
                 break;
             case LuauLibraryReturnKind.Value:
                 builder.AppendLine($"var result = {invocation};");
-                EmitCapabilityReturn(builder, method.ValueKind, "result");
+                EmitReturn(builder, method.ValueKind, "result");
                 break;
             case LuauLibraryReturnKind.Async:
                 builder.AppendLine($"await {invocation};");
                 break;
             case LuauLibraryReturnKind.AsyncValue:
                 builder.AppendLine($"var result = await {invocation};");
-                EmitCapabilityReturn(builder, method.ValueKind, "result");
+                EmitReturn(builder, method.ValueKind, "result");
                 break;
             default:
                 throw new ArgumentOutOfRangeException();
         }
     }
 
-    static string CapabilityReadExpression(
+    static string ReadExpression(
         string typeName,
         LuauLibraryValueKind valueKind,
         int index) => valueKind == LuauLibraryValueKind.UnityVector3
         ? $"global::Luau.Unity.LuauUnityValue.ReadVector3(context, {index})"
         : $"context.Read<{typeName}>({index})";
 
-    static void EmitCapabilityReturn(
+    static void EmitReturn(
         CodeBuilder builder,
         LuauLibraryValueKind valueKind,
         string expression)
@@ -839,57 +841,8 @@ public sealed class LuauLibraryGenerator : IIncrementalGenerator
         builder.AppendLine("{");
         using (builder.BeginIndent())
         {
-            var argumentCount = method.Parameters.Count(
-                static parameter => parameter.Kind == LuauLibraryParameterKind.Argument);
-            if (argumentCount != 0)
-            {
-                var message = $"Host function '{callbackName}' expects at least {argumentCount} argument(s).";
-                using (builder.BeginBlock($"if (context.ArgumentCount < {argumentCount})"))
-                {
-                    builder.AppendLine($"throw new global::Luau.LuauException({Literal(message)});");
-                }
-            }
-
-            var argumentIndex = 0;
-            for (var parameterIndex = 0; parameterIndex < method.Parameters.Length; parameterIndex++)
-            {
-                var parameter = method.Parameters[parameterIndex];
-                var expression = parameter.Kind switch
-                {
-                    LuauLibraryParameterKind.Argument =>
-                        $"context.Read<{parameter.TypeName}>({argumentIndex++})",
-                    LuauLibraryParameterKind.CallContext => "context",
-                    LuauLibraryParameterKind.CancellationToken => "context.CancellationToken",
-                    LuauLibraryParameterKind.State => "context.State",
-                    _ => throw new ArgumentOutOfRangeException(),
-                };
-                builder.AppendLine($"var arg{parameterIndex} = {expression};");
-            }
-
             var target = method.IsStatic ? library.FullTypeName : "this";
-            var arguments = string.Join(
-                ", ",
-                Enumerable.Range(0, method.Parameters.Length).Select(static index => $"arg{index}"));
-            var invocation = $"{target}.{method.ManagedName}({arguments})";
-            switch (method.ReturnKind)
-            {
-                case LuauLibraryReturnKind.None:
-                    builder.AppendLine($"{invocation};");
-                    break;
-                case LuauLibraryReturnKind.Value:
-                    builder.AppendLine($"var result = {invocation};");
-                    builder.AppendLine("context.Return(result);");
-                    break;
-                case LuauLibraryReturnKind.Async:
-                    builder.AppendLine($"await {invocation};");
-                    break;
-                case LuauLibraryReturnKind.AsyncValue:
-                    builder.AppendLine($"var result = await {invocation};");
-                    builder.AppendLine("context.Return(result);");
-                    break;
-                default:
-                    throw new ArgumentOutOfRangeException();
-            }
+            EmitMethodBody(builder, library, method, target, firstArgumentIndex: 0);
         }
         builder.AppendLine("});");
     }
