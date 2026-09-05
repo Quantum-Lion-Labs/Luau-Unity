@@ -264,7 +264,6 @@ internal sealed unsafe class LuauVmContext
                 ResetAllocatorFailure();
                 activeOperation = operation;
                 ambientOperation.Value = operation;
-                operation.ArmCoroutineLifecycle();
                 return operation;
             }
         }

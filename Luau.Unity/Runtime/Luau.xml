@@ -1937,6 +1937,8 @@
             scope owns its disposable wrapper results and must be disposed. Returned
             child threads are caller-managed cached wrappers and must be disposed
             separately. Argument storage is never reused as a result destination.
+            Argument preparation failures preserve the stack and prior lifecycle
+            across all Resume APIs, allowing a retry with valid arguments.
             </summary>
         </member>
         <member name="M:Luau.LuauState.ResumeInto(System.Span{Luau.LuauValue},Luau.LuauExecutionOptions)">

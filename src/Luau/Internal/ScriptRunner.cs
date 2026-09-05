@@ -812,6 +812,7 @@ internal static class ScriptRunner
         int argumentCount)
     {
         using var access = operation.Context.EnterOperationNativeAccess(operation);
+        operation.ArmCoroutineLifecycle();
         return luau_host_resume((LuauHostState*)state, (LuauHostState*)from, argumentCount);
     }
 
