@@ -701,6 +701,12 @@
             Script closures and retained copies must be disposed before their root VM;
             callback-borrowed closures are valid only for their active callback frame.
             </summary>
+            <remarks>
+            Script invocations run on the root and must complete. An ordinary Luau yield
+            resets the invocation and throws <see cref="T:Luau.LuauException"/>. Asynchronous
+            invocations may still await managed callbacks; use a child coroutine for
+            explicitly resumable Luau execution.
+            </remarks>
         </member>
         <member name="P:Luau.LuauFunction.IsBorrowed">
             <summary>Gets whether this reference is valid only for its callback frame.</summary>
