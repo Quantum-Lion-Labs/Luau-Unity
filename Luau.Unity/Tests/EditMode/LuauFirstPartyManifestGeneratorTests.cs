@@ -159,6 +159,34 @@ namespace Luau.Unity.Tests
             Assert.That(manifest.entries, Is.Empty);
         }
 
+        [TestCase(LuauAssetImportPolicy.SourceOnly)]
+        [TestCase(LuauAssetImportPolicy.AllowFirstPartyPrecompile)]
+        public void UnexpectedRefreshFailureReplacesSuccessAndClearsValidator(
+            LuauAssetImportPolicy policy)
+        {
+            var previous = LuauFirstPartyManifestRefresh.RefreshNow(logErrors: false);
+            Assert.That(previous.IsManifestCurrent, Is.True);
+            Assert.That(FirstPartyBytecodeManifestCache.GetValidatorOrThrow(), Is.Not.Null);
+            LuauAssetImportSettings.SetImportPolicyForTests(policy);
+
+            var failed = LuauFirstPartyManifestRefresh.RefreshNowCore(
+                logErrors: false,
+                refresh: () => throw new IOException("Asset enumeration failed."));
+
+            Assert.That(failed, Is.Not.SameAs(previous));
+            Assert.That(LuauFirstPartyManifestGenerator.LastStatus, Is.SameAs(failed));
+            Assert.That(failed.IsManifestCurrent, Is.False);
+            Assert.That(failed.HasAssetSnapshot, Is.False);
+            Assert.That(failed.Errors.Single(), Does.Contain("Asset enumeration failed."));
+            Assert.Throws<InvalidOperationException>(() =>
+                FirstPartyBytecodeManifestCache.GetValidatorOrThrow());
+
+            var recovered = LuauFirstPartyManifestRefresh.RefreshNow(logErrors: false);
+            Assert.That(recovered.IsManifestCurrent, Is.True);
+            Assert.That(recovered.HasAssetSnapshot, Is.True);
+            Assert.That(recovered.Errors, Is.Empty);
+        }
+
         [Test]
         public void SourceOnlyBuildDeletesThePackageOwnedManifest()
         {

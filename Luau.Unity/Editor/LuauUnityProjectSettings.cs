@@ -257,12 +257,21 @@ namespace Luau.Unity.Editor
             }
             else
             {
-                EditorGUILayout.LabelField("Total .luau assets", status.TotalLuauAssets.ToString());
-                EditorGUILayout.LabelField("Opted in", status.OptedInAssets.ToString());
-                EditorGUILayout.LabelField("Successfully precompiled", status.PrecompiledAssets.ToString());
-                EditorGUILayout.LabelField(
-                    "Provenance",
-                    status.HasProvenanceId ? "Configured" : "Missing");
+                if (status.HasAssetSnapshot)
+                {
+                    EditorGUILayout.LabelField("Total .luau assets", status.TotalLuauAssets.ToString());
+                    EditorGUILayout.LabelField("Opted in", status.OptedInAssets.ToString());
+                    EditorGUILayout.LabelField("Successfully precompiled", status.PrecompiledAssets.ToString());
+                    EditorGUILayout.LabelField(
+                        "Provenance",
+                        status.HasProvenanceId ? "Configured" : "Missing");
+                }
+                else
+                {
+                    EditorGUILayout.HelpBox(
+                        "Asset counts and provenance are unavailable until a refresh completes.",
+                        MessageType.Info);
+                }
                 EditorGUILayout.LabelField(
                     "Manifest",
                     status.IsManifestCurrent ? "Current" : "Not current");

@@ -42,6 +42,13 @@ namespace Luau.Unity.Editor
 
         internal static LuauFirstPartyManifestStatus RefreshNow(bool logErrors)
         {
+            return RefreshNowCore(logErrors, LuauFirstPartyManifestGenerator.RefreshForCurrentPolicy);
+        }
+
+        internal static LuauFirstPartyManifestStatus RefreshNowCore(
+            bool logErrors,
+            Func<LuauFirstPartyManifestStatus> refresh)
+        {
             if (AssetDatabase.IsAssetImportWorkerProcess())
                 return LuauFirstPartyManifestGenerator.LastStatus;
 
@@ -56,7 +63,7 @@ namespace Luau.Unity.Editor
             running = true;
             try
             {
-                var status = LuauFirstPartyManifestGenerator.RefreshForCurrentPolicy();
+                var status = refresh();
                 if (logErrors && status.Errors.Count != 0)
                 {
                     Debug.LogError(
@@ -67,14 +74,14 @@ namespace Luau.Unity.Editor
             }
             catch (Exception exception)
             {
-                FirstPartyBytecodeManifestCache.Reload(null);
+                var status = LuauFirstPartyManifestGenerator.RecordRefreshFailure(exception);
                 if (logErrors)
                 {
                     Debug.LogError(
                         "Luau.Unity could not refresh the generated first-party manifest: " +
                         exception.Message);
                 }
-                return LuauFirstPartyManifestGenerator.LastStatus;
+                return status;
             }
             finally
             {
