@@ -37,30 +37,8 @@ internal static class PackageConsumerCommand
             var reference = options.Get("--package") ?? "file:" + repository.PathOf("Luau.Unity").Replace('\\', '/');
             var expectedCommit = options.Get("--expected-commit");
             var contentRoot = await ResolvePackageContentAsync(repository, project, reference, expectedCommit);
-            using var metadata = System.Text.Json.JsonDocument.Parse(
-                File.ReadAllText(Path.Combine(contentRoot, "package.json")));
-            var package = metadata.RootElement;
-            var packageName = package.GetProperty("name").GetString();
-            var packageVersion = package.GetProperty("version").GetString();
-            PackageStaticCommand.Require(packageName == "com.qll.luau.unity", $"Unexpected package identity: {packageName}");
-            PackageStaticCommand.Require(packageVersion is not null && Regex.IsMatch(
-                    packageVersion, @"^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$", RegexOptions.CultureInvariant),
-                $"Referenced package has an unsafe or invalid version: {packageVersion}");
             FileSystem.RequireFile(Path.Combine(contentRoot, "Runtime", "Luau.xml"), "Referenced XML documentation");
-
-            var samplesRoot = Path.Combine(project, "Assets", "Samples", "Luau.Unity", packageVersion!);
-            var declaredSamples = PackageStaticCommand.ValidateMaintainedSamples(package, "Referenced package");
-            foreach (var sample in declaredSamples)
-            {
-                var displayName = sample.GetProperty("displayName").GetString()!;
-                var relativePath = sample.GetProperty("path").GetString()!;
-                PackageStaticCommand.Require(relativePath.StartsWith("Samples~/", StringComparison.Ordinal),
-                    $"Unsafe package sample path: {relativePath}");
-                var source = Path.GetFullPath(Path.Combine(contentRoot, relativePath));
-                PackageStaticCommand.Require(source == contentRoot || PathSafety.IsStrictDescendant(source, contentRoot),
-                    $"Package sample escapes content root: {relativePath}");
-                FileSystem.CopyDirectory(source, Path.Combine(samplesRoot, displayName));
-            }
+            var samplesRoot = UnityProjectStaging.ImportSamples(contentRoot, project);
 
             // Compile the reusable Core in the documented consumer shape. The complete
             // demo is compiled separately by unity-test, which imports every sample asset.
@@ -98,31 +76,18 @@ internal static class PackageConsumerCommand
                 }
 
                 var pluginDirectory = Path.Combine(project, "Assets", "Plugins", "linux-x64");
-                Directory.CreateDirectory(pluginDirectory);
-                FileSystem.WriteUtf8(pluginDirectory + ".meta", UnityHostCommand.LinuxPluginFolderMeta + "\n");
-                FileSystem.CopyFile(pluginSource, Path.Combine(pluginDirectory, "libluau_host.so"));
-                FileSystem.WriteUtf8(
-                    Path.Combine(pluginDirectory, "libluau_host.so.meta"),
-                    UnityHostCommand.LinuxPluginMeta + "\n");
+                UnityProjectStaging.StageLinuxPlugin(pluginDirectory, pluginSource);
             }
 
             var log = Path.Combine(logs, "package-consumer.log");
             Console.WriteLine($"Running generated package consumer at {project} with Unity {editor.Version} after deleting the demo game and retaining its reusable Core.");
-            var result = await ProcessRunner.RunAsync(
-                editor.Executable,
-                [
-                    "-batchmode", "-nographics", "-quit", "-projectPath", project,
-                    "-executeMethod", "Luau.Unity.PackageConsumerProbe.RunConsumerProbe.Execute",
-                    "-logFile", log,
-                ],
-                project,
-                UnityHostCommand.UnityEnvironment(),
+            var result = await UnityProcess.RunAsync(
+                editor, project, log,
+                ["-quit", "-executeMethod", "Luau.Unity.PackageConsumerProbe.RunConsumerProbe.Execute"],
                 TimeSpan.FromMinutes(options.GetInt("--unity-timeout-minutes", 20)));
             var logText = File.Exists(log) ? File.ReadAllText(log) : result.CombinedOutput;
-            var compileFailure = Regex.IsMatch(
-                logText,
-                @"error CS\d+|Scripts have compiler errors|Compilation failed|Failed to resolve packages?|DllNotFoundException.*luau_host|EntryPointNotFoundException.*luau_host",
-                RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+            var compileFailure = UnityProcess.HasCompilerErrors(logText) ||
+                UnityProcess.HasPackageOrPluginErrors(logText);
             if (result.ExitCode != 0 || compileFailure ||
                 !logText.Contains(PassedMarker, StringComparison.Ordinal) ||
                 logText.Contains(FailedMarker, StringComparison.Ordinal))

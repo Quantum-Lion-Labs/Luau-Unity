@@ -13,82 +13,6 @@ internal static class UnityHostCommand
     internal const string PassedMarkerForAndroid = PassedMarker;
     internal const string FailedMarkerForAndroid = FailedMarker;
 
-    internal const string LinuxPluginMeta = """
-        fileFormatVersion: 2
-        guid: a26c7812bbd64b52a8cfe2c339e7e481
-        PluginImporter:
-          externalObjects: {}
-          serializedVersion: 3
-          iconMap: {}
-          executionOrder: {}
-          defineConstraints: []
-          isPreloaded: 0
-          isOverridable: 0
-          isExplicitlyReferenced: 0
-          validateReferences: 1
-          platformData:
-            Android:
-              enabled: 0
-              settings:
-                AndroidLibraryDependee: UnityLibrary
-                AndroidSharedLibraryType: Executable
-                CPU: ARM64
-            Any:
-              enabled: 0
-              settings:
-                Exclude Android: 1
-                Exclude Editor: 0
-                Exclude Linux64: 0
-                Exclude OSXUniversal: 1
-                Exclude WebGL: 1
-                Exclude Win: 1
-                Exclude Win64: 1
-                Exclude iOS: 1
-            Editor:
-              enabled: 1
-              settings:
-                CPU: x86_64
-                DefaultValueInitialized: true
-                OS: Linux
-            Linux64:
-              enabled: 1
-              settings:
-                CPU: x86_64
-            OSXUniversal:
-              enabled: 0
-              settings:
-                CPU: None
-            Win:
-              enabled: 0
-              settings:
-                CPU: None
-            Win64:
-              enabled: 0
-              settings:
-                CPU: None
-            iOS:
-              enabled: 0
-              settings:
-                AddToEmbeddedBinaries: false
-                CPU: AnyCPU
-                CompileFlags:
-                FrameworkDependencies:
-          userData:
-          assetBundleName:
-          assetBundleVariant:
-        """;
-
-    internal const string LinuxPluginFolderMeta = """
-        fileFormatVersion: 2
-        guid: 63d998da7ae84a97ba2b59484bb660f4
-        folderAsset: yes
-        DefaultImporter:
-          externalObjects: {}
-          userData:
-          assetBundleName:
-          assetBundleVariant:
-        """;
-
     public static async Task<int> RunAsync(RepositoryContext repository, CommandLine options)
     {
         var configuration = options.Get("--configuration", "Release");
@@ -166,7 +90,7 @@ internal static class UnityHostCommand
                 File.Delete(packageManifestMeta);
             }
 
-            ImportDeclaredSamples(stagedPackage, project);
+            UnityProjectStaging.ImportSamples(stagedPackage, project);
             RemoveGeneratedDirectories(project);
             NormalizeEmbeddedPackage(project);
             if (editor is not null)
@@ -186,7 +110,9 @@ internal static class UnityHostCommand
                     throw new ToolingException("--linux-plugin must be an absolute path.");
                 }
 
-                StageLinuxPlugin(stagedPackage, Path.GetFullPath(nativeHost));
+                UnityProjectStaging.StageLinuxPlugin(
+                    Path.Combine(stagedPackage, "Runtime", "Plugins", "linux-x64"),
+                    Path.GetFullPath(nativeHost));
             }
 
             StagePackagePluginOverride(repository, stagedPackage, options.Get("--windows-plugin"), "win-x64", "luau_host.dll");
@@ -207,15 +133,15 @@ internal static class UnityHostCommand
         if (compile)
         {
             var log = Path.Combine(logs, "compile.log");
-            await RunUnityAsync(editor!, project, log, ["-quit"], "Compile disposable Unity host project");
-            RejectCompilerErrors(log);
+            await UnityProcess.RequireAsync(editor!, project, log, ["-quit"], "Compile disposable Unity host project");
+            UnityProcess.RejectCompilerErrors(log);
         }
 
         if (editMode)
         {
             var log = Path.Combine(logs, "editmode-tests.log");
             var result = Path.Combine(results, "editmode-tests.xml");
-            await RunUnityAsync(
+            await UnityProcess.RequireAsync(
                 editor!, project, log,
                 ["-runTests", "-testPlatform", "EditMode", "-testResults", result],
                 "Run disposable Unity EditMode tests",
@@ -234,7 +160,7 @@ internal static class UnityHostCommand
         {
             var output = Path.Combine(builds, "linux-x64", "LuauSmoke");
             Directory.CreateDirectory(Path.GetDirectoryName(output)!);
-            await RunUnityAsync(
+            await UnityProcess.RequireAsync(
                 editor!, project, Path.Combine(logs, "linux-x64-smoke-build.log"),
                 [
                     "-buildTarget", "Linux64",
@@ -252,7 +178,7 @@ internal static class UnityHostCommand
         {
             var output = Path.Combine(builds, "windows-x64", "LuauSmoke.exe");
             Directory.CreateDirectory(Path.GetDirectoryName(output)!);
-            await RunUnityAsync(
+            await UnityProcess.RequireAsync(
                 editor!, project, Path.Combine(logs, "windows-x64-smoke-build.log"),
                 [
                     "-buildTarget", "Win64",
@@ -312,63 +238,6 @@ internal static class UnityHostCommand
         dependency["version"] = $"file:{PackageName}";
         dependency["source"] = "embedded";
         FileSystem.WriteUtf8(lockPath, packageLock.ToJsonString(JsonOptions.Indented) + "\n");
-    }
-
-    private static void ImportDeclaredSamples(string stagedPackage, string project)
-    {
-        using var packageDocument = JsonDocument.Parse(File.ReadAllText(Path.Combine(stagedPackage, "package.json")));
-        var package = packageDocument.RootElement;
-        PackageStaticCommand.Require(package.GetProperty("name").GetString() == PackageName,
-            $"Staged package has an unexpected identity: {package.GetProperty("name").GetString()}");
-        var version = package.GetProperty("version").GetString();
-        PackageStaticCommand.Require(version is not null && System.Text.RegularExpressions.Regex.IsMatch(
-                version, @"^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$",
-                System.Text.RegularExpressions.RegexOptions.CultureInvariant),
-            $"Staged package has an unsafe or invalid version: {version}");
-        var declaredSamples = PackageStaticCommand.ValidateMaintainedSamples(package, "Staged package");
-
-        var assets = Path.GetFullPath(Path.Combine(project, "Assets"));
-        FileSystem.RequireDirectory(assets, "Disposable Unity Assets directory");
-        var importRoot = Path.GetFullPath(Path.Combine(assets, "Samples", "Luau.Unity", version!));
-        PackageStaticCommand.Require(PathSafety.IsStrictDescendant(importRoot, assets),
-            "Disposable sample import root escaped the Assets tree.");
-        PackageStaticCommand.Require(!Directory.Exists(importRoot),
-            $"Disposable sample import root already exists: {importRoot}");
-        Directory.CreateDirectory(importRoot);
-
-        foreach (var sample in declaredSamples)
-        {
-            var relativePath = sample.GetProperty("path").GetString()!;
-            var displayName = sample.GetProperty("displayName").GetString()!;
-            var source = Path.GetFullPath(Path.Combine(stagedPackage, relativePath));
-            var destination = Path.GetFullPath(Path.Combine(importRoot, displayName));
-            PackageStaticCommand.Require(PathSafety.IsStrictDescendant(source, stagedPackage),
-                $"Declared package sample escapes the staged package: {relativePath}");
-            PackageStaticCommand.Require(PathSafety.IsStrictDescendant(destination, importRoot),
-                $"Declared package sample destination escapes the Assets tree: {displayName}");
-            FileSystem.RequireDirectory(source, $"Declared package sample '{displayName}'");
-            FileSystem.CopyDirectory(source, destination);
-        }
-
-        Console.WriteLine($"Imported {declaredSamples.Length} declared package samples into {importRoot}");
-    }
-
-    private static void StageLinuxPlugin(string stagedPackage, string source)
-    {
-        FileSystem.RequireFile(source, "Linux development host plugin");
-        var plugins = Path.Combine(stagedPackage, "Runtime", "Plugins");
-        var directory = Path.Combine(plugins, "linux-x64");
-        Directory.CreateDirectory(directory);
-        FileSystem.WriteUtf8(directory + ".meta", LinuxPluginFolderMeta + "\n");
-        var destination = Path.Combine(directory, "libluau_host.so");
-        FileSystem.CopyFile(source, destination);
-        FileSystem.WriteUtf8(destination + ".meta", LinuxPluginMeta + "\n");
-        if (!Hashing.FileSha256(source).Equals(Hashing.FileSha256(destination), StringComparison.Ordinal))
-        {
-            throw new ToolingException("Staged Linux plugin failed SHA256 verification.");
-        }
-
-        Console.WriteLine($"Staged disposable Linux plugin: {destination}");
     }
 
     private static void StagePackagePluginOverride(
@@ -438,7 +307,7 @@ internal static class UnityHostCommand
     {
         var output = Path.Combine(builds, platform, "LuauSmoke.apk");
         Directory.CreateDirectory(Path.GetDirectoryName(output)!);
-        await RunUnityAsync(
+        await UnityProcess.RequireAsync(
             editor, project, Path.Combine(logs, $"{platform}-smoke-build.log"),
             [
                 "-buildTarget", "Android",
@@ -452,37 +321,6 @@ internal static class UnityHostCommand
         await AndroidSmoke.RunAsync(
             repository, editor, options.Get("--adb"), serial, targetKind, output,
             AndroidPackageName, Path.Combine(logs, $"{platform}-player.log"), smokeTimeoutSeconds);
-    }
-
-    private static async Task RunUnityAsync(
-        UnityEditor editor,
-        string project,
-        string log,
-        string[] arguments,
-        string description,
-        TimeSpan? timeout = null)
-    {
-        Console.WriteLine($"==> {description} with Unity {editor.Version}");
-        Directory.CreateDirectory(Path.GetDirectoryName(log)!);
-        await ProcessRunner.RequireAsync(
-            editor.Executable,
-            ["-batchmode", "-nographics", "-projectPath", project, "-logFile", log, .. arguments],
-            project,
-            UnityEnvironment(),
-            timeout: timeout ?? TimeSpan.FromMinutes(30));
-    }
-
-    private static void RejectCompilerErrors(string log)
-    {
-        FileSystem.RequireFile(log, "Unity compilation log");
-        var text = File.ReadAllText(log);
-        if (System.Text.RegularExpressions.Regex.IsMatch(
-            text,
-            @"error CS\d{4}:|Scripts have compiler errors|Compilation failed",
-            System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.CultureInvariant))
-        {
-            throw new ToolingException($"Unity reported compiler errors. See {log}");
-        }
     }
 
     private static async Task RunDesktopPlayerSmokeAsync(
@@ -522,31 +360,6 @@ internal static class UnityHostCommand
                 File.Delete(meta);
             }
         }
-    }
-
-    internal static IReadOnlyDictionary<string, string?>? UnityEnvironment()
-    {
-        if (!OperatingSystem.IsLinux())
-        {
-            return null;
-        }
-
-        var compatibilityDirectory = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-            ".local", "opt", "unity-linux-compat", "usr", "lib", "x86_64-linux-gnu");
-        if (!File.Exists(Path.Combine(compatibilityDirectory, "libxml2.so.2")) ||
-            !File.Exists(Path.Combine(compatibilityDirectory, "libicuuc.so.70")))
-        {
-            return null;
-        }
-
-        var existing = Environment.GetEnvironmentVariable("LD_LIBRARY_PATH");
-        return new Dictionary<string, string?>
-        {
-            ["LD_LIBRARY_PATH"] = string.IsNullOrWhiteSpace(existing)
-                ? compatibilityDirectory
-                : compatibilityDirectory + Path.PathSeparator + existing,
-        };
     }
 }
 
