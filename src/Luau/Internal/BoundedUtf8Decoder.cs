@@ -5,7 +5,8 @@ namespace Luau;
 /// <summary>
 /// Central UTF-8 decoder for native diagnostics and deliberately truncated
 /// display text. It never reads beyond the configured bound and never ends a
-/// truncation in the middle of a UTF-8 sequence.
+/// truncation in the middle of a UTF-8 sequence. Decoded text also fits the
+/// bound when encoded as UTF-8, including replacement characters.
 /// </summary>
 internal static unsafe class BoundedUtf8Decoder
 {
@@ -24,9 +25,32 @@ internal static unsafe class BoundedUtf8Decoder
         var boundedLength = GetValidPrefixLength(value, length, maxUtf8Bytes);
 
         truncated = length > (ulong)boundedLength;
-        return boundedLength == 0
+        var decoded = boundedLength == 0
             ? string.Empty
             : Encoding.UTF8.GetString(new ReadOnlySpan<byte>(value, boundedLength));
+
+        // Invalid input can expand: one 0xff byte becomes a three-byte U+FFFD.
+        // Bound the decoded representation as well as the native read. The
+        // decoder produces valid UTF-16, so surrogate pairs must stay together.
+        var remainingBytes = maxUtf8Bytes;
+        for (var index = 0; index < decoded.Length; index++)
+        {
+            var character = decoded[index];
+            var isPair = char.IsHighSurrogate(character) && index + 1 < decoded.Length &&
+                char.IsLowSurrogate(decoded[index + 1]);
+            var byteCount = isPair ? 4 : character <= '\u007f' ? 1 : character <= '\u07ff' ? 2 : 3;
+            if (byteCount > remainingBytes)
+            {
+                truncated = true;
+                return decoded.Substring(0, index);
+            }
+
+            remainingBytes -= byteCount;
+            if (isPair)
+                index++;
+        }
+
+        return decoded;
     }
 
     internal static string DecodeDiagnostic(byte* value, ulong length, int maxUtf8Bytes)

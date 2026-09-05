@@ -523,8 +523,8 @@ public sealed class Stage6OwnershipAndDecodingTests
         fixed (byte* pointer = invalid)
         {
             var decoded = BoundedUtf8Decoder.DecodeDiagnostic(pointer, (ulong)invalid.Length, 3);
-            Assert.EndsWith("a", decoded, StringComparison.Ordinal);
-            Assert.True(Encoding.UTF8.GetByteCount(decoded) <= 7);
+            Assert.Equal("\uFFFD", decoded);
+            Assert.Equal(3, Encoding.UTF8.GetByteCount(decoded));
         }
     }
 
@@ -535,6 +535,7 @@ public sealed class Stage6OwnershipAndDecodingTests
         Assert.NotNull(defaults.MaxDecodedStringBytes);
         Assert.NotNull(defaults.MaxDecodedBytesPerOperation);
         Assert.NotNull(defaults.MaxCachedModuleCount);
+        Assert.Equal(16L * 1024 * 1024, defaults.MaxCachedModuleBytes);
         Assert.NotNull(defaults.MaxModuleDependencyDepth);
         Assert.True(defaults.MaxDiagnosticBytes > 0);
 
@@ -542,6 +543,7 @@ public sealed class Stage6OwnershipAndDecodingTests
         Assert.Null(unbounded.MaxDecodedStringBytes);
         Assert.Null(unbounded.MaxDecodedBytesPerOperation);
         Assert.Null(unbounded.MaxCachedModuleCount);
+        Assert.Null(unbounded.MaxCachedModuleBytes);
         Assert.Null(unbounded.MaxModuleDependencyDepth);
         Assert.True(unbounded.MaxDiagnosticBytes > 0);
 
@@ -551,6 +553,7 @@ public sealed class Stage6OwnershipAndDecodingTests
             MaxDecodedBytesPerOperation = 456,
             MaxDiagnosticBytes = 78,
             MaxCachedModuleCount = 9,
+            MaxCachedModuleBytes = 1024,
             MaxModuleDependencyDepth = 10,
         };
         var snapshot = original.Snapshot();
@@ -565,6 +568,10 @@ public sealed class Stage6OwnershipAndDecodingTests
             () => new LuauStateOptions { MaxDiagnosticBytes = 0 });
         Assert.Throws<ArgumentOutOfRangeException>(
             () => new LuauStateOptions { MaxCachedModuleCount = 0 });
+        Assert.Throws<ArgumentOutOfRangeException>(
+            () => new LuauStateOptions { MaxCachedModuleBytes = 0 });
+        Assert.Throws<ArgumentOutOfRangeException>(
+            () => new LuauStateOptions { MaxCachedModuleBytes = -1 });
         Assert.Throws<ArgumentOutOfRangeException>(
             () => new LuauStateOptions { MaxModuleDependencyDepth = 0 });
     }

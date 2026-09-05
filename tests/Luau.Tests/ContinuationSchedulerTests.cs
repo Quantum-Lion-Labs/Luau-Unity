@@ -197,6 +197,50 @@ public sealed class ContinuationSchedulerTests
         }
     }
 
+    [Fact]
+    public async Task RootYieldAfterAsyncCallbackResetsOnConfiguredScheduler()
+    {
+        using var context = new SingleThreadSynchronizationContext();
+        var scheduler = await context.CreateSchedulerAsync();
+        LuauState? state = null;
+        try
+        {
+            state = await LuauContinuationDispatcher.InvokeAsync(scheduler, () =>
+            {
+                var created = LuauState.Create(new LuauStateOptions
+                {
+                    DefaultExecutionOptions = new LuauExecutionOptions
+                    {
+                        ContinuationScheduler = scheduler,
+                        WallClockLimit = TimeSpan.FromSeconds(10),
+                    },
+                });
+                created.OpenCoroutineLibrary();
+                created["pause"] = created.CreateAsyncFunction(async _ => await Task.Yield());
+                return created;
+            });
+
+            var execution = await LuauContinuationDispatcher.InvokeAsync(scheduler,
+                () => state.DoStringAsync("pause(); coroutine.yield(7); return 9", "@scheduler/yield.luau"));
+            var exception = await Assert.ThrowsAsync<LuauException>(
+                () => execution.AsTask().WaitAsync(TimeSpan.FromSeconds(10)));
+            Assert.Contains("cannot yield", exception.Message);
+            Assert.Equal("@scheduler/yield.luau", exception.ChunkName);
+
+            await LuauContinuationDispatcher.InvokeAsync(scheduler, () =>
+            {
+                Assert.Equal(0, state.GetTop());
+                using var result = state.DoString("return 11");
+                Assert.Equal(11, result.Read<int>(0));
+            });
+        }
+        finally
+        {
+            if (state != null)
+                await LuauContinuationDispatcher.InvokeAsync(scheduler, state.Dispose);
+        }
+    }
+
     sealed class InlineScheduler : ILuauContinuationScheduler
     {
         public int PostCount { get; private set; }

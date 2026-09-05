@@ -269,6 +269,7 @@ internal static class ScriptRunner
             {
                 case ScriptYieldReason.None:
                     ThrowIfUninjectedCallbackFailure(operation, state);
+                    RejectRootYield(operation, state);
                     var yieldedResultCount = GetResultCount(operation, state, baseTop);
                     operation.CompleteCoroutineSuspended();
                     return yieldedResultCount;
@@ -369,6 +370,7 @@ internal static class ScriptRunner
                         () =>
                         {
                             ThrowIfUninjectedCallbackFailure(operation, state);
+                            RejectRootYield(operation, state);
                             return GetResultCount(operation, state, baseTop);
                         }).ConfigureAwait(false);
                     operation.CompleteCoroutineSuspended();
@@ -466,6 +468,24 @@ internal static class ScriptRunner
         operation.RecordCallbackFailure(callbackName, new InvalidOperationException(
             "An asynchronous managed callback requires yieldable Luau execution through all parent coroutines."));
         ThrowIfUninjectedCallbackFailure(operation, state);
+    }
+
+    static void RejectRootYield(ScriptOperation operation, IntPtr state)
+    {
+        if (!operation.State.IsMainThread)
+        {
+            return;
+        }
+
+        // Root calls have no continuation owner. Leaving one suspended would
+        // make the next invocation resume it instead of the requested function.
+        // Reset before result validation, which can itself throw on a value yield.
+        Abort(operation, state);
+        throw new LuauException(
+            LuauDiagnosticMessages.WithChunk(
+                "The root Luau state cannot yield. Use a child coroutine for resumable execution.",
+                operation.ChunkName),
+            operation.ChunkName);
     }
 
     static int GetResultCount(ScriptOperation operation, IntPtr state, int baseTop)
@@ -792,6 +812,7 @@ internal static class ScriptRunner
         int argumentCount)
     {
         using var access = operation.Context.EnterOperationNativeAccess(operation);
+        operation.ArmCoroutineLifecycle();
         return luau_host_resume((LuauHostState*)state, (LuauHostState*)from, argumentCount);
     }
 

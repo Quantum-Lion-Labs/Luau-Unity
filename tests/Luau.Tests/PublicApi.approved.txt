@@ -60,6 +60,7 @@ field Luau.LuauLoadInputKind :: Luau.LuauLoadInputKind Bytecode = 1
 field Luau.LuauLoadInputKind :: Luau.LuauLoadInputKind Source = 0
 field Luau.LuauModuleLimitKind :: Luau.LuauModuleLimitKind BundleBytecodeBytes = 3
 field Luau.LuauModuleLimitKind :: Luau.LuauModuleLimitKind BytecodeBytesPerModule = 2
+field Luau.LuauModuleLimitKind :: Luau.LuauModuleLimitKind CachedResultBytes = 7
 field Luau.LuauModuleLimitKind :: Luau.LuauModuleLimitKind CachedResultCount = 6
 field Luau.LuauModuleLimitKind :: Luau.LuauModuleLimitKind DependencyDepth = 5
 field Luau.LuauModuleLimitKind :: Luau.LuauModuleLimitKind ModuleCount = 0
@@ -462,6 +463,7 @@ property Luau.LuauStateOptions :: System.Nullable`1[System.Int32] MaxDecodedStri
 property Luau.LuauStateOptions :: System.Nullable`1[System.Int32] MaxManagedHandleCount { get; set; }
 property Luau.LuauStateOptions :: System.Nullable`1[System.Int32] MaxModuleDependencyDepth { get; set; }
 property Luau.LuauStateOptions :: System.Nullable`1[System.Int32] MaxSourceBytes { get; set; }
+property Luau.LuauStateOptions :: System.Nullable`1[System.Int64] MaxCachedModuleBytes { get; set; }
 property Luau.LuauStateOptions :: System.Nullable`1[System.Int64] MaxDecodedBytesPerOperation { get; set; }
 property Luau.LuauStateOptions :: System.Nullable`1[System.Int64] MemoryLimitBytes { get; set; }
 property Luau.LuauSynchronizationContextScheduler :: Int32 OwnerManagedThreadId { get; }

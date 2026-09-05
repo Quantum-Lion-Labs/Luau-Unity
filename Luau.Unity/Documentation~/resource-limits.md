@@ -40,7 +40,7 @@ want to lower one.
 - the size of source and bytecode you're allowed to load;
 - decoded result size, both per string and in total;
 - how many object capabilities can be live at once;
-- module dependency depth and how many module results stay cached;
+- module dependency depth, cached result count, and retained cache string bytes;
 - execution duration, interrupt count, and result count.
 
 The VM memory cap covers allocations the VM makes. It does not cover allocations
@@ -59,6 +59,21 @@ contain, total admitted source, module ID length, compiled bytecode per module,
 and total bundle bytecode. `LuauModuleLimits.UnsafeUnbounded` is the explicit
 opt-out for trusted content — the name is a warning. Cache count and dependency
 depth still come from `LuauStateOptions` either way.
+
+`LuauStateOptions.MaxCachedModuleBytes` also limits retained cache keys and
+string-valued module results to **16 MiB per root** by default. It counts their
+UTF-16 character payload (two bytes per character), including resolver-qualified
+keys, across all maps, bundles, and execution operations on that root. Cache hits
+do not consume additional budget. A publication that would exceed the limit fails
+with `LuauModuleLimitException` and `LimitKind == CachedResultBytes`; the result
+is not cached, and previously cached modules remain usable.
+
+This managed budget is separate from `MemoryLimitBytes`. Tables, functions, and
+other referenced Luau values keep their contents in native VM memory. Managed
+object headers and dictionary overhead are bounded by the cache count limit,
+rather than included in the byte calculation. Transient decoding still uses the
+per-string and per-operation limits. Keep both cache limits finite for untrusted
+modules; `UnboundedResources` explicitly removes both.
 
 ## Compiler queue limits
 
@@ -87,6 +102,8 @@ The default `print` binding caps arguments per call, UTF-8 bytes per message, an
 messages per second, so a script in a tight loop can't drown your Console or your
 log file. Tune them on `LuauUnityOptions` (`MaxPrintArguments`,
 `MaxPrintUtf8Bytes`, `MaxPrintMessagesPerSecond`).
+The byte cap includes UTF-8 replacement characters produced by malformed input
+and the truncation marker. Later arguments are skipped once a value is truncated.
 
 If you replace `print` or add your own logging function, rate-limit it yourself.
 Nothing does that for you.

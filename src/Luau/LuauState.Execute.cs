@@ -507,6 +507,8 @@ partial class LuauState
     /// scope owns its disposable wrapper results and must be disposed. Returned
     /// child threads are caller-managed cached wrappers and must be disposed
     /// separately. Argument storage is never reused as a result destination.
+    /// Argument preparation failures preserve the stack and prior lifecycle
+    /// across all Resume APIs, allowing a retry with valid arguments.
     /// </summary>
     public LuauResultScope Resume(
         ReadOnlySpan<LuauValue> arguments = default,
@@ -515,7 +517,7 @@ partial class LuauState
         EnsureCoroutine();
         var hasFunction = HasInitialCoroutineFunction();
         using var operation = BeginOperation((string?)null, executionOptions, default, isAsync: false);
-        PushArguments(arguments);
+        PushResumeArguments(arguments);
         return ScriptRunner.Run(operation, this, arguments.Length, hasFunction);
     }
 
@@ -545,7 +547,7 @@ partial class LuauState
         EnsureCoroutine();
         var hasFunction = HasInitialCoroutineFunction();
         using var operation = BeginOperation((string?)null, executionOptions, default, isAsync: false);
-        PushArguments(arguments);
+        PushResumeArguments(arguments);
         return ScriptRunner.Run(operation, this, arguments.Length, destination, hasFunction);
     }
 
@@ -561,10 +563,7 @@ partial class LuauState
         EnsureCoroutine();
         var hasFunction = HasInitialCoroutineFunction();
         using var operation = BeginOperation((string?)null, executionOptions, cancellationToken, isAsync: true);
-        for (var i = 0; i < arguments.Length; i++)
-        {
-            Push(arguments.Span[i]);
-        }
+        PushResumeArguments(arguments.Span);
 
         return await ScriptRunner.RunAsync(operation, this, arguments.Length, hasFunction).ConfigureAwait(false);
     }
@@ -601,10 +600,7 @@ partial class LuauState
         EnsureCoroutine();
         var hasFunction = HasInitialCoroutineFunction();
         using var operation = BeginOperation((string?)null, executionOptions, cancellationToken, isAsync: true);
-        for (var i = 0; i < arguments.Length; i++)
-        {
-            Push(arguments.Span[i]);
-        }
+        PushResumeArguments(arguments.Span);
 
         return await ScriptRunner.RunAsync(
             operation,
@@ -668,11 +664,20 @@ partial class LuauState
         }
     }
 
-    void PushArguments(ReadOnlySpan<LuauValue> arguments)
+    void PushResumeArguments(ReadOnlySpan<LuauValue> arguments)
     {
-        for (var i = 0; i < arguments.Length; i++)
+        var baseTop = GetTop();
+        try
         {
-            Push(arguments[i]);
+            for (var i = 0; i < arguments.Length; i++)
+            {
+                Push(arguments[i]);
+            }
+        }
+        catch
+        {
+            SetTop(baseTop);
+            throw;
         }
     }
 

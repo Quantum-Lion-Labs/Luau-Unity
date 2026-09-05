@@ -5,6 +5,12 @@ namespace Luau;
 /// Script closures and retained copies must be disposed before their root VM;
 /// callback-borrowed closures are valid only for their active callback frame.
 /// </summary>
+/// <remarks>
+/// Script invocations run on the root and must complete. An ordinary Luau yield
+/// resets the invocation and throws <see cref="LuauException"/>. Asynchronous
+/// invocations may still await managed callbacks; use a child coroutine for
+/// explicitly resumable Luau execution.
+/// </remarks>
 public abstract class LuauFunction : IDisposable, ILuauCallbackBorrowedReference
 {
     LuauState? state;

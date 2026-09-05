@@ -46,6 +46,7 @@ internal sealed unsafe class LuauVmContext
     readonly Dictionary<int, int> managedCallbackNativeReferences = [];
     readonly HashSet<int> managedCallbackWrapperOwners = [];
     readonly Dictionary<string, LuauValue> moduleCache = new(StringComparer.Ordinal);
+    long cachedModuleBytes;
     readonly HashSet<string> loadingModules = new(StringComparer.Ordinal);
     readonly HashSet<IntPtr> sandboxedThreads = [];
     readonly List<int> deferredReferences = [];
@@ -264,7 +265,6 @@ internal sealed unsafe class LuauVmContext
                 ResetAllocatorFailure();
                 activeOperation = operation;
                 ambientOperation.Value = operation;
-                operation.ArmCoroutineLifecycle();
                 return operation;
             }
         }
@@ -609,7 +609,8 @@ internal sealed unsafe class LuauVmContext
                 ThrowHelper.ThrowObjectDisposedException(nameof(LuauState));
             }
 
-            if (!moduleCache.ContainsKey(key) &&
+            var replacing = moduleCache.TryGetValue(key, out var previous);
+            if (!replacing &&
                 Options.MaxCachedModuleCount is { } limit &&
                 moduleCache.Count >= limit)
             {
@@ -619,9 +620,25 @@ internal sealed unsafe class LuauVmContext
                     limit);
             }
 
+            var retainedBytes = checked(cachedModuleBytes -
+                (replacing ? GetCachedModuleBytes(key, previous) : 0) + GetCachedModuleBytes(key, value));
+            if (Options.MaxCachedModuleBytes is { } byteLimit && retainedBytes > byteLimit)
+            {
+                throw new LuauModuleLimitException(
+                    LuauModuleLimitKind.CachedResultBytes,
+                    retainedBytes,
+                    byteLimit);
+            }
+
+            // Publish before committing accounting so failed dictionary growth
+            // cannot consume budget. Rejected values remain owned by the caller.
             moduleCache[key] = value;
+            cachedModuleBytes = retainedBytes;
         }
     }
+
+    static long GetCachedModuleBytes(string key, LuauValue value) =>
+        2L * key.Length + (value.Type == LuauType.String ? 2L * value.Read<string>().Length : 0);
 
     internal void BeginModuleLoad(string key, string requireArgument)
     {
@@ -917,6 +934,7 @@ internal sealed unsafe class LuauVmContext
                 states.Clear();
                 rootEntry = null;
                 moduleCache.Clear();
+                cachedModuleBytes = 0;
                 loadingModules.Clear();
                 sandboxedThreads.Clear();
 

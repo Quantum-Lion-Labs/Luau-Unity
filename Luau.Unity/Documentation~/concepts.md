@@ -15,6 +15,12 @@ it and you must dispose it.
 
 Wherever these docs say "root", they mean this object, never a scene root.
 
+Execution on the root must complete: an ordinary `coroutine.yield()` resets
+the current call and throws `LuauException`. This includes root `DoString` and
+all script-function invocations. For resumable execution, run source on a child
+thread and continue it with `Resume` or `ResumeAsync`. Asynchronous root calls
+can still await managed callbacks.
+
 **Sandboxed thread** — a cheap script environment running inside a root. Threads
 share the root's globals and host functions, but each one gets its own writable
 global table, so a variable one script declares is invisible to the next. This

@@ -173,6 +173,8 @@ internal sealed class ScriptOperation : IDisposable
 
     internal void ArmCoroutineLifecycle()
     {
+        // Admission and argument preparation do not change the native
+        // coroutine. Commit lifecycle tracking only when execution enters it.
         if (Mode != ScriptOperationMode.TopLevelResume || State.IsMainThread)
         {
             return;
