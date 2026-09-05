@@ -21,7 +21,7 @@ internal sealed class LuauManagedCallbackRegistration
         Id = id;
         Name = name;
         SynchronousCallback = callback;
-        nativeReleaseHandle = GCHandle.Alloc(this, GCHandleType.WeakTrackResurrection);
+        nativeReleaseHandle = GCHandle.Alloc(this, GCHandleType.Weak);
     }
 
     internal LuauManagedCallbackRegistration(
@@ -34,13 +34,15 @@ internal sealed class LuauManagedCallbackRegistration
         Id = id;
         Name = name;
         AsynchronousCallback = callback;
-        nativeReleaseHandle = GCHandle.Alloc(this, GCHandleType.WeakTrackResurrection);
+        nativeReleaseHandle = GCHandle.Alloc(this, GCHandleType.Weak);
     }
 
     readonly LuauVmContext Owner;
     // The VM owns registrations. A native release token must not root the VM
-    // through callback closures or capability bindings. Track resurrection so
-    // destructors can still queue releases while the root finalizer closes it.
+    // through callback closures or capability bindings. IL2CPP supports only
+    // non-resurrection weak handles. If GC clears the target before root
+    // finalization, destructors may skip queuing: CloseNative frees every
+    // remaining token after closing the VM regardless of release counts.
     GCHandle nativeReleaseHandle;
     int nativeReleaseHandleDisposed;
     int pendingNativeReleaseCount;

@@ -10,8 +10,8 @@ API or ABI breaks.
 
 - Keep host property reads dynamic instead of caching getter values during
   bytecode loading.
-- Allow unreachable VMs with managed callbacks to finalize while retaining
-  callback release tokens through native cleanup.
+- Allow unreachable VMs with managed callbacks to finalize, using weak handles
+  supported by IL2CPP and releasing all callback tokens after native cleanup.
 - Resume asynchronous managed callbacks on the correct coroutine, preserve
   callback arguments and result ownership, and reject continuations across
   non-yieldable parent coroutines.
