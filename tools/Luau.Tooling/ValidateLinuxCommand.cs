@@ -43,7 +43,6 @@ internal static class ValidateLinuxCommand
             ["--configuration", "Release", "--iterations", options.GetInt("--soak-iterations", 25).ToString(), "--native-host", nativeHost]));
         await ManagedHarnessSelectionCommand.RunAsync(repository, new CommandLine([]));
         await ManagedArtifactsCommand.RunAsync(repository, new CommandLine(["--configuration", "Release", "--check"]));
-        await PackageStaticCommand.RunAsync(repository, new CommandLine([]));
         var policy = ReleasePolicy.Load(repository);
         await PackageReleaseCommand.RunAsync(repository, new CommandLine(
             ["--output", $"native/luau-host/out/release/{policy.PackageId}-{policy.PackageVersion}.tgz"]));

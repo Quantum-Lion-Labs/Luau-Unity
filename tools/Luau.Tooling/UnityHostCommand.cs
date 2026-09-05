@@ -193,7 +193,8 @@ internal static class UnityHostCommand
             StagePackagePluginOverride(repository, stagedPackage, options.Get("--android-arm64-plugin"), "android-arm64", "libluau_host.so");
             StagePackagePluginOverride(repository, stagedPackage, options.Get("--android-x64-plugin"), "android-x64", "libluau_host.so");
 
-            await BuildManagedArtifactsAsync(repository, stagedPackage, nativeHost, configuration);
+            await ManagedArtifacts.BuildAsync(repository, configuration, ManagedArtifactBuildMode.UnityStaging, nativeHost);
+            ManagedArtifacts.CopyOrCheck(repository, configuration, stagedPackage, check: false);
             Console.WriteLine($"Disposable Unity host project prepared at {project}");
         }
 
@@ -350,37 +351,6 @@ internal static class UnityHostCommand
         }
 
         Console.WriteLine($"Imported {declaredSamples.Length} declared package samples into {importRoot}");
-    }
-
-    private static async Task BuildManagedArtifactsAsync(
-        RepositoryContext repository,
-        string stagedPackage,
-        string nativeHost,
-        string configuration)
-    {
-        await ProcessRunner.RequireAsync(
-            "dotnet",
-            [
-                "build", repository.PathOf("src", "Luau", "Luau.csproj"),
-                "--configuration", configuration, "--framework", "netstandard2.1", "--nologo",
-                $"-p:LuauHostNativePath={Path.GetFullPath(nativeHost)}",
-            ], repository.Root);
-        await ProcessRunner.RequireAsync(
-            "dotnet",
-            ["build", repository.PathOf("src", "Luau.SourceGenerator", "Luau.SourceGenerator.csproj"), "--configuration", configuration, "--nologo"],
-            repository.Root);
-
-        foreach (var pair in new[]
-        {
-            (repository.PathOf("src", "Luau", "bin", configuration, "netstandard2.1", "Luau.dll"), "Luau.dll"),
-            (repository.PathOf("src", "Luau", "bin", configuration, "netstandard2.1", "Luau.xml"), "Luau.xml"),
-            (repository.PathOf("src", "Luau.SourceGenerator", "bin", configuration, "netstandard2.0", "Luau.SourceGenerator.dll"), "Luau.SourceGenerator.dll"),
-        })
-        {
-            var destination = Path.Combine(stagedPackage, "Runtime", pair.Item2);
-            FileSystem.CopyFile(pair.Item1, destination);
-            Console.WriteLine($"Installed managed artifact: {destination} (SHA256={Hashing.FileSha256(destination)})");
-        }
     }
 
     private static void StageLinuxPlugin(string stagedPackage, string source)
