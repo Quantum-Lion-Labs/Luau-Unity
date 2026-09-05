@@ -386,7 +386,7 @@ namespace Luau.Unity
             {
                 if (index > 0)
                 {
-                    if (emittedUtf8Bytes == maxUtf8Bytes)
+                    if (emittedUtf8Bytes >= maxUtf8Bytes)
                     {
                         truncated = true;
                         break;
@@ -397,7 +397,7 @@ namespace Luau.Unity
                 }
 
                 var remainingUtf8Bytes = maxUtf8Bytes - emittedUtf8Bytes;
-                if (remainingUtf8Bytes == 0)
+                if (remainingUtf8Bytes <= 0)
                 {
                     truncated = true;
                     break;

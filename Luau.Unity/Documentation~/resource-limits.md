@@ -87,6 +87,8 @@ The default `print` binding caps arguments per call, UTF-8 bytes per message, an
 messages per second, so a script in a tight loop can't drown your Console or your
 log file. Tune them on `LuauUnityOptions` (`MaxPrintArguments`,
 `MaxPrintUtf8Bytes`, `MaxPrintMessagesPerSecond`).
+The byte cap includes UTF-8 replacement characters produced by malformed input
+and the truncation marker. Later arguments are skipped once a value is truncated.
 
 If you replace `print` or add your own logging function, rate-limit it yourself.
 Nothing does that for you.

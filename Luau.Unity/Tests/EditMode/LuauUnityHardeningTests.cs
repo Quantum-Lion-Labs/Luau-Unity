@@ -100,6 +100,24 @@ namespace Luau.Unity.Tests
             Assert.That(Encoding.UTF8.GetByteCount(messages[1]), Is.LessThanOrEqualTo(12));
         }
 
+        [TestCase(false)]
+        [TestCase(true)]
+        public void PrintBoundsMalformedUtf8AndSafelyTruncatesFollowingArguments(bool hasTail)
+        {
+            var messages = new List<string>();
+            using var root = LuauUnity.CreateState(new LuauUnityOptions { Log = messages.Add });
+            using var script = root.CreateSandboxedThread();
+            using var results = script.DoString(
+                "print(string.rep(string.char(255), 4096)" + (hasTail ? ", 'tail'" : "") +
+                "); print('still running')");
+
+            Assert.That(messages, Has.Count.EqualTo(2));
+            Assert.That(Encoding.UTF8.GetByteCount(messages[0]), Is.LessThanOrEqualTo(4096));
+            Assert.That(messages[0], Does.EndWith("..."));
+            Assert.That(messages[0], Does.Not.Contain("tail"));
+            Assert.That(messages[1], Is.EqualTo("still running"));
+        }
+
         [TestCase(0, 128, "maxArguments")]
         [TestCase(4, 0, "maxUtf8Bytes")]
         public void RegisterPrintRejectsNonPositiveLimits(

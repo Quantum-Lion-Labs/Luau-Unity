@@ -523,8 +523,8 @@ public sealed class Stage6OwnershipAndDecodingTests
         fixed (byte* pointer = invalid)
         {
             var decoded = BoundedUtf8Decoder.DecodeDiagnostic(pointer, (ulong)invalid.Length, 3);
-            Assert.EndsWith("a", decoded, StringComparison.Ordinal);
-            Assert.True(Encoding.UTF8.GetByteCount(decoded) <= 7);
+            Assert.Equal("\uFFFD", decoded);
+            Assert.Equal(3, Encoding.UTF8.GetByteCount(decoded));
         }
     }
 
