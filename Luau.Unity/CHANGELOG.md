@@ -35,6 +35,10 @@ API or ABI breaks.
   with `table.move` over a huge, mostly empty range. On 0.729,
   `table.move({}, 1, 0x7FFFFFFE, 2, {})` ran for about 30 seconds under a
   250 ms limit; Luau 0.743 and later move only the elements that exist.
+- Disposing a root from another thread just as a host operation began (for
+  example a global or table access) could strand that operation, so the
+  native VM was never closed and one callback registration leaked. The
+  operation now ends even when its setup fails.
 
 ### Compatibility
 
