@@ -5,6 +5,8 @@
   "releaseTag": "v0.3.1",
   "archiveFormat": "ustar+gzip-stored-v1",
   "androidNdkRevision": "27.2.12479018",
+  "linuxClangVersion": "15.0.7",
+  "linuxGlibcMaximum": "2.35",
   "maximumArchiveBytes": 8388608,
   "artifacts": [
     {
@@ -29,6 +31,10 @@
     },
     {
       "path": "Runtime/Plugins/android-x64/libluau_host.so",
+      "maximumBytes": 3145728
+    },
+    {
+      "path": "Runtime/Plugins/linux-x64/libluau_host.so",
       "maximumBytes": 3145728
     }
   ]

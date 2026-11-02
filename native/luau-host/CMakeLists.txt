@@ -7,6 +7,7 @@ include(CTest)
 option(LUAU_HOST_BUILD_TESTS "Build the native luau_host conformance executable" ON)
 option(LUAU_HOST_ENABLE_SANITIZERS "Instrument the host and pinned Luau sources with ASan/UBSan" OFF)
 option(LUAU_HOST_BUILD_FUZZERS "Build libFuzzer compiler and ABI harnesses" OFF)
+option(LUAU_HOST_LINUX_SHIPPING "Build the self-contained, hardened Linux x64 shipping host" OFF)
 set(LUAU_HOST_UPSTREAM_REVISION "6e9b580e2e24643214caf0f4bbbb3db911ca30f3")
 set(
     LUAU_HOST_BUILD_CONFIGURATION
@@ -146,6 +147,21 @@ if(LUAU_HOST_ENABLE_SANITIZERS)
     add_link_options(-fsanitize=address,undefined -fno-sanitize-recover=all)
 endif()
 
+if(LUAU_HOST_LINUX_SHIPPING)
+    if(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux" OR NOT CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+        message(FATAL_ERROR "LUAU_HOST_LINUX_SHIPPING requires a Clang build targeting Linux")
+    endif()
+    if(LUAU_HOST_ENABLE_SANITIZERS OR NOT CMAKE_BUILD_TYPE STREQUAL "Release")
+        message(FATAL_ERROR "LUAU_HOST_LINUX_SHIPPING requires an uninstrumented Release build")
+    endif()
+    # The shipped binary is stripped by the native-artifacts tooling; debug
+    # information is retained only in the external symbol file. Hardening
+    # applies to the upstream archives too, because they are linked into the
+    # shared library.
+    add_compile_options(-g -fstack-protector-strong -fstack-clash-protection)
+    add_compile_definitions(_FORTIFY_SOURCE=2)
+endif()
+
 if(MSVC)
     # Release packages remain stripped of symbols, while native CI retains a
     # full external PDB for crash/security investigation. /Brepro removes
@@ -227,6 +243,36 @@ if(ANDROID)
     target_link_options(
         luau_host
         PRIVATE "LINKER:--build-id=0x${_luau_host_android_build_id}"
+    )
+endif()
+
+if(LUAU_HOST_LINUX_SHIPPING)
+    # The Linux plugin loads into Unity editors, players, and dedicated servers
+    # on any distribution with glibc 2.35 or newer. Linking the C++ runtime
+    # statically (and hiding it with --exclude-libs) leaves libc and libm as the
+    # only dynamic dependencies, so the host never depends on the libstdc++
+    # version of the process that loads it.
+    target_link_options(
+        luau_host
+        PRIVATE
+            -static-libstdc++
+            -static-libgcc
+            "LINKER:-z,relro"
+            "LINKER:-z,now"
+            "LINKER:-z,noexecstack"
+    )
+
+    # As on Android, a stable build ID keeps symbol correlation without hashing
+    # build-machine paths from the unstripped debug information.
+    set(_luau_host_linux_build_recipe "linux-shipping-v1")
+    string(
+        SHA1
+        _luau_host_linux_build_id
+        "recipe=${_luau_host_linux_build_recipe};inputs=${LUAU_HOST_BUILD_INPUT_FINGERPRINT};arch=${CMAKE_SYSTEM_PROCESSOR};compiler=${CMAKE_CXX_COMPILER_ID}-${CMAKE_CXX_COMPILER_VERSION};configuration=${_luau_host_build_configuration}"
+    )
+    target_link_options(
+        luau_host
+        PRIVATE "LINKER:--build-id=0x${_luau_host_linux_build_id}"
     )
 endif()
 

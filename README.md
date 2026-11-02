@@ -24,7 +24,7 @@ modding in [NervBox](https://nervbox.com/).
   no ambient authority. Types you own get generated bindings from two attributes;
   types you don't get a small descriptor you write and name at each handle.
 - **Ships where your game ships.** No reflection, so IL2CPP and AOT work.
-  Maintained plugins for Windows and Android.
+  Maintained plugins for Windows, Linux, and Android.
 - **Fast iteration comes free.** Gameplay in text files your designers can own,
   with no domain reload.
 
@@ -35,13 +35,16 @@ modding in [NervBox](https://nervbox.com/).
 | Windows | x64 | `luau_host.dll` | Editor, EditMode, Win64 IL2CPP smoke |
 | Android | ARM64 | `libluau_host.so` | ARM64 IL2CPP device smoke |
 | Android | x64 | `libluau_host.so` | x64 emulator smoke |
+| Linux | x64 | `libluau_host.so` | Editor, EditMode, Linux64 IL2CPP smoke |
 
 The package requires Unity 6000.3.0f1 or newer in the 6000.3 stream. The
 canonical integration project remains pinned to 6000.3.19f1, while local Linux
-validation may use any installed 6000.3 patch. Only the three targets above are
-shipping targets. Linux x64 is supported as a development and test host only;
-its native library is staged into disposable projects and never enters the UPM
-package.
+validation may use any installed 6000.3 patch.
+
+The Linux plugin serves the Linux editor and Linux x64 players, including
+dedicated servers. It is built against glibc 2.35 (Ubuntu 22.04) with the C++
+runtime linked in, so it loads on Ubuntu 22.04, Debian 12, and newer
+distributions without extra packages.
 
 Before its first compile or state creation, the managed runtime verifies the
 native host's self-description, ABI layout, required features, pinned Luau
@@ -258,7 +261,7 @@ authored by Yusuke Nakada and released under the MIT License. Both copyright lin
 This repository takes that foundation in a Unity-first direction. `Luau.Unity`
 is a standalone UPM package with a bounded managed API, source-generated host
 bindings, explicit trust and resource policies, and maintained native plugins
-for Windows and Android. The .NET solution is a fast build and test harness over
+for Windows, Linux, and Android. The .NET solution is a fast build and test harness over
 the same managed implementation rather than a separate distribution. Package
 consumer, Unity EditMode, and player-smoke validation cover the code that ships
 to Unity projects, with untrusted mod source and precompiled game scripts both
