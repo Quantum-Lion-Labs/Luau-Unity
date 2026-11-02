@@ -73,7 +73,7 @@ static luau_host_abi_info fixture_abi_info(void)
     value.type_buffer = 11;
     value.type_class = 12;
     value.type_object = 13;
-    value.upstream_revision_hash = UINT64_C(0xc45f010aabf167ac);
+    value.upstream_revision_hash = UINT64_C(0x065976b2840123de);
     value.host_build_fingerprint = UINT64_C(0xb400000000000001) + LUAU_HOST_INVALID_ABI_CASE;
 
 #if LUAU_HOST_INVALID_ABI_CASE == LUAU_HOST_INVALID_ABI_WRONG_MAGIC

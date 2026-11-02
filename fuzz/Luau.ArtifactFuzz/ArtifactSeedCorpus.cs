@@ -14,8 +14,8 @@ static class ArtifactSeedCorpus
     // These are the exact identities frozen with ABI 2.0. Keeping the valid
     // parser seed explicit makes an ABI/codec change require a reviewed corpus
     // update instead of silently losing deep parser coverage.
-    const ulong UpstreamRevisionHash = 0xc45f010aabf167acUL;
-    const ulong HostBuildFingerprint = 0x6a1565ce91ec38a2UL;
+    const ulong UpstreamRevisionHash = 0x065976b2840123deUL;
+    const ulong HostBuildFingerprint = 0x36937523f6988475UL;
 
     public static IReadOnlyList<ArtifactSeed> CreateStructuralSeeds()
     {
