@@ -8,7 +8,7 @@ option(LUAU_HOST_BUILD_TESTS "Build the native luau_host conformance executable"
 option(LUAU_HOST_ENABLE_SANITIZERS "Instrument the host and pinned Luau sources with ASan/UBSan" OFF)
 option(LUAU_HOST_BUILD_FUZZERS "Build libFuzzer compiler and ABI harnesses" OFF)
 option(LUAU_HOST_LINUX_SHIPPING "Build the self-contained, hardened Linux x64 shipping host" OFF)
-set(LUAU_HOST_UPSTREAM_REVISION "6e9b580e2e24643214caf0f4bbbb3db911ca30f3")
+set(LUAU_HOST_UPSTREAM_REVISION "2a3d8937c19c8fd9f7b72b6ec9068c62760e6588")
 set(
     LUAU_HOST_BUILD_CONFIGURATION
     ""

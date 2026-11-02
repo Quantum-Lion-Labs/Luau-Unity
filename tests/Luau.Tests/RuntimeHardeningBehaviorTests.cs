@@ -413,6 +413,35 @@ public sealed class RuntimeHardeningBehaviorTests
     }
 
     [Fact]
+    public void TableMoveOverHugeSparseRangeCannotOutliveTheWallClockBudget()
+    {
+        // Luau before 0.743 copied every index in the range inside one C
+        // function with no interrupt, so this one-line script ran for tens of
+        // seconds past any wall-clock limit.
+        using var root = LuauState.Create();
+        root.OpenBaseLibrary();
+        root.OpenTableLibrary();
+        root.SandboxRoot();
+        using var child = root.CreateSandboxedThread();
+        var stopwatch = Stopwatch.StartNew();
+
+        var results = child.DoString(
+            """
+            local moved = table.move({}, 1, 0x7FFFFFFE, 2, {})
+            local source = { [1] = "a", [1000000] = "b" }
+            local sparse = table.move(source, 1, 0x7FFFFFFE, 2, {})
+            return next(moved) == nil, sparse[2], sparse[1000001]
+            """,
+            "@hardening/table-move.luau",
+            executionOptions: new LuauExecutionOptions { WallClockLimit = TimeSpan.FromMilliseconds(250) });
+
+        Assert.True(results[0].Read<bool>());
+        Assert.Equal("a", results[1].Read<string>());
+        Assert.Equal("b", results[2].Read<string>());
+        Assert.True(stopwatch.Elapsed < TimeSpan.FromSeconds(2));
+    }
+
+    [Fact]
     public void WallClockBudgetStopsSynchronousInfiniteLoop()
     {
         var limit = TimeSpan.FromMilliseconds(20);
