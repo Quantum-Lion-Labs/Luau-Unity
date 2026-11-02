@@ -78,6 +78,25 @@ public sealed class IntegerValueTests
         Assert.Equal(LuauValue.FromNumber(uint.MaxValue), (LuauValue)uint.MaxValue);
         Assert.Equal(LuauValue.FromInteger(7), (LuauValue)7L);
         Assert.Equal(LuauValue.FromInteger(7), (LuauValue)7UL);
+        Assert.IsType<double>(((LuauValue)7).Read<object>());
+        Assert.IsType<long>(((LuauValue)7L).Read<object>());
+    }
+
+    [Fact]
+    public void HostUInt32MaximumRoundTripsAsAnExactNumber()
+    {
+        using var state = LuauState.Create();
+        state.OpenBaseLibrary();
+        state["big"] = uint.MaxValue;
+
+        var results = state.DoString(
+            "return typeof(big), big + 1 == 4294967296, big",
+            "@integer/host-uint32-maximum.luau");
+
+        Assert.Equal("number", results[0].Read<string>());
+        Assert.True(results[1].Read<bool>());
+        Assert.Equal(uint.MaxValue, results[2].Read<uint>());
+        Assert.False(results[2].TryRead<int>(out _));
     }
 
     [Fact]

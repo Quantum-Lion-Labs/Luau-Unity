@@ -15,7 +15,8 @@ API or ABI breaks.
   Scripts can now compare these values with numeric literals, do arithmetic
   with them, and use them as table keys and array indices. `long` and `ulong`
   remain lossless Luau integers. Reading values into managed integral types is
-  unchanged and accepts either kind.
+  unchanged and accepts either kind, but `Read<object>()` on such a value now
+  returns a boxed `double` instead of a boxed `long`.
 
 ## [0.3.1] - 2026-09-05
 
