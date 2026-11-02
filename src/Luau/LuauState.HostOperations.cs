@@ -98,7 +98,20 @@ internal ref struct LuauDirectHostOperationScope
     internal LuauDirectHostOperationScope(LuauState state)
     {
         operation = state.BeginHostOperationIfNeeded();
-        stack = new LuauStackBoundary(state);
+        try
+        {
+            stack = new LuauStackBoundary(state);
+        }
+        catch
+        {
+            // The caller's using statement is never assigned when the
+            // constructor throws, for example when another thread disposes
+            // the root right after the operation began. End the operation
+            // here, or a deferred native close would never run.
+            operation.Dispose();
+            throw;
+        }
+
         suspensionHandled = false;
         disposed = false;
     }
