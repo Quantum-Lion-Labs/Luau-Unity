@@ -96,8 +96,8 @@ Every value crossing the boundary is a `LuauValue`, which you unpack with
 | --- | --- |
 | `nil` | `LuauValue.Nil` |
 | `boolean` | `bool` |
-| integer | `long`, and range-checked smaller integer types |
-| number | `double` or `float` |
+| number | `double`, `float`, and `int`, `uint`, `short`, `ushort`, `byte`, `sbyte` |
+| integer | `long` and `ulong` |
 | vector | `System.Numerics.Vector3` |
 | string | `string` |
 | table | `LuauTable` |
@@ -109,6 +109,14 @@ Every value crossing the boundary is a `LuauValue`, which you unpack with
 
 The first six copy. Everything from `LuauTable` down is a live reference subject
 to the ownership rules above.
+
+Integral types up to 32 bits cross as ordinary Luau numbers, so a host API
+returning `int` gives scripts a value that equals `30`, adds to `1`, and indexes
+arrays like any numeric literal. Only `long` and `ulong` become Luau's distinct
+64-bit `integer` type, which stays lossless but does not mix with numbers: a
+script must convert it explicitly through the `integer` library. Reading in the
+other direction is range-checked and accepts either kind, so an `int` parameter
+takes `5` from a script, and a `long` parameter takes `5` or an `integer`.
 
 Two things that catch people out: `LuauTable.Length` is Luau's raw `#` sequence
 length, not a count of key/value pairs. And `LuauBuffer.ToArray()`, `Read(...)`,
