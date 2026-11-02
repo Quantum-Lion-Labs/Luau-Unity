@@ -52,20 +52,33 @@ public sealed class UnityProjectStagingTests : IDisposable
     }
 
     [Fact]
-    public void StagesIdenticalDevelopmentPluginAndMetadataInBothProjectLayouts()
+    public void OverridesPackagePluginBinaryAndKeepsReviewedMetadata()
     {
         var source = Path.Combine(root, "native", "libluau_host.so");
         FileSystem.WriteUtf8(source, "development plugin bytes");
-        var consumer = Path.Combine(Project, "Assets/Plugins/linux-x64");
-        var embedded = Path.Combine(Project, "Packages/com.qll.luau.unity/Runtime/Plugins/linux-x64");
-        UnityProjectStaging.StageLinuxPlugin(consumer, source);
-        UnityProjectStaging.StageLinuxPlugin(embedded, source);
-        Assert.Equal(File.ReadAllBytes(source), File.ReadAllBytes(Path.Combine(consumer, "libluau_host.so")));
-        Assert.Equal(File.ReadAllBytes(source), File.ReadAllBytes(Path.Combine(embedded, "libluau_host.so")));
-        Assert.Equal(File.ReadAllText(consumer + ".meta"), File.ReadAllText(embedded + ".meta"));
-        Assert.Equal(File.ReadAllText(Path.Combine(consumer, "libluau_host.so.meta")),
-            File.ReadAllText(Path.Combine(embedded, "libluau_host.so.meta")));
-        Assert.False(Directory.Exists(Path.Combine(Package, "Runtime/Plugins/linux-x64")));
+        var plugin = Path.Combine(Package, "Runtime/Plugins/linux-x64/libluau_host.so");
+        FileSystem.WriteUtf8(plugin, "shipping plugin bytes");
+        FileSystem.WriteUtf8(plugin + ".meta", "reviewed importer metadata");
+
+        UnityProjectStaging.OverridePackagePlugin(Package, "linux-x64", "libluau_host.so", source);
+
+        Assert.Equal(File.ReadAllBytes(source), File.ReadAllBytes(plugin));
+        Assert.Equal("reviewed importer metadata", File.ReadAllText(plugin + ".meta"));
+        UnityProjectStaging.OverridePackagePlugin(Package, "linux-x64", "libluau_host.so", plugin);
+        Assert.Equal(File.ReadAllBytes(source), File.ReadAllBytes(plugin));
+    }
+
+    [Fact]
+    public void RejectsPluginOverrideWithoutReviewedMetadataOrAbsoluteSource()
+    {
+        var source = Path.Combine(root, "native", "libluau_host.so");
+        FileSystem.WriteUtf8(source, "development plugin bytes");
+
+        Assert.Throws<ToolingException>(() =>
+            UnityProjectStaging.OverridePackagePlugin(Package, "linux-x64", "libluau_host.so", source));
+        Assert.False(File.Exists(Path.Combine(Package, "Runtime/Plugins/linux-x64/libluau_host.so")));
+        Assert.Throws<ToolingException>(() =>
+            UnityProjectStaging.OverridePackagePlugin(Package, "linux-x64", "libluau_host.so", "native/libluau_host.so"));
     }
 
     [Theory]

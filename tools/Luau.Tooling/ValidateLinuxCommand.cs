@@ -49,8 +49,7 @@ internal static class ValidateLinuxCommand
 
         if (!options.Has("--skip-unity"))
         {
-            var consumer = new List<string>(forwarded) { "--linux-plugin", nativeHost };
-            await PackageConsumerCommand.RunAsync(repository, new CommandLine(consumer));
+            await PackageConsumerCommand.RunAsync(repository, new CommandLine(forwarded));
             var unity = new List<string>(forwarded)
             {
                 "--compile", "--editmode", "--linux-smoke", "--linux-plugin", nativeHost,

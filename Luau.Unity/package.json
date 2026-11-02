@@ -2,7 +2,7 @@
     "name": "com.qll.luau.unity",
     "version": "0.3.1",
     "displayName": "Luau.Unity",
-    "description": "A bounded, Unity-first managed host for the official Luau VM, with source-generated APIs and maintained Windows and Android native plugins.",
+    "description": "A bounded, Unity-first managed host for the official Luau VM, with source-generated APIs and maintained Windows, Linux, and Android native plugins.",
     "unity": "6000.3",
     "unityRelease": "0f1",
     "license": "MIT",

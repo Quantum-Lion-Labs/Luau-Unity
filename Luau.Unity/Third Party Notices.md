@@ -58,3 +58,16 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+## GCC runtime libraries
+
+The Linux x64 plugin statically links parts of the GNU C++ standard library
+(libstdc++) and the GCC low-level runtime (libgcc) from GCC 12, as distributed
+with Ubuntu 22.04. These libraries are licensed under the GNU General Public
+License version 3 with the GCC Runtime Library Exception, version 3.1. The
+exception permits distributing the resulting plugin under Luau.Unity's own
+license terms.
+
+- License: <https://www.gnu.org/licenses/gpl-3.0.html>
+- GCC Runtime Library Exception: <https://www.gnu.org/licenses/gcc-exception-3.1.html>
+- Source: <https://gcc.gnu.org/>
