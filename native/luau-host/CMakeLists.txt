@@ -157,8 +157,16 @@ if(LUAU_HOST_LINUX_SHIPPING)
     # The shipped binary is stripped by the native-artifacts tooling; debug
     # information is retained only in the external symbol file. Hardening
     # applies to the upstream archives too, because they are linked into the
-    # shared library.
-    add_compile_options(-g -fstack-protector-strong -fstack-clash-protection)
+    # shared library. Mapping the checkout root and not recording compiler
+    # command lines keeps build-machine paths out of debug information, so the
+    # content-derived build ID below depends only on what was built.
+    add_compile_options(
+        -g
+        -gno-record-gcc-switches
+        -fstack-protector-strong
+        -fstack-clash-protection
+        "-ffile-prefix-map=${LUAU_REPOSITORY_ROOT}=."
+    )
     add_compile_definitions(_FORTIFY_SOURCE=2)
 endif()
 
@@ -262,18 +270,10 @@ if(LUAU_HOST_LINUX_SHIPPING)
             "LINKER:-z,noexecstack"
     )
 
-    # As on Android, a stable build ID keeps symbol correlation without hashing
-    # build-machine paths from the unstripped debug information.
-    set(_luau_host_linux_build_recipe "linux-shipping-v1")
-    string(
-        SHA1
-        _luau_host_linux_build_id
-        "recipe=${_luau_host_linux_build_recipe};inputs=${LUAU_HOST_BUILD_INPUT_FINGERPRINT};arch=${CMAKE_SYSTEM_PROCESSOR};compiler=${CMAKE_CXX_COMPILER_ID}-${CMAKE_CXX_COMPILER_VERSION};configuration=${_luau_host_build_configuration}"
-    )
-    target_link_options(
-        luau_host
-        PRIVATE "LINKER:--build-id=0x${_luau_host_linux_build_id}"
-    )
+    # Derive the build ID from the linked output, so any change to sources,
+    # flags, or the statically linked runtime produces a new ID and symbol
+    # files can never be matched to the wrong binary.
+    target_link_options(luau_host PRIVATE "LINKER:--build-id=sha1")
 endif()
 
 set_target_properties(

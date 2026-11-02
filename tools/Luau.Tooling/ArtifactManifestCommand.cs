@@ -288,6 +288,7 @@ internal static class ArtifactManifestCommand
                 ["architecture"] = System.Runtime.InteropServices.RuntimeInformation.OSArchitecture.ToString(),
                 ["ci_image_os"] = Environment.GetEnvironmentVariable("ImageOS") ?? "",
                 ["ci_image_version"] = Environment.GetEnvironmentVariable("ImageVersion") ?? "",
+                ["ci_container_image"] = Environment.GetEnvironmentVariable("LUAU_HOST_CI_CONTAINER_IMAGE") ?? "",
             },
         };
     }

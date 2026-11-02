@@ -18,7 +18,11 @@ Two Linux builds exist, and they are deliberately separate:
 
 To test the shipped binary instead of your development build, pass its path:
 `unity-test --linux-plugin "$PWD/Luau.Unity/Runtime/Plugins/linux-x64/libluau_host.so"`.
-The generated package consumer always loads the package's committed plugin.
+The generated package consumer always loads the package's committed plugin, and
+`validate-linux` runs its Unity EditMode suite and IL2CPP player smoke against
+that committed plugin too. After a native source change, `validate-linux`
+therefore passes only once the refreshed plugins are committed; until then,
+test your development build with `unity-test` directly.
 
 ## Prerequisites
 
@@ -63,7 +67,8 @@ This configures, builds, tests, and installs the non-sanitized `linux-x64` nativ
 preset; runs the complete .NET solution and ABI-fixture rejection; exercises the
 host soak and platform-native harness selection; checks package artifacts and a
 deterministic release archive; generates a minimal Unity consumer; runs all
-EditMode tests; and builds and executes a Linux x64 IL2CPP player smoke.
+EditMode tests and builds and executes a Linux x64 IL2CPP player smoke, both
+against the committed shipping plugin.
 
 Use `--skip-unity` only when diagnosing the native, managed, or package layers
 on a machine without a licensed editor. Use `--soak-iterations N` to adjust the
