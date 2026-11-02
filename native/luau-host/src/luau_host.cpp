@@ -24,7 +24,7 @@
 #include <unordered_map>
 
 #ifndef LUAU_HOST_UPSTREAM_REVISION
-#define LUAU_HOST_UPSTREAM_REVISION "6e9b580e2e24643214caf0f4bbbb3db911ca30f3"
+#define LUAU_HOST_UPSTREAM_REVISION "2a3d8937c19c8fd9f7b72b6ec9068c62760e6588"
 #endif
 
 #ifndef LUAU_HOST_BUILD_CONFIGURATION
@@ -554,7 +554,9 @@ UserdataOwnerPayload* wrappeduserdata(Udata* userdata)
     return owner->magic == kUserdataOwnerMagic && owner->size == expectedSize ? owner : nullptr;
 }
 
-void userdatadestructortrampoline(void* userdata)
+// Upstream passes the collecting state, which is unsafe to use during GC
+// traversal; the host destructors only touch their own payload.
+void userdatadestructortrampoline(lua_State*, void* userdata)
 {
     UserdataOwnerPayload* owner = static_cast<UserdataOwnerPayload*>(userdata);
     if (!owner || owner->magic != kUserdataOwnerMagic)
@@ -677,7 +679,9 @@ int managedcallbacktrampoline(lua_State* state)
     return validatecallbackreturn(state, result, entryTop);
 }
 
-void callbackownerdestructor(void* userdata)
+// Upstream passes the collecting state, which is unsafe to use during GC
+// traversal; the host destructors only touch their own payload.
+void callbackownerdestructor(lua_State*, void* userdata)
 {
     CallbackOwnerPayload* owner = static_cast<CallbackOwnerPayload*>(userdata);
     if (!owner || owner->magic != kCallbackOwnerMagic)

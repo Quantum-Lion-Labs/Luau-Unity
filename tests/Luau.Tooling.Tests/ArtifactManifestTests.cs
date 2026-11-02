@@ -20,7 +20,7 @@ public sealed class ArtifactManifestTests
         record[32] = 8;
         record[33] = 8;
         record[34] = 1;
-        BinaryPrimitives.WriteUInt64LittleEndian(record[36..], 0xc45f010aabf167ac);
+        BinaryPrimitives.WriteUInt64LittleEndian(record[36..], 0x065976b2840123de);
         BinaryPrimitives.WriteUInt64LittleEndian(record[44..], 0xe22f181ac247f52a);
         Encoding.ASCII.GetBytes(new string('a', 64)).CopyTo(record[52..]);
         Encoding.ASCII.GetBytes("Release").CopyTo(record[117..]);

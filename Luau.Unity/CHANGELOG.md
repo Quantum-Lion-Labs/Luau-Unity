@@ -23,6 +23,24 @@ API or ABI breaks.
   remain lossless Luau integers. Reading values into managed integral types is
   unchanged and accepts either kind, but `Read<object>()` on such a value now
   returns a boxed `double` instead of a boxed `long`.
+- Update the embedded Luau VM and compiler from 0.729 to 0.745. The compiler now
+  targets bytecode version 13. Persisted bytecode artifacts carry the host
+  fingerprint, so artifacts built by earlier versions are rejected and must be
+  rebuilt; Unity reimports `.luau` assets and regenerates first-party manifests
+  automatically because the compiler identity changed.
+
+### Fixed
+
+- A script can no longer hold the host thread far past its wall-clock limit
+  with `table.move` over a huge, mostly empty range. On 0.729,
+  `table.move({}, 1, 0x7FFFFFFE, 2, {})` ran for about 30 seconds under a
+  250 ms limit; Luau 0.743 and later move only the elements that exist.
+
+### Compatibility
+
+- Update the managed DLL and all bundled native plugins together. The host
+  fingerprint changed with the Luau update, so a mismatched pair fails the
+  startup ABI check.
 
 ## [0.3.1] - 2026-09-05
 
