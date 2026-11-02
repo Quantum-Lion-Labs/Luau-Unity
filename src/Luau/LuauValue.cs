@@ -30,6 +30,11 @@ public readonly struct LuauValue : IEquatable<LuauValue>
     /// Converts a supported managed value without requiring a Luau state.
     /// Reference values retain their existing ownership and VM association.
     /// </summary>
+    /// <remarks>
+    /// Integral types up to 32 bits become Luau numbers, so scripts can compare
+    /// them with numeric literals and use them as array indices. <see cref="long"/>
+    /// and <see cref="ulong"/> become distinct Luau integers to stay lossless.
+    /// </remarks>
     public static LuauValue CreateFrom<T>(T? value)
     {
         if (value == null) return Nil;
@@ -45,12 +50,16 @@ public readonly struct LuauValue : IEquatable<LuauValue>
         if (value is LuauUserData userData) return FromUserData(userData);
         if (value is LuauObjectHandle objectHandle) return FromObjectHandle(objectHandle);
 
-        if (value is byte unsignedByte) return FromInteger(unsignedByte);
-        if (value is sbyte signedByte) return FromInteger(signedByte);
-        if (value is short signedShort) return FromInteger(signedShort);
-        if (value is ushort unsignedShort) return FromInteger(unsignedShort);
-        if (value is int signedInteger) return FromInteger(signedInteger);
-        if (value is uint unsignedInteger) return FromInteger(unsignedInteger);
+        // 32-bit and smaller integral types are exactly representable as a
+        // double, so they become ordinary Luau numbers that compare, index,
+        // and do arithmetic with numeric literals. Only 64-bit types use the
+        // distinct Luau integer type, where a double would lose precision.
+        if (value is byte unsignedByte) return FromNumber(unsignedByte);
+        if (value is sbyte signedByte) return FromNumber(signedByte);
+        if (value is short signedShort) return FromNumber(signedShort);
+        if (value is ushort unsignedShort) return FromNumber(unsignedShort);
+        if (value is int signedInteger) return FromNumber(signedInteger);
+        if (value is uint unsignedInteger) return FromNumber(unsignedInteger);
         if (value is long signedLong) return FromInteger(signedLong);
         if (value is ulong unsignedLong) return FromInteger(checked((long)unsignedLong));
         if (value is float single) return FromNumber(single);
@@ -564,18 +573,18 @@ public readonly struct LuauValue : IEquatable<LuauValue>
 
     /// <summary>Converts a double to a Luau floating-point number.</summary>
     public static implicit operator LuauValue(double value) => FromNumber(value);
-    /// <summary>Converts a byte to a distinct Luau integer.</summary>
-    public static implicit operator LuauValue(byte value) => FromInteger(value);
-    /// <summary>Converts a signed byte to a distinct Luau integer.</summary>
-    public static implicit operator LuauValue(sbyte value) => FromInteger(value);
-    /// <summary>Converts a signed 16-bit value to a distinct Luau integer.</summary>
-    public static implicit operator LuauValue(short value) => FromInteger(value);
-    /// <summary>Converts an unsigned 16-bit value to a distinct Luau integer.</summary>
-    public static implicit operator LuauValue(ushort value) => FromInteger(value);
-    /// <summary>Converts a signed 32-bit value to a distinct Luau integer.</summary>
-    public static implicit operator LuauValue(int value) => FromInteger(value);
-    /// <summary>Converts an unsigned 32-bit value to a distinct Luau integer.</summary>
-    public static implicit operator LuauValue(uint value) => FromInteger(value);
+    /// <summary>Converts a byte to an exactly equal Luau number.</summary>
+    public static implicit operator LuauValue(byte value) => FromNumber(value);
+    /// <summary>Converts a signed byte to an exactly equal Luau number.</summary>
+    public static implicit operator LuauValue(sbyte value) => FromNumber(value);
+    /// <summary>Converts a signed 16-bit value to an exactly equal Luau number.</summary>
+    public static implicit operator LuauValue(short value) => FromNumber(value);
+    /// <summary>Converts an unsigned 16-bit value to an exactly equal Luau number.</summary>
+    public static implicit operator LuauValue(ushort value) => FromNumber(value);
+    /// <summary>Converts a signed 32-bit value to an exactly equal Luau number.</summary>
+    public static implicit operator LuauValue(int value) => FromNumber(value);
+    /// <summary>Converts an unsigned 32-bit value to an exactly equal Luau number.</summary>
+    public static implicit operator LuauValue(uint value) => FromNumber(value);
     /// <summary>Converts a signed 64-bit value to a distinct Luau integer.</summary>
     public static implicit operator LuauValue(long value) => FromInteger(value);
     /// <summary>Converts an unsigned 64-bit value to a Luau integer, rejecting values above <see cref="long.MaxValue"/>.</summary>

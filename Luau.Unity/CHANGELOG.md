@@ -4,6 +4,20 @@ All notable package changes are recorded here. The package follows semantic
 versioning while in preview; preview releases may make explicitly documented
 API or ABI breaks.
 
+## [Unreleased]
+
+### Changed
+
+- **Breaking:** `int`, `uint`, `short`, `ushort`, `byte`, and `sbyte` values now
+  cross into Luau as ordinary numbers instead of the distinct `integer` type.
+  This applies to generated library and capability members, callback
+  `Return`, implicit `LuauValue` conversions, and `LuauValue.CreateFrom`.
+  Scripts can now compare these values with numeric literals, do arithmetic
+  with them, and use them as table keys and array indices. `long` and `ulong`
+  remain lossless Luau integers. Reading values into managed integral types is
+  unchanged and accepts either kind, but `Read<object>()` on such a value now
+  returns a boxed `double` instead of a boxed `long`.
+
 ## [0.3.1] - 2026-09-05
 
 ### Fixed
