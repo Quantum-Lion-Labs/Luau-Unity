@@ -90,9 +90,10 @@ instances registered with them.
 ### What values look like on each side
 
 Every value crossing the boundary is a `LuauValue`, which you unpack with
-`Read<T>()`:
+`Read<T>()`. The table shows which managed types become each Luau type; reads
+back into managed types are range-checked and covered below it.
 
-| Luau | Managed |
+| Luau | Managed types that become it |
 | --- | --- |
 | `nil` | `LuauValue.Nil` |
 | `boolean` | `bool` |

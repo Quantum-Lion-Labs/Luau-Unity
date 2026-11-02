@@ -643,12 +643,6 @@ public unsafe partial class LuauState
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    internal void PushInteger(int value)
-    {
-        PushInteger((long)value);
-    }
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal void PushInteger(long value)
     {
         ThrowIfDisposed();
@@ -656,12 +650,6 @@ public unsafe partial class LuauState
         LuauNativeProtection.Prepare(context);
         var status = luau_host_push_integer(l, value);
         LuauNativeProtection.ThrowIfFailed(this, l, status, "push a 64-bit integer onto the Luau stack");
-    }
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    internal void PushUnsigned(uint value)
-    {
-        PushInteger((long)value);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
