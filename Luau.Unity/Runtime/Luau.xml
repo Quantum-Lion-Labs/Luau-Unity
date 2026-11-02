@@ -2660,6 +2660,11 @@
             Converts a supported managed value without requiring a Luau state.
             Reference values retain their existing ownership and VM association.
             </summary>
+            <remarks>
+            Integral types up to 32 bits become Luau numbers, so scripts can compare
+            them with numeric literals and use them as array indices. <see cref="T:System.Int64"/>
+            and <see cref="T:System.UInt64"/> become distinct Luau integers to stay lossless.
+            </remarks>
         </member>
         <member name="M:Luau.LuauValue.FromNumber(System.Double)">
             <summary>Creates a Luau floating-point number.</summary>
@@ -2760,22 +2765,22 @@
             <summary>Converts a double to a Luau floating-point number.</summary>
         </member>
         <member name="M:Luau.LuauValue.op_Implicit(System.Byte)~Luau.LuauValue">
-            <summary>Converts a byte to a distinct Luau integer.</summary>
+            <summary>Converts a byte to an exactly equal Luau number.</summary>
         </member>
         <member name="M:Luau.LuauValue.op_Implicit(System.SByte)~Luau.LuauValue">
-            <summary>Converts a signed byte to a distinct Luau integer.</summary>
+            <summary>Converts a signed byte to an exactly equal Luau number.</summary>
         </member>
         <member name="M:Luau.LuauValue.op_Implicit(System.Int16)~Luau.LuauValue">
-            <summary>Converts a signed 16-bit value to a distinct Luau integer.</summary>
+            <summary>Converts a signed 16-bit value to an exactly equal Luau number.</summary>
         </member>
         <member name="M:Luau.LuauValue.op_Implicit(System.UInt16)~Luau.LuauValue">
-            <summary>Converts an unsigned 16-bit value to a distinct Luau integer.</summary>
+            <summary>Converts an unsigned 16-bit value to an exactly equal Luau number.</summary>
         </member>
         <member name="M:Luau.LuauValue.op_Implicit(System.Int32)~Luau.LuauValue">
-            <summary>Converts a signed 32-bit value to a distinct Luau integer.</summary>
+            <summary>Converts a signed 32-bit value to an exactly equal Luau number.</summary>
         </member>
         <member name="M:Luau.LuauValue.op_Implicit(System.UInt32)~Luau.LuauValue">
-            <summary>Converts an unsigned 32-bit value to a distinct Luau integer.</summary>
+            <summary>Converts an unsigned 32-bit value to an exactly equal Luau number.</summary>
         </member>
         <member name="M:Luau.LuauValue.op_Implicit(System.Int64)~Luau.LuauValue">
             <summary>Converts a signed 64-bit value to a distinct Luau integer.</summary>

@@ -51,15 +51,108 @@ public sealed class IntegerValueTests
     }
 
     [Fact]
-    public void ManagedIntegralCreationUsesTheNativeIntegerKind()
+    public void ManagedIntegralCreationUsesNumbersUpTo32BitsAndIntegersFor64Bits()
     {
-        using var state = LuauState.Create();
-
-        Assert.Equal(LuauType.Integer, LuauValue.CreateFrom(42).Type);
-        Assert.Equal(LuauType.Integer, LuauValue.CreateFrom(uint.MaxValue).Type);
+        Assert.Equal(LuauValue.FromNumber(42), LuauValue.CreateFrom(42));
+        Assert.Equal(LuauValue.FromNumber(byte.MaxValue), LuauValue.CreateFrom(byte.MaxValue));
+        Assert.Equal(LuauValue.FromNumber(sbyte.MinValue), LuauValue.CreateFrom(sbyte.MinValue));
+        Assert.Equal(LuauValue.FromNumber(short.MinValue), LuauValue.CreateFrom(short.MinValue));
+        Assert.Equal(LuauValue.FromNumber(ushort.MaxValue), LuauValue.CreateFrom(ushort.MaxValue));
+        Assert.Equal(LuauValue.FromNumber(int.MinValue), LuauValue.CreateFrom(int.MinValue));
+        Assert.Equal(LuauValue.FromNumber(uint.MaxValue), LuauValue.CreateFrom(uint.MaxValue));
+        Assert.Equal(LuauType.Integer, LuauValue.CreateFrom(42L).Type);
         Assert.Equal(LuauType.Integer, LuauValue.CreateFrom(long.MinValue).Type);
+        Assert.Equal(LuauType.Integer, LuauValue.CreateFrom(42UL).Type);
         Assert.Equal(LuauType.Number, LuauValue.CreateFrom(42d).Type);
         Assert.Throws<OverflowException>(() => LuauValue.CreateFrom(ulong.MaxValue));
+    }
+
+    [Fact]
+    public void ImplicitIntegralConversionsUseNumbersUpTo32BitsAndIntegersFor64Bits()
+    {
+        Assert.Equal(LuauValue.FromNumber(7), (LuauValue)(byte)7);
+        Assert.Equal(LuauValue.FromNumber(-7), (LuauValue)(sbyte)-7);
+        Assert.Equal(LuauValue.FromNumber(-7), (LuauValue)(short)-7);
+        Assert.Equal(LuauValue.FromNumber(7), (LuauValue)(ushort)7);
+        Assert.Equal(LuauValue.FromNumber(-7), (LuauValue)(-7));
+        Assert.Equal(LuauValue.FromNumber(uint.MaxValue), (LuauValue)uint.MaxValue);
+        Assert.Equal(LuauValue.FromInteger(7), (LuauValue)7L);
+        Assert.Equal(LuauValue.FromInteger(7), (LuauValue)7UL);
+        Assert.IsType<double>(((LuauValue)7).Read<object>());
+        Assert.IsType<long>(((LuauValue)7L).Read<object>());
+    }
+
+    [Fact]
+    public void HostUInt32MaximumRoundTripsAsAnExactNumber()
+    {
+        using var state = LuauState.Create();
+        state.OpenBaseLibrary();
+        state["big"] = uint.MaxValue;
+
+        var results = state.DoString(
+            "return typeof(big), big + 1 == 4294967296, big",
+            "@integer/host-uint32-maximum.luau");
+
+        Assert.Equal("number", results[0].Read<string>());
+        Assert.True(results[1].Read<bool>());
+        Assert.Equal(uint.MaxValue, results[2].Read<uint>());
+        Assert.False(results[2].TryRead<int>(out _));
+    }
+
+    [Fact]
+    public void HostInt32ValuesBehaveLikeScriptNumericLiterals()
+    {
+        using var state = LuauState.Create();
+        state.OpenBaseLibrary();
+        state.OpenMathLibrary();
+        using (var getAmmo = state.CreateFunction("getAmmo", context => context.Return(30)))
+        {
+            state["getAmmo"] = getAmmo;
+        }
+        state["count"] = 3;
+        using var table = state.CreateTable();
+        table[1] = "first";
+        state["items"] = table;
+
+        var results = state.DoString(
+            """
+            local lookup = { [30] = "found" }
+            return typeof(getAmmo()), getAmmo() == 30, getAmmo() + 1, math.max(getAmmo(), 5),
+                tonumber(getAmmo()), lookup[getAmmo()], count * 2, items[1], #items
+            """,
+            "@integer/host-int32-values.luau");
+
+        Assert.Equal("number", results[0].Read<string>());
+        Assert.True(results[1].Read<bool>());
+        Assert.Equal(31, results[2].Read<int>());
+        Assert.Equal(30, results[3].Read<int>());
+        Assert.Equal(30, results[4].Read<int>());
+        Assert.Equal("found", results[5].Read<string>());
+        Assert.Equal(6, results[6].Read<int>());
+        Assert.Equal("first", results[7].Read<string>());
+        Assert.Equal(1, results[8].Read<int>());
+    }
+
+    [Fact]
+    public void GeneratedInt32MembersBehaveLikeScriptNumericLiterals()
+    {
+        using var state = LuauState.Create();
+        state.OpenBaseLibrary();
+        state.OpenLibrary(new IntegerInteropLibrary());
+
+        var results = state.DoString(
+            """
+            return typeof(interop.ammo()), interop.ammo() == 30, interop.ammo() + 1,
+                interop.double(interop.ammo()), interop.limit == 8, typeof(interop.id())
+            """,
+            "@integer/generated-int32-values.luau");
+
+        Assert.Equal("number", results[0].Read<string>());
+        Assert.True(results[1].Read<bool>());
+        Assert.Equal(31, results[2].Read<int>());
+        Assert.Equal(60, results[3].Read<int>());
+        Assert.True(results[4].Read<bool>());
+        Assert.Equal("integer", results[5].Read<string>());
     }
 
     [Fact]
@@ -90,8 +183,8 @@ public sealed class IntegerValueTests
     {
         using var state = LuauState.Create();
         state.OpenIntegerLibrary();
-        state["lhs"] = 40;
-        state["rhs"] = 2;
+        state["lhs"] = 40L;
+        state["rhs"] = 2L;
 
         var results = state.DoString(
             "return integer.add(lhs, rhs), integer.tonumber(lhs), class == nil",
@@ -148,4 +241,20 @@ public sealed class IntegerValueTests
         Assert.Equal(originalTop, state.GetTop());
         Assert.Equal("stack-sentinel", state.ToString(-1));
     }
+}
+
+[LuauLibrary("interop")]
+public sealed partial class IntegerInteropLibrary
+{
+    [LuauMember("ammo")]
+    public static int Ammo() => 30;
+
+    [LuauMember("double")]
+    public static int Double(int value) => value * 2;
+
+    [LuauMember("limit")]
+    public int Limit { get; } = 8;
+
+    [LuauMember("id")]
+    public static long Id() => 9_007_199_254_740_993;
 }

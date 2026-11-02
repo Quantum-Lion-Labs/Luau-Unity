@@ -50,8 +50,7 @@ unsafe partial class LuauState
         {
             for (int i = 0; i < values.Length; i++)
             {
-                // Array slots are Luau number keys. Managed integral values map to
-                // the distinct upstream 64-bit integer kind in Stage 2.
+                // Array slots are Luau number keys, matching script literals.
                 table.RawSet(LuauValue.FromNumber(i + 1), values[i]);
             }
             return table;

@@ -269,7 +269,7 @@ using var results = state.DoString("return function(a, b) return a + b end");
 using var add = results[0].Read<LuauFunction>().Retain();
 
 using var sum = add.Invoke([20, 22]);
-Debug.Log(sum[0].Read<long>()); // 42
+Debug.Log(sum[0].Read<int>()); // 42
 ```
 
 Use `Invoke` when the closure can't reach an async host callback, and
