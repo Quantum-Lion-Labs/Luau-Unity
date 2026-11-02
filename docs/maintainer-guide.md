@@ -107,14 +107,26 @@ and the managed ABI verifier whenever those files move.
 | Windows x64 | `Luau.Unity/Runtime/Plugins/win-x64/luau_host.dll` | Windows Editor and Win64 player |
 | Android ARM64 | `Luau.Unity/Runtime/Plugins/android-arm64/libluau_host.so` | Android ARM64 player |
 | Android x64 | `Luau.Unity/Runtime/Plugins/android-x64/libluau_host.so` | Android x64 emulator |
+| Linux x64 | `Luau.Unity/Runtime/Plugins/linux-x64/libluau_host.so` | Linux Editor and Linux64 players, including servers |
 
 These are the only maintained targets. Preserve each binary's `.meta` file and
 review CPU/platform importer settings when installing a rebuilt artifact.
 
-Linux x64 is a development-validation target, not a fourth package target. Its
-Release `.so` is installed under `native/luau-host/out`, then copied only into
-generated disposable Unity projects. Package validation rejects Linux plugin
-content under `Luau.Unity`.
+The Linux plugin comes from the `linux-x64-shipping` preset, which CI builds in a
+digest-pinned Ubuntu 22.04 container with clang 15.0.7. It links the C++
+runtime statically, so its only dynamic dependencies are `libc`, `libm`, and the
+dynamic loader, and `native-artifacts` rejects any requirement newer than glibc
+2.35. The local `linux-x64` preset remains a development host: it is used for
+local tests and copied only into disposable Unity projects, never into the
+package.
+
+To refresh plugins after a native source change, dispatch the **Build Luau
+Host** workflow with `refresh-artifacts=true` on the branch. It rebuilds every
+platform and skips the "committed plugin is current" checks. Download each
+`luau-host-<platform>-release` artifact and copy its
+`out/shipping/<platform>/` binary over the package plugin, then commit them
+with the matching managed DLL. Ordinary pull-request and main-branch runs fail
+if any committed plugin differs from a fresh build.
 
 ## 4. Package interop
 
@@ -133,6 +145,7 @@ Luau.Unity/Runtime/
         win-x64/
         android-arm64/
         android-x64/
+        linux-x64/
 ```
 
 Interop types and methods are internal. The prebuilt `Luau.dll` receives the one
@@ -461,7 +474,8 @@ cmake --build --preset android-arm64 --parallel
 cmake --preset android-x64
 cmake --build --preset android-x64 --parallel
 
-# Local Linux development host; never copied into the package.
+# Local Linux development host; never copied into the package. The shipping
+# plugin uses the linux-x64-shipping preset inside the CI container.
 cmake --preset linux-x64
 cmake --build --preset linux-x64 --parallel
 ctest --preset linux-x64

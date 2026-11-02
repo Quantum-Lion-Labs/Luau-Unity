@@ -36,7 +36,8 @@ internal static class ArtifactManifestCommand
         var configuration = options.Get("--configuration", "Release");
         var androidApi = options.GetInt("--android-api", 0);
         var androidNdk = options.Get("--android-ndk");
-        await WriteAsync(repository, binary, platform, output, configuration, androidApi, androidNdk);
+        var preset = options.Get("--preset");
+        await WriteAsync(repository, binary, platform, output, configuration, androidApi, androidNdk, preset);
         return 0;
     }
 
@@ -47,11 +48,17 @@ internal static class ArtifactManifestCommand
         string output,
         string configuration = "Release",
         int androidApi = 0,
-        string? androidNdk = null)
+        string? androidNdk = null,
+        string? preset = null)
     {
         if (platform is not ("win-x64" or "android-arm64" or "android-x64" or "linux-x64"))
         {
             throw new ToolingException($"Unsupported host platform: {platform}");
+        }
+        preset ??= Preset(platform);
+        if (preset != Preset(platform) && !(platform == "linux-x64" && preset == "linux-x64-shipping"))
+        {
+            throw new ToolingException($"Preset {preset} does not build platform {platform}.");
         }
         if (configuration != "Release")
         {
@@ -145,10 +152,10 @@ internal static class ArtifactManifestCommand
             .ToArray();
         Require(approvedExports.Length == 82 && approvedExports.Distinct(StringComparer.Ordinal).Count() == 82,
             "Approved export allowlist must contain 82 unique symbols.");
-        await AuditExportsAsync(repository, platform, binary, exportsPath);
+        await AuditExportsAsync(repository, platform, preset, binary, exportsPath);
         var sourceCommit = (await ProcessRunner.RequireAsync("git", ["rev-parse", "HEAD"], repository.Root, echo: false)).StandardOutput.Trim().ToLowerInvariant();
         var status = await ProcessRunner.RequireAsync("git", ["status", "--porcelain=v1", "--untracked-files=all"], repository.Root, echo: false);
-        var toolchain = await ToolchainMetadataAsync(repository, platform);
+        var toolchain = await ToolchainMetadataAsync(repository, preset);
         if (platform.StartsWith("android-", StringComparison.Ordinal))
         {
             toolchain["android"] = new JsonObject { ["api"] = androidApi, ["ndk_revision"] = androidNdk };
@@ -221,9 +228,8 @@ internal static class ArtifactManifestCommand
         Console.WriteLine($"Validated luau_host ABI manifest: {output}");
     }
 
-    private static async Task AuditExportsAsync(RepositoryContext repository, string platform, string binary, string allowlist)
+    private static async Task AuditExportsAsync(RepositoryContext repository, string platform, string preset, string binary, string allowlist)
     {
-        var preset = Preset(platform);
         var cache = new CMakeCache(repository.PathOf("native", "luau-host", "out", "build", preset, "CMakeCache.txt"));
         var cmake = cache.Get("CMAKE_COMMAND");
         string exportTool;
@@ -244,9 +250,9 @@ internal static class ArtifactManifestCommand
             repository.Root);
     }
 
-    private static async Task<JsonObject> ToolchainMetadataAsync(RepositoryContext repository, string platform)
+    private static async Task<JsonObject> ToolchainMetadataAsync(RepositoryContext repository, string preset)
     {
-        var build = repository.PathOf("native", "luau-host", "out", "build", Preset(platform));
+        var build = repository.PathOf("native", "luau-host", "out", "build", preset);
         var cache = new CMakeCache(Path.Combine(build, "CMakeCache.txt"));
         var cmakePath = cache.Get("CMAKE_COMMAND");
         var cmakeVersion = (await ProcessRunner.RequireAsync(cmakePath, ["--version"], repository.Root, echo: false))
@@ -264,6 +270,7 @@ internal static class ArtifactManifestCommand
         FileSystem.RequireFile(linker, "Configured linker");
         return new JsonObject
         {
+            ["preset"] = preset,
             ["cmake"] = new JsonObject
             {
                 ["version"] = cmakeVersion,
@@ -281,6 +288,7 @@ internal static class ArtifactManifestCommand
                 ["architecture"] = System.Runtime.InteropServices.RuntimeInformation.OSArchitecture.ToString(),
                 ["ci_image_os"] = Environment.GetEnvironmentVariable("ImageOS") ?? "",
                 ["ci_image_version"] = Environment.GetEnvironmentVariable("ImageVersion") ?? "",
+                ["ci_container_image"] = Environment.GetEnvironmentVariable("LUAU_HOST_CI_CONTAINER_IMAGE") ?? "",
             },
         };
     }

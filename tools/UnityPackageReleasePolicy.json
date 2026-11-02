@@ -5,6 +5,16 @@
   "releaseTag": "v0.3.1",
   "archiveFormat": "ustar+gzip-stored-v1",
   "androidNdkRevision": "27.2.12479018",
+  "linuxClangVersion": "15.0.7",
+  "linuxGlibcMaximum": "2.35",
+  "linuxToolchainPackages": {
+    "clang-15": "1:15.0.7-0ubuntu0.22.04.3",
+    "lld-15": "1:15.0.7-0ubuntu0.22.04.3",
+    "llvm-15": "1:15.0.7-0ubuntu0.22.04.3",
+    "libc6-dev": "2.35-0ubuntu3.15",
+    "libgcc-12-dev": "12.3.0-1ubuntu1~22.04.3",
+    "libstdc++-12-dev": "12.3.0-1ubuntu1~22.04.3"
+  },
   "maximumArchiveBytes": 8388608,
   "artifacts": [
     {
@@ -29,6 +39,10 @@
     },
     {
       "path": "Runtime/Plugins/android-x64/libluau_host.so",
+      "maximumBytes": 3145728
+    },
+    {
+      "path": "Runtime/Plugins/linux-x64/libluau_host.so",
       "maximumBytes": 3145728
     }
   ]

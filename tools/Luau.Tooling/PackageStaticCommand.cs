@@ -23,7 +23,8 @@ internal static class PackageStaticCommand
     private static readonly string[] ExpectedDirectories =
     [
         "Documentation~", "Editor", "Runtime", "Runtime/Interop", "Runtime/Plugins",
-        "Runtime/Plugins/android-arm64", "Runtime/Plugins/android-x64", "Runtime/Plugins/win-x64",
+        "Runtime/Plugins/android-arm64", "Runtime/Plugins/android-x64", "Runtime/Plugins/linux-x64",
+        "Runtime/Plugins/win-x64",
         "Samples~", "Samples~/Full Luau Scripting Demo", "Samples~/Full Luau Scripting Demo/Core",
         "Samples~/Full Luau Scripting Demo/Demo Game", "Samples~/Full Luau Scripting Demo/Demo Game/Art",
         "Samples~/Full Luau Scripting Demo/Demo Game/Audio", "Samples~/Full Luau Scripting Demo/Demo Game/Prefabs",
@@ -125,9 +126,6 @@ internal static class PackageStaticCommand
                 $"Package artifact '{artifact.Path}' exceeds its {artifact.MaximumBytes}-byte budget.");
         }
 
-        Require(!Directory.Exists(Path.Combine(packageRoot, "Runtime", "Plugins", "linux-x64")),
-            "Linux development plugins must never be committed to the shipping package.");
-
         foreach (var relative in new[]
         {
             "Samples~/Getting Started/GettingStartedSample.cs",
@@ -183,12 +181,27 @@ internal static class PackageStaticCommand
             Require(meta.Contains("Android:\n      enabled: 1", StringComparison.Ordinal) && meta.Contains("Exclude Linux64: 1", StringComparison.Ordinal),
                 $"{platform} plugin importer must remain Android-only.");
         }
+        var linuxMeta = File.ReadAllText(Path.Combine(packageRoot, "Runtime", "Plugins", "linux-x64", "libluau_host.so.meta"));
+        Require(IsLinuxPluginImporter(linuxMeta),
+            "Linux plugin importer must target only the Linux x64 editor and Linux x64 players.");
 
         var xml = XDocument.Load(Path.Combine(packageRoot, "Runtime", "Luau.xml"));
         Require(xml.Root?.Element("assembly")?.Element("name")?.Value == "Luau", "Runtime/Luau.xml does not describe Luau.");
         var sourceProjectVersion = File.ReadAllText(repository.PathOf("tests", "Luau.Unity.Integration", "ProjectSettings", "ProjectVersion.txt"));
         Require(HasCanonicalIntegrationVersion(sourceProjectVersion),
             "The canonical integration project must pin one exact Unity 6000.3 editor.");
+    }
+
+    internal static bool IsLinuxPluginImporter(string meta)
+    {
+        meta = meta.Replace("\r\n", "\n", StringComparison.Ordinal);
+        return Regex.IsMatch(meta, @"(?m)^    Editor:\n      enabled: 1\n      settings:\n        CPU: x86_64\n        DefaultValueInitialized: true\n        OS: Linux$") &&
+            Regex.IsMatch(meta, @"(?m)^    Linux64:\n      enabled: 1\n      settings:\n        CPU: x86_64$") &&
+            Regex.IsMatch(meta, @"(?m)^    Android:\n      enabled: 0$") &&
+            Regex.IsMatch(meta, @"(?m)^    Win64:\n      enabled: 0$") &&
+            Regex.IsMatch(meta, @"(?m)^    OSXUniversal:\n      enabled: 0$") &&
+            new[] { "Exclude Android: 1", "Exclude Editor: 0", "Exclude Linux64: 0", "Exclude OSXUniversal: 1", "Exclude WebGL: 1", "Exclude Win: 1", "Exclude Win64: 1", "Exclude iOS: 1" }
+                .All(setting => meta.Contains(setting, StringComparison.Ordinal));
     }
 
     internal static string Relative(string root, string path) =>

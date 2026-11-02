@@ -103,16 +103,18 @@ internal static class UnityHostCommand
             var nativeHost = OperatingSystem.IsLinux()
                 ? options.Get("--linux-plugin") ?? repository.PathOf("native", "luau-host", "out", "install", "linux-x64", "libluau_host.so")
                 : options.Get("--windows-plugin") ?? repository.PathOf("Luau.Unity", "Runtime", "Plugins", "win-x64", "luau_host.dll");
-            if (OperatingSystem.IsLinux() || linuxSmoke)
+            if (OperatingSystem.IsLinux())
             {
+                // Linux runs default to the local development build so native
+                // changes can be tested before CI refreshes the shipping plugin.
+                // Pass the package's own plugin path to test the shipped binary.
                 if (!Path.IsPathRooted(nativeHost))
                 {
                     throw new ToolingException("--linux-plugin must be an absolute path.");
                 }
 
-                UnityProjectStaging.StageLinuxPlugin(
-                    Path.Combine(stagedPackage, "Runtime", "Plugins", "linux-x64"),
-                    Path.GetFullPath(nativeHost));
+                UnityProjectStaging.OverridePackagePlugin(
+                    stagedPackage, "linux-x64", "libluau_host.so", Path.GetFullPath(nativeHost));
             }
 
             StagePackagePluginOverride(repository, stagedPackage, options.Get("--windows-plugin"), "win-x64", "luau_host.dll");
@@ -253,15 +255,7 @@ internal static class UnityHostCommand
         }
 
         source = Path.IsPathRooted(source) ? Path.GetFullPath(source) : repository.PathOf(source);
-        var destination = Path.Combine(stagedPackage, "Runtime", "Plugins", platform, fileName);
-        FileSystem.RequireFile(destination + ".meta", $"Reviewed {platform} Unity importer metadata");
-        FileSystem.CopyFile(source, destination);
-        if (Hashing.FileSha256(source) != Hashing.FileSha256(destination))
-        {
-            throw new ToolingException($"Staged {platform} plugin failed SHA256 verification.");
-        }
-
-        Console.WriteLine($"Staged disposable {platform} plugin: {destination}");
+        UnityProjectStaging.OverridePackagePlugin(stagedPackage, platform, fileName, source);
     }
 
     private static void SetAndroidApplicationIdentifier(string projectSettings, string packageName)

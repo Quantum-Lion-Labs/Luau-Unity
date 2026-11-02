@@ -2,6 +2,11 @@ name: Build Luau Host - Windows
 
 on:
   workflow_call:
+    inputs:
+      refresh-artifacts:
+        description: Build replacement shipping artifacts for a source change
+        type: boolean
+        default: false
   workflow_dispatch:
     inputs:
       refresh-artifacts:

@@ -19,7 +19,12 @@ internal static class NativeArtifactsCommand
             ["win-x64"] = new("win-x64", "windows-x64", "native/luau-host/out/install/windows-x64/luau_host.dll", "win-x64/luau_host.dll", false, 0),
             ["android-arm64"] = new("android-arm64", "android-arm64", "native/luau-host/out/install/android-arm64/libluau_host.so", "android-arm64/libluau_host.so", true, 26),
             ["android-x64"] = new("android-x64", "android-x64", "native/luau-host/out/install/android-x64/libluau_host.so", "android-x64/libluau_host.so", true, 26),
+            ["linux-x64"] = new("linux-x64", "linux-x64-shipping", "native/luau-host/out/install/linux-x64-shipping/libluau_host.so", "linux-x64/libluau_host.so", true, 0),
         };
+
+    // A shipping Linux host may depend only on the C runtime. Everything else,
+    // including the C++ runtime, is linked statically and hidden.
+    private static readonly string[] LinuxAllowedNeeded = ["ld-linux-x86-64.so.2", "libc.so.6", "libm.so.6"];
 
     public static async Task<int> RunAsync(RepositoryContext repository, CommandLine options)
     {
@@ -79,13 +84,22 @@ internal static class NativeArtifactsCommand
             var strip = cache.Get("CMAKE_STRIP");
             var objcopy = cache.Get("CMAKE_OBJCOPY");
             var readelf = cache.Get("CMAKE_READELF");
-            var ndkRoot = cache.Get("CMAKE_ANDROID_NDK");
             foreach (var tool in new[] { strip, objcopy, readelf })
             {
-                FileSystem.RequireFile(tool, "Pinned NDK tool");
+                FileSystem.RequireFile(tool, "Pinned ELF tool");
             }
-            Require(ReadNdkRevision(ndkRoot) == ndkRevision,
-                $"Android NDK revision differs from reviewed revision {ndkRevision}.");
+            if (IsAndroid(artifact))
+            {
+                Require(ReadNdkRevision(cache.Get("CMAKE_ANDROID_NDK")) == ndkRevision,
+                    $"Android NDK revision differs from reviewed revision {ndkRevision}.");
+            }
+            else
+            {
+                var compiler = ReadCompilerIdentity(Path.Combine(outRoot, "build", artifact.Preset));
+                Require(compiler == $"Clang {policy.LinuxClangVersion}",
+                    $"Linux shipping compiler is {compiler}; reviewed compiler is Clang {policy.LinuxClangVersion}.");
+                await AssertLinuxToolchainPackagesAsync(policy.LinuxToolchainPackages, repository.Root);
+            }
             await ProcessRunner.RequireAsync(strip,
                 ["--strip-unneeded", "--remove-section=.comment", "-o", shipping, source], repository.Root);
 
@@ -105,7 +119,11 @@ internal static class NativeArtifactsCommand
                 }
             }
 
-            await AssertAndroidHardeningAsync(readelf, shipping, repository.Root);
+            await AssertElfHardeningAsync(readelf, shipping, repository.Root, artifact.Platform);
+            if (!IsAndroid(artifact))
+            {
+                await AssertLinuxDependenciesAsync(readelf, shipping, repository.Root, policy.LinuxGlibcMaximum);
+            }
             var symbolsDirectory = Path.Combine(outRoot, "symbols", artifact.Platform);
             var unstripped = Path.Combine(symbolsDirectory, "libluau_host.unstripped.so");
             var debug = Path.Combine(symbolsDirectory, "libluau_host.so.debug");
@@ -118,7 +136,8 @@ internal static class NativeArtifactsCommand
             }
 
             await ArtifactManifestCommand.WriteAsync(
-                repository, shipping, artifact.Platform, auditManifest, "Release", artifact.AndroidApi, ndkRevision);
+                repository, shipping, artifact.Platform, auditManifest, "Release",
+                artifact.AndroidApi, IsAndroid(artifact) ? ndkRevision : null, artifact.Preset);
         }
         else
         {
@@ -158,10 +177,19 @@ internal static class NativeArtifactsCommand
             ["audited_manifest_sha256"] = Hashing.FileSha256(auditManifest),
             ["audited_manifest"] = audit.DeepClone(),
         };
-        if (artifact.Strip)
+        if (IsAndroid(artifact))
         {
             shippingRecord["android_api"] = artifact.AndroidApi;
             shippingRecord["android_ndk_revision"] = ndkRevision;
+        }
+        else if (artifact.Strip)
+        {
+            shippingRecord["linux_clang_version"] = policy.LinuxClangVersion;
+            shippingRecord["linux_glibc_maximum"] = policy.LinuxGlibcMaximum;
+            shippingRecord["linux_allowed_needed"] = new JsonArray(LinuxAllowedNeeded.Select(static name => (JsonNode)name).ToArray());
+            shippingRecord["linux_toolchain_packages"] = new JsonObject(policy.LinuxToolchainPackages
+                .OrderBy(static package => package.Key, StringComparer.Ordinal)
+                .Select(static package => KeyValuePair.Create(package.Key, (JsonNode?)package.Value)));
         }
         FileSystem.WriteUtf8(shippingManifest, shippingRecord.ToJsonString(JsonOptions.Compact) + "\n");
 
@@ -233,16 +261,80 @@ internal static class NativeArtifactsCommand
         return match.Success ? match.Groups[1].Value.Trim() : throw new ToolingException("Unable to read Android NDK revision.");
     }
 
-    private static async Task AssertAndroidHardeningAsync(string readelf, string binary, string root)
+    private static bool IsAndroid(Artifact artifact) => artifact.AndroidApi > 0;
+
+    internal static string[] ParseNeededLibraries(string readelfDynamic) =>
+        Regex.Matches(readelfDynamic, @"\(NEEDED\)\s+Shared library: \[([^\]]+)\]")
+            .Select(static match => match.Groups[1].Value)
+            .ToArray();
+
+    internal static Version[] ParseGlibcVersions(string readelfVersionInfo) =>
+        Regex.Matches(readelfVersionInfo, @"\bGLIBC_(\d+(?:\.\d+)+)\b")
+            .Select(static match => Version.Parse(match.Groups[1].Value))
+            .Distinct()
+            .ToArray();
+
+    // The shipping plugin statically links libstdc++, libgcc, and C runtime
+    // objects from these packages, so an Ubuntu update changes its bytes. Fail
+    // with the reason instead of a bare "stale artifact" mismatch.
+    private static async Task AssertLinuxToolchainPackagesAsync(IReadOnlyDictionary<string, string> expected, string root)
+    {
+        var result = await ProcessRunner.RequireAsync(
+            "dpkg-query",
+            ["-W", "-f=${Package}\t${Version}\n", .. expected.Keys.Order(StringComparer.Ordinal)],
+            root,
+            echo: false);
+        var installed = result.StandardOutput
+            .Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(static line => line.Split('\t'))
+            .Where(static parts => parts.Length == 2)
+            .ToDictionary(static parts => parts[0], static parts => parts[1], StringComparer.Ordinal);
+        var differences = expected
+            .Where(package => !installed.TryGetValue(package.Key, out var version) || version != package.Value)
+            .Select(package => $"{package.Key} {(installed.TryGetValue(package.Key, out var version) ? version : "missing")} (reviewed {package.Value})")
+            .ToArray();
+        Require(differences.Length == 0,
+            "Linux shipping toolchain packages differ from the reviewed versions: " + string.Join(", ", differences) +
+            ". Update linuxToolchainPackages in tools/UnityPackageReleasePolicy.json and refresh the Linux plugin.");
+    }
+
+    private static string ReadCompilerIdentity(string buildDirectory)
+    {
+        var descriptors = Directory.GetFiles(buildDirectory, "CMakeCXXCompiler.cmake", SearchOption.AllDirectories);
+        Require(descriptors.Length == 1, $"Expected one CMake compiler descriptor under {buildDirectory}.");
+        var descriptor = File.ReadAllText(descriptors[0]);
+        return $"{CMakeCache.GetSetValue(descriptor, "CMAKE_CXX_COMPILER_ID")} {CMakeCache.GetSetValue(descriptor, "CMAKE_CXX_COMPILER_VERSION")}";
+    }
+
+    private static async Task AssertElfHardeningAsync(string readelf, string binary, string root, string platform)
     {
         var output = (await ProcessRunner.RequireAsync(
             readelf, ["--program-headers", "--dynamic", binary], root, echo: false)).CombinedOutput;
-        Require(Regex.IsMatch(output, @"(?m)^\s*GNU_RELRO\s"), "Android shipping artifact is missing GNU_RELRO.");
+        Require(Regex.IsMatch(output, @"(?m)^\s*GNU_RELRO\s"), $"{platform} shipping artifact is missing GNU_RELRO.");
         var stack = Regex.Match(output, @"(?m)^\s*GNU_STACK\s+.*$");
         Require(stack.Success && Regex.IsMatch(stack.Value, @"\sRW\s") && !Regex.IsMatch(stack.Value, @"\sRWE\s"),
-            "Android shipping artifact does not have a non-executable GNU_STACK.");
+            $"{platform} shipping artifact does not have a non-executable GNU_STACK.");
         Require(Regex.IsMatch(output, @"(?m)\(FLAGS\).*BIND_NOW|\(FLAGS_1\).*\bNOW\b"),
-            "Android shipping artifact is missing immediate binding.");
+            $"{platform} shipping artifact is missing immediate binding.");
+    }
+
+    private static async Task AssertLinuxDependenciesAsync(string readelf, string binary, string root, string glibcMaximum)
+    {
+        var dynamic = (await ProcessRunner.RequireAsync(readelf, ["--dynamic", binary], root, echo: false)).CombinedOutput;
+        var needed = ParseNeededLibraries(dynamic);
+        var unexpected = needed.Where(name => !LinuxAllowedNeeded.Contains(name, StringComparer.Ordinal)).ToArray();
+        Require(needed.Contains("libc.so.6", StringComparer.Ordinal) && unexpected.Length == 0,
+            $"Linux shipping artifact has unexpected dynamic dependencies: {string.Join(", ", unexpected)}.");
+
+        var versions = (await ProcessRunner.RequireAsync(readelf, ["--version-info", binary], root, echo: false)).CombinedOutput;
+        var maximum = Version.Parse(glibcMaximum);
+        var required = ParseGlibcVersions(versions);
+        Require(required.Length > 0, "Linux shipping artifact does not declare any glibc symbol versions.");
+        var newest = required.Max()!;
+        Require(newest <= maximum,
+            $"Linux shipping artifact requires glibc {newest}; the reviewed floor is {glibcMaximum}.");
+        Require(!Regex.IsMatch(versions, @"\bGLIBCXX_|\bCXXABI_"),
+            "Linux shipping artifact must not depend on the dynamic C++ runtime.");
     }
 
     private static void Require(bool condition, string message) => PackageStaticCommand.Require(condition, message);
