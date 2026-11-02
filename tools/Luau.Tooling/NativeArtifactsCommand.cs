@@ -98,6 +98,7 @@ internal static class NativeArtifactsCommand
                 var compiler = ReadCompilerIdentity(Path.Combine(outRoot, "build", artifact.Preset));
                 Require(compiler == $"Clang {policy.LinuxClangVersion}",
                     $"Linux shipping compiler is {compiler}; reviewed compiler is Clang {policy.LinuxClangVersion}.");
+                await AssertLinuxToolchainPackagesAsync(policy.LinuxToolchainPackages, repository.Root);
             }
             await ProcessRunner.RequireAsync(strip,
                 ["--strip-unneeded", "--remove-section=.comment", "-o", shipping, source], repository.Root);
@@ -186,6 +187,9 @@ internal static class NativeArtifactsCommand
             shippingRecord["linux_clang_version"] = policy.LinuxClangVersion;
             shippingRecord["linux_glibc_maximum"] = policy.LinuxGlibcMaximum;
             shippingRecord["linux_allowed_needed"] = new JsonArray(LinuxAllowedNeeded.Select(static name => (JsonNode)name).ToArray());
+            shippingRecord["linux_toolchain_packages"] = new JsonObject(policy.LinuxToolchainPackages
+                .OrderBy(static package => package.Key, StringComparer.Ordinal)
+                .Select(static package => KeyValuePair.Create(package.Key, (JsonNode?)package.Value)));
         }
         FileSystem.WriteUtf8(shippingManifest, shippingRecord.ToJsonString(JsonOptions.Compact) + "\n");
 
@@ -259,6 +263,41 @@ internal static class NativeArtifactsCommand
 
     private static bool IsAndroid(Artifact artifact) => artifact.AndroidApi > 0;
 
+    internal static string[] ParseNeededLibraries(string readelfDynamic) =>
+        Regex.Matches(readelfDynamic, @"\(NEEDED\)\s+Shared library: \[([^\]]+)\]")
+            .Select(static match => match.Groups[1].Value)
+            .ToArray();
+
+    internal static Version[] ParseGlibcVersions(string readelfVersionInfo) =>
+        Regex.Matches(readelfVersionInfo, @"\bGLIBC_(\d+(?:\.\d+)+)\b")
+            .Select(static match => Version.Parse(match.Groups[1].Value))
+            .Distinct()
+            .ToArray();
+
+    // The shipping plugin statically links libstdc++, libgcc, and C runtime
+    // objects from these packages, so an Ubuntu update changes its bytes. Fail
+    // with the reason instead of a bare "stale artifact" mismatch.
+    private static async Task AssertLinuxToolchainPackagesAsync(IReadOnlyDictionary<string, string> expected, string root)
+    {
+        var result = await ProcessRunner.RequireAsync(
+            "dpkg-query",
+            ["-W", "-f=${Package}\t${Version}\n", .. expected.Keys.Order(StringComparer.Ordinal)],
+            root,
+            echo: false);
+        var installed = result.StandardOutput
+            .Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(static line => line.Split('\t'))
+            .Where(static parts => parts.Length == 2)
+            .ToDictionary(static parts => parts[0], static parts => parts[1], StringComparer.Ordinal);
+        var differences = expected
+            .Where(package => !installed.TryGetValue(package.Key, out var version) || version != package.Value)
+            .Select(package => $"{package.Key} {(installed.TryGetValue(package.Key, out var version) ? version : "missing")} (reviewed {package.Value})")
+            .ToArray();
+        Require(differences.Length == 0,
+            "Linux shipping toolchain packages differ from the reviewed versions: " + string.Join(", ", differences) +
+            ". Update linuxToolchainPackages in tools/UnityPackageReleasePolicy.json and refresh the Linux plugin.");
+    }
+
     private static string ReadCompilerIdentity(string buildDirectory)
     {
         var descriptors = Directory.GetFiles(buildDirectory, "CMakeCXXCompiler.cmake", SearchOption.AllDirectories);
@@ -282,18 +321,14 @@ internal static class NativeArtifactsCommand
     private static async Task AssertLinuxDependenciesAsync(string readelf, string binary, string root, string glibcMaximum)
     {
         var dynamic = (await ProcessRunner.RequireAsync(readelf, ["--dynamic", binary], root, echo: false)).CombinedOutput;
-        var needed = Regex.Matches(dynamic, @"\(NEEDED\)\s+Shared library: \[([^\]]+)\]")
-            .Select(static match => match.Groups[1].Value)
-            .ToArray();
+        var needed = ParseNeededLibraries(dynamic);
         var unexpected = needed.Where(name => !LinuxAllowedNeeded.Contains(name, StringComparer.Ordinal)).ToArray();
         Require(needed.Contains("libc.so.6", StringComparer.Ordinal) && unexpected.Length == 0,
             $"Linux shipping artifact has unexpected dynamic dependencies: {string.Join(", ", unexpected)}.");
 
         var versions = (await ProcessRunner.RequireAsync(readelf, ["--version-info", binary], root, echo: false)).CombinedOutput;
         var maximum = Version.Parse(glibcMaximum);
-        var required = Regex.Matches(versions, @"\bGLIBC_(\d+(?:\.\d+)+)\b")
-            .Select(static match => Version.Parse(match.Groups[1].Value))
-            .ToArray();
+        var required = ParseGlibcVersions(versions);
         Require(required.Length > 0, "Linux shipping artifact does not declare any glibc symbol versions.");
         var newest = required.Max()!;
         Require(newest <= maximum,

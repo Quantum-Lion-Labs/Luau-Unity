@@ -52,7 +52,10 @@ internal static class ValidateLinuxCommand
             await PackageConsumerCommand.RunAsync(repository, new CommandLine(forwarded));
             var unity = new List<string>(forwarded)
             {
-                "--compile", "--editmode", "--linux-smoke", "--linux-plugin", nativeHost,
+                // Acceptance exercises the committed shipping plugin in the editor
+                // and the IL2CPP player; run unity-test directly for the dev build.
+                "--compile", "--editmode", "--linux-smoke", "--linux-plugin",
+                repository.PathOf("Luau.Unity", "Runtime", "Plugins", "linux-x64", "libluau_host.so"),
                 "--unity-timeout-minutes", options.GetInt("--unity-timeout-minutes", 30).ToString(),
             };
             await UnityHostCommand.RunAsync(repository, new CommandLine(unity));

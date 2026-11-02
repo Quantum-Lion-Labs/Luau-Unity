@@ -23,12 +23,14 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     # Ubuntu 22.04 sets the shipping glibc floor (2.35), so the plugin loads on
-    # that release and every newer distribution. The image is pinned by digest
-    # and the compiler version is verified below; together with the
-    # native-artifacts check, CI rebuilds the committed plugin byte for byte.
+    # that release and every newer distribution. The image is pinned by digest,
+    # and native-artifacts requires the exact toolchain package versions listed
+    # in tools/UnityPackageReleasePolicy.json, so CI rebuilds the committed
+    # plugin byte for byte or explains which Ubuntu package moved.
     container:
       image: ubuntu:22.04@sha256:076e7bf82319619f28dd0aa9c02ab34b055ad37100395b4f49a2ffba04fb5e11
     env:
+      LUAU_HOST_CI_CONTAINER_IMAGE: ubuntu:22.04@sha256:076e7bf82319619f28dd0aa9c02ab34b055ad37100395b4f49a2ffba04fb5e11
       DEBIAN_FRONTEND: noninteractive
       DOTNET_CLI_TELEMETRY_OPTOUT: "1"
       DOTNET_NOLOGO: "1"
