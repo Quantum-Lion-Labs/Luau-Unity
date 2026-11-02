@@ -6,6 +6,12 @@ API or ABI breaks.
 
 ## [Unreleased]
 
+### Added
+
+- A Linux x64 native plugin for the Linux editor and Linux x64 players,
+  including dedicated servers. It requires glibc 2.35 or newer (Ubuntu 22.04,
+  Debian 12, or later) and has no other dynamic dependencies.
+
 ### Changed
 
 - **Breaking:** `int`, `uint`, `short`, `ushort`, `byte`, and `sbyte` values now

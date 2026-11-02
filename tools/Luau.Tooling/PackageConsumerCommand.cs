@@ -11,6 +11,12 @@ internal static class PackageConsumerCommand
     public static async Task<int> RunAsync(RepositoryContext repository, CommandLine options)
     {
         var editor = UnityEditor.Resolve(repository, options);
+        if (options.Has("--linux-plugin"))
+        {
+            throw new ToolingException(
+                "package-consumer loads the package's committed plugins; use unity-test --linux-plugin to test a development build.");
+        }
+
         var allowedRoot = repository.PathOf("native", "luau-host", "out");
         var outputRoot = options.Get("--output") ?? allowedRoot;
         outputRoot = Path.IsPathRooted(outputRoot) ? Path.GetFullPath(outputRoot) : repository.PathOf(outputRoot);
@@ -66,19 +72,6 @@ internal static class PackageConsumerCommand
             };
             FileSystem.WriteUtf8(Path.Combine(packages, "manifest.json"), manifest.ToJsonString(JsonOptions.Indented) + "\n");
 
-            if (OperatingSystem.IsLinux())
-            {
-                var pluginSource = options.Get("--linux-plugin") ??
-                    repository.PathOf("native", "luau-host", "out", "install", "linux-x64", "libluau_host.so");
-                if (!Path.IsPathRooted(pluginSource))
-                {
-                    throw new ToolingException("--linux-plugin must be absolute.");
-                }
-
-                var pluginDirectory = Path.Combine(project, "Assets", "Plugins", "linux-x64");
-                UnityProjectStaging.StageLinuxPlugin(pluginDirectory, pluginSource);
-            }
-
             var log = Path.Combine(logs, "package-consumer.log");
             Console.WriteLine($"Running generated package consumer at {project} with Unity {editor.Version} after deleting the demo game and retaining its reusable Core.");
             var result = await UnityProcess.RunAsync(
@@ -102,9 +95,7 @@ internal static class PackageConsumerCommand
             }
 
             succeeded = true;
-            Console.WriteLine(OperatingSystem.IsLinux()
-                ? "Generated minimal Unity package consumer compiled samples, loaded the Linux development host, and executed successfully."
-                : "Generated minimal Unity package consumer compiled samples, loaded the platform host, and executed successfully.");
+            Console.WriteLine("Generated minimal Unity package consumer compiled samples, loaded the package's platform host, and executed successfully.");
             return 0;
         }
         finally

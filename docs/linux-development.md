@@ -1,10 +1,28 @@
 # Linux development
 
-Linux x64 is supported far enough to run the complete local development test
-surface. It is not a shipping target: `Luau.Unity` continues to contain only the
-reviewed Windows x64 and Android ARM64/x64 plugins. The tooling stages
-`libluau_host.so` and Linux-only importer metadata into disposable projects under
-`native/luau-host/out`.
+Linux x64 runs the complete local development test surface, and the package
+ships a Linux x64 plugin for the Linux editor and Linux players.
+
+Two Linux builds exist, and they are deliberately separate:
+
+- The **development host** (`linux-x64` preset) is built with your local
+  clang-18 and installed under `native/luau-host/out/install/linux-x64`. The
+  .NET tests, host soak, and `unity-test` use it by default, so native changes
+  can be tested before any plugin is refreshed.
+- The **shipping plugin** (`linux-x64-shipping` preset) is built only in CI,
+  inside a digest-pinned Ubuntu 22.04 container with clang 15.0.7, so it requires
+  nothing newer than glibc 2.35. CI rebuilds it on every native change and
+  fails if the committed `Luau.Unity/Runtime/Plugins/linux-x64/libluau_host.so`
+  differs. Refresh it like the Windows and Android plugins; see the
+  [maintainer guide](maintainer-guide.md#34-maintained-artifacts).
+
+To test the shipped binary instead of your development build, pass its path:
+`unity-test --linux-plugin "$PWD/Luau.Unity/Runtime/Plugins/linux-x64/libluau_host.so"`.
+The generated package consumer always loads the package's committed plugin, and
+`validate-linux` runs its Unity EditMode suite and IL2CPP player smoke against
+that committed plugin too. After a native source change, `validate-linux`
+therefore passes only once the refreshed plugins are committed; until then,
+test your development build with `unity-test` directly.
 
 ## Prerequisites
 
@@ -49,7 +67,8 @@ This configures, builds, tests, and installs the non-sanitized `linux-x64` nativ
 preset; runs the complete .NET solution and ABI-fixture rejection; exercises the
 host soak and platform-native harness selection; checks package artifacts and a
 deterministic release archive; generates a minimal Unity consumer; runs all
-EditMode tests; and builds and executes a Linux x64 IL2CPP player smoke.
+EditMode tests and builds and executes a Linux x64 IL2CPP player smoke, both
+against the committed shipping plugin.
 
 Use `--skip-unity` only when diagnosing the native, managed, or package layers
 on a machine without a licensed editor. Use `--soak-iterations N` to adjust the
@@ -62,5 +81,5 @@ dotnet run --project tools/Luau.Tooling -- --help
 ```
 
 Generated Unity projects, player builds, manifests, archives, and native build
-outputs remain beneath ignored output directories. No Linux binary is copied to
-the package or included in release archives.
+outputs remain beneath ignored output directories. The development host is never
+copied into the package; only the CI-built shipping plugin is committed.

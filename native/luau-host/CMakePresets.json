@@ -76,6 +76,28 @@
       }
     },
     {
+      "name": "linux-x64-shipping",
+      "displayName": "Linux x64 shipping Luau host (Ubuntu 22.04 CI container)",
+      "inherits": "host-base",
+      "generator": "Ninja",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_C_COMPILER": "/usr/bin/clang-15",
+        "CMAKE_CXX_COMPILER": "/usr/bin/clang++-15",
+        "CMAKE_LINKER_TYPE": "LLD",
+        "CMAKE_LINKER": "/usr/lib/llvm-15/bin/ld.lld",
+        "CMAKE_AR": "/usr/bin/llvm-ar-15",
+        "CMAKE_RANLIB": "/usr/bin/llvm-ranlib-15",
+        "CMAKE_NM": "/usr/bin/llvm-nm-15",
+        "CMAKE_STRIP": "/usr/bin/llvm-strip-15",
+        "CMAKE_OBJCOPY": "/usr/bin/llvm-objcopy-15",
+        "CMAKE_READELF": "/usr/bin/llvm-readelf-15",
+        "LUAU_HOST_LINUX_SHIPPING": "ON",
+        "LUAU_HOST_ENABLE_SANITIZERS": "OFF",
+        "LUAU_HOST_BUILD_FUZZERS": "OFF"
+      }
+    },
+    {
       "name": "android-arm64",
       "displayName": "Android ARM64 Luau host",
       "inherits": "android-host-base",
@@ -154,6 +176,18 @@
         "luau_host_export_audit",
         "luau_host_compatibility_audit"
       ]
+    },
+    {
+      "name": "linux-x64-shipping",
+      "configurePreset": "linux-x64-shipping",
+      "targets": [
+        "luau_host",
+        "luau_host_c_header_compile",
+        "luau_host_conformance",
+        "luau_host_invalid_abi_fixtures",
+        "luau_host_export_audit",
+        "luau_host_compatibility_audit"
+      ]
     }
   ],
   "testPresets": [
@@ -175,6 +209,13 @@
     {
       "name": "linux-x64",
       "configurePreset": "linux-x64",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "linux-x64-shipping",
+      "configurePreset": "linux-x64-shipping",
       "output": {
         "outputOnFailure": true
       }

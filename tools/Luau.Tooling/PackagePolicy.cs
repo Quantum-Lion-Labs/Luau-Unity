@@ -11,6 +11,9 @@ internal sealed record ReleasePolicy(
     string ReleaseTag,
     string ArchiveFormat,
     string AndroidNdkRevision,
+    string LinuxClangVersion,
+    string LinuxGlibcMaximum,
+    IReadOnlyDictionary<string, string> LinuxToolchainPackages,
     long MaximumArchiveBytes,
     IReadOnlyList<ReleaseArtifactPolicy> Artifacts)
 {
@@ -26,6 +29,10 @@ internal sealed record ReleasePolicy(
             root.GetProperty("releaseTag").GetString()!,
             root.GetProperty("archiveFormat").GetString()!,
             root.GetProperty("androidNdkRevision").GetString()!,
+            root.GetProperty("linuxClangVersion").GetString()!,
+            root.GetProperty("linuxGlibcMaximum").GetString()!,
+            root.GetProperty("linuxToolchainPackages").EnumerateObject()
+                .ToDictionary(static package => package.Name, static package => package.Value.GetString()!, StringComparer.Ordinal),
             root.GetProperty("maximumArchiveBytes").GetInt64(),
             root.GetProperty("artifacts").EnumerateArray()
                 .Select(static artifact => new ReleaseArtifactPolicy(

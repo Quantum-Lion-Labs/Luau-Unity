@@ -30,8 +30,9 @@ suspended chain. Ordinary `luau_host_yield` and script yields retain their
 existing script-visible behavior. The host reserves native thread userdata
 and the debug-interrupt hook for these continuation links.
 
-For a native source change, manually dispatch the Windows and Android build
-workflows with `refresh-artifacts=true` to generate audited replacement plugins.
-Download their shipping outputs and commit them with the matching managed DLL.
+For a native source change, manually dispatch the **Build Luau Host** workflow
+with `refresh-artifacts=true` to generate audited replacement Windows, Android,
+and Linux plugins. Download their shipping outputs and commit them with the
+matching managed DLL.
 Normal pull-request and main-branch CI always checks that committed plugins
 match a fresh build; the manual refresh option only generates replacements.

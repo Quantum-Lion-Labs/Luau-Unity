@@ -37,6 +37,11 @@ on:
       - "tests/Luau.Tooling.Tests/**"
       - "tools/UnityPackageReleasePolicy.json"
   workflow_dispatch:
+    inputs:
+      refresh-artifacts:
+        description: Build replacement shipping artifacts for every platform
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -44,9 +49,18 @@ permissions:
 jobs:
   build-windows:
     uses: ./.github/workflows/build-luau-host.windows.yml
+    with:
+      refresh-artifacts: ${{ inputs.refresh-artifacts == true }}
 
   build-android:
     uses: ./.github/workflows/build-luau-host.android.yml
+    with:
+      refresh-artifacts: ${{ inputs.refresh-artifacts == true }}
+
+  build-linux:
+    uses: ./.github/workflows/build-luau-host.linux.yml
+    with:
+      refresh-artifacts: ${{ inputs.refresh-artifacts == true }}
 
   sanitize-and-fuzz:
     name: Linux ASan, UBSan, and bounded fuzz smoke
@@ -97,7 +111,7 @@ jobs:
 
   validate-release-package:
     name: Validate exact package release contents
-    needs: [build-windows, build-android, sanitize-and-fuzz]
+    needs: [build-windows, build-android, build-linux, sanitize-and-fuzz]
     runs-on: ubuntu-24.04
 
     steps:
