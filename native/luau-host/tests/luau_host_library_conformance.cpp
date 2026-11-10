@@ -1192,6 +1192,36 @@ bool truthy(luau_host_state* state, const std::string& expression)
     return value;
 }
 
+// A candidate that matches is charged like one that does not: the bytes
+// memchr scanned to reach it count before the search returns.
+void test_matched_rare_candidates_are_charged()
+{
+    Root root;
+    open_libraries(root.state);
+
+    // 400 matches 128 KB apart. For each piece split scans 131,071 bytes and
+    // then copies them, and each of the two is half a poll's worth of work, so
+    // there is about one poll per piece. Without the charge for the scan there
+    // is one for every two pieces.
+    run_ok(root.state, "hay = string.rep(string.rep('x', 131071) .. 'ab', 400)");
+    const long matched = polls_inside(root.state, "string.split(hay, 'ab')");
+    if (matched < 380)
+        std::cerr << "split: " << matched << " polls\n";
+    REQUIRE(matched >= 380);
+
+    // One candidate, 262,143 bytes in, which matches: a scan of that many
+    // bytes plus the candidate is one poll's worth of work.
+    for (const char* needle : {"ab", "abc"})
+    {
+        run_ok(root.state, std::string("one = string.rep('x', 262143) .. '") + needle + "'");
+        const std::string quoted = std::string("'") + needle + "'";
+        const long find = polls_inside(root.state, "string.find(one, " + quoted + ", 1, true)");
+        if (find < 1)
+            std::cerr << needle << ": find " << find << " polls\n";
+        REQUIRE(find >= 1);
+    }
+}
+
 // A needle whose first byte comes only every 128 KB of a 50 MB subject: the
 // search spends its time in memchr between candidates, and must charge those
 // bytes like the bytes of a scan that finds nothing.
@@ -1620,6 +1650,7 @@ int main()
     failures += run_test("table.concat matches upstream over a generated corpus", test_concat_matches_upstream);
     failures += run_test("utf8.len matches upstream over a generated corpus", test_utf8_len_matches_upstream);
     failures += run_test("rare candidates are charged", test_rare_candidates_are_charged);
+    failures += run_test("matched rare candidates are charged", test_matched_rare_candidates_are_charged);
     failures += run_test("string.find classifies after init and once", test_find_classifies_after_init_and_once);
     failures += run_test(
         "reopening under a library __newindex is refused", test_reopening_under_a_library_newindex_is_refused);

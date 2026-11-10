@@ -1474,9 +1474,12 @@ const uint8_t* findplain(LibraryWork& work, PlainSearcher& searcher, const uint8
                     return nullptr;
                 continue;
             }
-            if (std::memcmp(hit + 1, x + 1, m - 1) == 0)
-                return hit;
+            // A candidate that matches is charged before the search returns,
+            // like one that does not.
+            const bool matched = std::memcmp(hit + 1, x + 1, m - 1) == 0;
             spend(work, size_t(hit - candidate) / kLibraryBytesPerUnit + kLibraryStepUnits);
+            if (matched)
+                return hit;
             candidate = hit + 1;
         }
     }
