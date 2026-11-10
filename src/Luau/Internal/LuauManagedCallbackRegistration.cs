@@ -5,7 +5,7 @@ namespace Luau;
 
 internal interface ILuauManagedCallbackFunction
 {
-    int RegistrationId { get; }
+    long RegistrationId { get; }
     LuauHostManagedFunction Callback { get; }
 }
 
@@ -13,7 +13,7 @@ internal sealed class LuauManagedCallbackRegistration
 {
     internal LuauManagedCallbackRegistration(
         LuauVmContext owner,
-        int id,
+        long id,
         string? name,
         Func<LuauState, LuauOperationCancellation, int> callback)
     {
@@ -26,7 +26,7 @@ internal sealed class LuauManagedCallbackRegistration
 
     internal LuauManagedCallbackRegistration(
         LuauVmContext owner,
-        int id,
+        long id,
         string? name,
         Func<LuauState, LuauOperationCancellation, ValueTask<int>> callback)
     {
@@ -49,7 +49,7 @@ internal sealed class LuauManagedCallbackRegistration
     int nativeReleaseQueued;
     LuauManagedCallbackRegistration? nextNativeRelease;
 
-    internal int Id { get; }
+    internal long Id { get; }
     internal string? Name { get; }
     internal Func<LuauState, LuauOperationCancellation, int>? SynchronousCallback { get; }
     internal Func<LuauState, LuauOperationCancellation, ValueTask<int>>? AsynchronousCallback { get; }

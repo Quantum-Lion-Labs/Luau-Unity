@@ -302,6 +302,15 @@ API or ABI breaks.
   still in use, so a released value is not issued again until about two
   billion more references have been created. Creation fails only while every
   value is held at once, which needs more memory than a process has.
+- A process could register no managed callback after its 2,147,483,647th.
+  `CreateFunction`, `CreateAsyncFunction`, `OpenLibrary`, the first handle of
+  each capability descriptor on a state, and `OpenRequireLibrary` each take a
+  process-wide identifier that was never given back, and once the 32-bit
+  range was used up each of them threw `InvalidOperationException` (`The
+  process exhausted managed Luau callback identifiers.`) on every state.
+  Host code creating and disposing callbacks in a loop reached that in about
+  16 minutes; scripts cannot register callbacks. Identifiers are now 64-bit,
+  and still never reused.
 
 ### Compatibility
 

@@ -772,6 +772,19 @@ injected only when Luau must observe the error through `pcall`.
 An internal raw callback form exists only for runtime plumbing and focused tests.
 It is not visible to package consumers or generated host libraries.
 
+### 7.3 Registration identifiers
+
+Each managed callback registration (`CreateFunction`, `CreateAsyncFunction`,
+the functions `OpenLibrary` registers, the dispatch functions of a capability
+binding, the `require` function) takes a process-wide 64-bit identifier,
+which the native closure carries as its `registration_id` and the callback
+uses to find its registration. Identifiers are never reused, so a native
+closure that outlives its registration can never reach a later one; at two
+million registrations a second they last 146,000 years. Through 0.3.1 they
+were 32-bit, and the process could register no callback after its
+2,147,483,647th, which host code creating callbacks in a loop reached in
+about 16 minutes.
+
 ## 8. Host API generation
 
 `[LuauLibrary]` on a top-level partial class plus `[LuauMember]` on explicit

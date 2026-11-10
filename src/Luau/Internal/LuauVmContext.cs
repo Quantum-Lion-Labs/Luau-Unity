@@ -33,7 +33,7 @@ internal sealed unsafe class LuauVmContext
 {
     static readonly ConcurrentDictionary<IntPtr, WeakReference<LuauState>> globalStates = new();
     static readonly ConcurrentDictionary<IntPtr, WeakReference<LuauVmContext>> globalContexts = new();
-    static readonly ConcurrentDictionary<int, WeakReference<LuauVmContext>> managedCallbackOwners = new();
+    static readonly ConcurrentDictionary<long, WeakReference<LuauVmContext>> managedCallbackOwners = new();
     // The operation the current asynchronous flow runs in. Only flows that
     // contain an asynchronous operation carry one; see PushAmbient.
     static readonly AsyncLocal<AmbientOperationMarker?> ambientMarker = new();
@@ -48,9 +48,9 @@ internal sealed unsafe class LuauVmContext
     readonly object lifecycleGate = new();
     readonly object nativeGate = new();
     readonly Dictionary<IntPtr, WeakReference<LuauState>> states = [];
-    readonly Dictionary<int, LuauManagedCallbackRegistration> managedCallbacks = [];
-    readonly Dictionary<int, int> managedCallbackNativeReferences = [];
-    readonly HashSet<int> managedCallbackWrapperOwners = [];
+    readonly Dictionary<long, LuauManagedCallbackRegistration> managedCallbacks = [];
+    readonly Dictionary<long, int> managedCallbackNativeReferences = [];
+    readonly HashSet<long> managedCallbackWrapperOwners = [];
     readonly Dictionary<string, LuauValue> moduleCache = new(StringComparer.Ordinal);
     long cachedModuleBytes;
     readonly HashSet<string> loadingModules = new(StringComparer.Ordinal);
@@ -908,7 +908,7 @@ internal sealed unsafe class LuauVmContext
         }
     }
 
-    internal int RegisterManagedCallback(
+    internal long RegisterManagedCallback(
         string? name,
         Func<LuauState, LuauOperationCancellation, int> callback)
     {
@@ -925,7 +925,7 @@ internal sealed unsafe class LuauVmContext
         }
     }
 
-    internal int RegisterManagedCallback(
+    internal long RegisterManagedCallback(
         string? name,
         Func<LuauState, LuauOperationCancellation, ValueTask<int>> callback)
     {
@@ -942,7 +942,7 @@ internal sealed unsafe class LuauVmContext
         }
     }
 
-    int CompleteManagedCallbackRegistrationLocked(
+    long CompleteManagedCallbackRegistrationLocked(
         LuauManagedCallbackRegistration registration)
     {
         try
@@ -962,7 +962,7 @@ internal sealed unsafe class LuauVmContext
         }
     }
 
-    internal bool TryGetManagedCallback(int id, out LuauManagedCallbackRegistration registration)
+    internal bool TryGetManagedCallback(long id, out LuauManagedCallbackRegistration registration)
     {
         lock (lifecycleGate)
         {
@@ -972,7 +972,7 @@ internal sealed unsafe class LuauVmContext
     }
 
     internal static bool TryGetManagedCallbackOwner(
-        int id,
+        long id,
         out LuauVmContext context,
         out LuauManagedCallbackRegistration registration)
     {
@@ -998,7 +998,7 @@ internal sealed unsafe class LuauVmContext
         }
     }
 
-    internal IntPtr AddManagedCallbackNativeReference(int id)
+    internal IntPtr AddManagedCallbackNativeReference(long id)
     {
         lock (lifecycleGate)
         {
@@ -1014,7 +1014,7 @@ internal sealed unsafe class LuauVmContext
         }
     }
 
-    internal void ReleaseManagedCallbackWrapper(int id)
+    internal void ReleaseManagedCallbackWrapper(long id)
     {
         var removeGlobalOwner = false;
         lock (lifecycleGate)
@@ -1600,29 +1600,24 @@ internal sealed unsafe class LuauVmContext
             .Remove(new KeyValuePair<IntPtr, WeakReference<LuauVmContext>>(pointer, expectedEntry));
     }
 
-    static int NextManagedCallbackId()
+    // Identifiers are process-wide and never reused, so a native closure that
+    // outlives its registration can never reach a later one. 64 bits do not
+    // run out: two million registrations a second would take 146,000 years.
+    // They used to be 32-bit, and the process could register no callback
+    // after its 2,147,483,647th.
+    static long NextManagedCallbackId()
     {
-        while (true)
+        var id = Interlocked.Increment(ref nextGlobalManagedCallbackId);
+        if (id <= 0)
         {
-            var observed = Interlocked.Read(ref nextGlobalManagedCallbackId);
-            if (observed >= int.MaxValue)
-            {
-                throw new InvalidOperationException(
-                    "The process exhausted managed Luau callback identifiers.");
-            }
-
-            var next = observed + 1;
-            if (Interlocked.CompareExchange(
-                    ref nextGlobalManagedCallbackId,
-                    next,
-                    observed) == observed)
-            {
-                return checked((int)next);
-            }
+            throw new InvalidOperationException(
+                "The process exhausted managed Luau callback identifiers.");
         }
+
+        return id;
     }
 
-    bool RemoveManagedCallbackIfUnownedLocked(int id)
+    bool RemoveManagedCallbackIfUnownedLocked(long id)
     {
         if (managedCallbackWrapperOwners.Contains(id) ||
             managedCallbackNativeReferences.ContainsKey(id))
