@@ -48,7 +48,10 @@ sealed class Stage6BenchmarkSuite(BenchmarkConfiguration configuration)
     {
         var sourceIdentity = SourceControlIdentity.Capture();
         var identity = LuauCompiler.Compile("return 1"u8);
-        var cases = CreateCases();
+        var cases = CreateCases()
+            .Where(benchmarkCase => configuration.Filter is null ||
+                benchmarkCase.Name.StartsWith(configuration.Filter, StringComparison.Ordinal))
+            .ToList();
         var results = new List<BenchmarkResult>(cases.Count);
         foreach (var benchmarkCase in cases)
         {
@@ -87,7 +90,69 @@ sealed class Stage6BenchmarkSuite(BenchmarkConfiguration configuration)
 
         AddCompilerMatrix(cases, "first-party", firstPartySource);
         AddCompilerMatrix(cases, "untrusted-mod", modSource);
+        AddInterruptMatrix(cases);
         return cases;
+    }
+
+    // Every loop back-edge, call, and return is a Luau interrupt safepoint.
+    // These cases report nanoseconds per loop iteration, so the per-operation
+    // setup is amortized over the whole loop. The default profile's
+    // 100,000-safepoint count limit bounds its loops; the other profiles run
+    // long enough to make that setup negligible.
+    static void AddInterruptMatrix(List<BenchmarkCase> cases)
+    {
+        const string loopSource = "local n = ... local s = 0 for i = 1, n do s = s + i end return s";
+        const string callSource =
+            "local n = ... local function f(x) return x + 1 end local s = 0 for i = 1, n do s = f(s) end return s";
+        var profiles = new (string Name, LuauExecutionOptions Options, int LoopIterations, int CallIterations)[]
+        {
+            ("unbounded", LuauExecutionOptions.Unbounded, 1_000_000, 1_000_000),
+            ("wall-clock", LuauExecutionOptions.Unbounded with { WallClockLimit = TimeSpan.FromSeconds(10) }, 1_000_000, 1_000_000),
+            ("count", LuauExecutionOptions.Unbounded with { InterruptCountLimit = 1_000_000_000 }, 1_000_000, 1_000_000),
+            // One back-edge per loop iteration; a call, return, and back-edge
+            // per call iteration. Both stay below 100,000 safepoints.
+            ("default", LuauExecutionOptions.Default, 90_000, 30_000),
+        };
+
+        foreach (var profile in profiles)
+        {
+            var captured = profile;
+            cases.Add(new BenchmarkCase(
+                $"interrupt-loop-{captured.Name}",
+                () => CreateInterruptWorkload(loopSource, captured.Options, captured.LoopIterations),
+                IterationDivisor: captured.LoopIterations >= 1_000_000 ? 50 : 2,
+                OperationsPerInvocation: captured.LoopIterations));
+            cases.Add(new BenchmarkCase(
+                $"interrupt-calls-{captured.Name}",
+                () => CreateInterruptWorkload(callSource, captured.Options, captured.CallIterations),
+                IterationDivisor: captured.CallIterations >= 1_000_000 ? 50 : 2,
+                OperationsPerInvocation: captured.CallIterations));
+        }
+    }
+
+    static BenchmarkLease CreateInterruptWorkload(string source, LuauExecutionOptions options, int iterations)
+    {
+        var state = LuauState.Create(LuauStateOptions.UnboundedResources with { DefaultExecutionOptions = options });
+        state.OpenBaseLibrary();
+        var owner = state.DoString($"return function(...) {source} end", "@benchmark/interrupt.luau");
+        var function = owner[0].Read<LuauFunction>();
+        var arguments = new[] { LuauValue.FromNumber(iterations) };
+        var destination = new LuauValue[1];
+        return new BenchmarkLease(
+            () =>
+            {
+                var count = function.InvokeInto(arguments, destination);
+                if (count != 1 || destination[0].Read<double>() <= 0)
+                {
+                    throw new InvalidOperationException("Unexpected interrupt workload result.");
+                }
+            },
+            () =>
+            {
+                DisposeResultContainer(owner);
+                function.Dispose();
+                state.Dispose();
+            });
     }
 
     static void AddCompilerMatrix(List<BenchmarkCase> cases, string sourceName, byte[] source)
@@ -390,13 +455,14 @@ sealed class BenchmarkLease(Action action, Action dispose) : IDisposable
     public void Dispose() => dispose();
 }
 
-sealed record BenchmarkConfiguration(int WarmupIterations, int Iterations, string OutputPath)
+sealed record BenchmarkConfiguration(int WarmupIterations, int Iterations, string OutputPath, string? Filter)
 {
     public static BenchmarkConfiguration Parse(string[] args)
     {
         var warmup = 100;
         var iterations = 1_000;
         var output = Path.Combine("artifacts", "stage-6-benchmarks", "latest.json");
+        string? filter = null;
 
         for (var i = 0; i < args.Length; i++)
         {
@@ -415,12 +481,15 @@ sealed record BenchmarkConfiguration(int WarmupIterations, int Iterations, strin
                 case "--output" when i + 1 < args.Length:
                     output = args[++i];
                     break;
+                case "--filter" when i + 1 < args.Length:
+                    filter = args[++i];
+                    break;
                 default:
                     throw new ArgumentException($"Unknown or incomplete benchmark argument '{args[i]}'.");
             }
         }
 
-        return new BenchmarkConfiguration(warmup, iterations, output);
+        return new BenchmarkConfiguration(warmup, iterations, output, filter);
     }
 
     static int ParsePositive(string value, string option)
