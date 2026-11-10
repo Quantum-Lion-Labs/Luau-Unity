@@ -48,6 +48,11 @@ public readonly struct LuauCallContext
     /// <summary>
     /// Formats a zero-based callback argument without allowing unbounded output.
     /// </summary>
+    /// <remarks>
+    /// An async callback's thread is suspended while it runs, so a
+    /// <c>__tostring</c> metamethod runs on another thread of the same root.
+    /// The metamethod cannot yield.
+    /// </remarks>
     public string ToDisplayString(int index, int maxUtf8Bytes, out bool truncated)
     {
         return GetFrame().ToDisplayString(index, maxUtf8Bytes, out truncated);

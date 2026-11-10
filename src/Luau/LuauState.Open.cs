@@ -130,7 +130,15 @@ unsafe partial class LuauState
             var resultCount = 0;
             LuauNativeProtection.Prepare(context);
             var status = luau_host_open_library(l, (LuauHostLibrary)library, &resultCount);
-            LuauNativeProtection.ThrowIfFailed(this, l, status, $"open the {name} library");
+            if (status == LuauHostStatus.ThreadNotRunnable)
+            {
+                // The root is suspended by a pending async callback.
+                OpenLibraryOnThreadSharingGlobals((LuauHostLibrary)library, $"open the {name} library");
+            }
+            else
+            {
+                LuauNativeProtection.ThrowIfFailed(this, l, status, $"open the {name} library");
+            }
         }
         finally
         {

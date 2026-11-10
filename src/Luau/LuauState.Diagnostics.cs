@@ -1,3 +1,4 @@
+using Luau.Internal.Interop;
 using static Luau.Internal.Interop.NativeMethods;
 
 namespace Luau;
@@ -45,46 +46,62 @@ public unsafe partial class LuauState
         ThrowIfDisposed();
         using var access = EnterNativeAccess();
         using var hostOperation = new LuauDirectHostOperationScope(this);
-        truncated = false;
 
         LuauNativeProtection.Prepare(context);
 
         byte* result = null;
         ulong length = 0;
         var status = luau_host_to_display_string(l, index, &result, &length);
-        LuauNativeProtection.ThrowIfFailed(this, l, status, "convert a value to a display string");
-
         string formatted;
-        if (result == null || length == 0)
+        if (status == LuauHostStatus.ThreadNotRunnable)
         {
-            formatted = string.Empty;
-        }
-        else if (maxUtf8Bytes is not { } byteLimit)
-        {
-            ReserveDecodedString(length);
-            formatted = System.Text.Encoding.UTF8.GetString(
-                new ReadOnlySpan<byte>(result, checked((int)length)));
+            // An async callback formats its arguments while its thread is
+            // suspended.
+            formatted = ToDisplayStringOnRunnableThread(
+                index,
+                maxUtf8Bytes,
+                out truncated,
+                "convert a value to a display string");
         }
         else
         {
-            var effectiveLimit = Options.MaxDecodedStringBytes is { } rootLimit
-                ? Math.Min(byteLimit, rootLimit)
-                : byteLimit;
-            var decodedLength = BoundedUtf8Decoder.GetValidPrefixLength(
-                result,
-                length,
-                effectiveLimit);
-            context.GetActiveOperation()?.ReserveDecodedBytes((ulong)decodedLength);
-            formatted = BoundedUtf8Decoder.Decode(
-                result,
-                length,
-                effectiveLimit,
-                out truncated);
+            LuauNativeProtection.ThrowIfFailed(this, l, status, "convert a value to a display string");
+            formatted = DecodeDisplayString(result, length, maxUtf8Bytes, out truncated);
         }
 
         hostOperation.CompleteAndRestore(
             "A direct host display-string conversion cannot yield or suspend the Luau thread.");
         return formatted;
+    }
+
+    string DecodeDisplayString(byte* result, ulong length, int? maxUtf8Bytes, out bool truncated)
+    {
+        truncated = false;
+        if (result == null || length == 0)
+        {
+            return string.Empty;
+        }
+
+        if (maxUtf8Bytes is not { } byteLimit)
+        {
+            ReserveDecodedString(length);
+            return System.Text.Encoding.UTF8.GetString(
+                new ReadOnlySpan<byte>(result, checked((int)length)));
+        }
+
+        var effectiveLimit = Options.MaxDecodedStringBytes is { } rootLimit
+            ? Math.Min(byteLimit, rootLimit)
+            : byteLimit;
+        var decodedLength = BoundedUtf8Decoder.GetValidPrefixLength(
+            result,
+            length,
+            effectiveLimit);
+        context.GetActiveOperation()?.ReserveDecodedBytes((ulong)decodedLength);
+        return BoundedUtf8Decoder.Decode(
+            result,
+            length,
+            effectiveLimit,
+            out truncated);
     }
 
 }

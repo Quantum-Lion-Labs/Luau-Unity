@@ -130,6 +130,8 @@ sealed class Stage6BenchmarkSuite(BenchmarkConfiguration configuration)
         cases.Add(Entry("entry-global-write-default", () => CreateGlobalWrite(defaults)));
         cases.Add(Entry("entry-thread-global-read-default", () => CreateThreadGlobalRead(defaults)));
         cases.Add(Entry("entry-thread-global-write-default", () => CreateThreadGlobalWrite(defaults)));
+        cases.Add(Entry("entry-yielded-thread-global-read-default", () => CreateThreadGlobalRead(defaults, yielded: true)));
+        cases.Add(Entry("entry-yielded-thread-global-write-default", () => CreateThreadGlobalWrite(defaults, yielded: true)));
         cases.Add(Entry("entry-invoke-void-callback-default", () => CreateHookWithCallback(defaults)));
         cases.Add(Entry("entry-invoke-void-async-default", () => CreateHookInvokeAsync(defaults)));
     }
@@ -383,19 +385,26 @@ sealed class Stage6BenchmarkSuite(BenchmarkConfiguration configuration)
 
     // A script's own sandboxed thread, as a host that publishes per-frame
     // state to each script sees it. A write runs the sandbox's Luau
-    // write guard; a read falls through the proxy to the frozen root.
-    static (LuauState State, LuauState Thread) CreateSandboxedScriptThread(LuauExecutionOptions options)
+    // write guard; a read falls through the proxy to the frozen root. A
+    // script waiting in a yield cannot run Luau code, so access to its
+    // yielded thread runs on another thread of the root.
+    static (LuauState State, LuauState Thread) CreateSandboxedScriptThread(LuauExecutionOptions options, bool yielded)
     {
         var state = CreateEntryState(options);
         state.SandboxRoot();
         var thread = state.CreateSandboxedThread();
         thread["score"] = LuauValue.FromNumber(42);
+        if (yielded)
+        {
+            thread.DoString("coroutine.yield()").Dispose();
+        }
+
         return (state, thread);
     }
 
-    static BenchmarkLease CreateThreadGlobalRead(LuauExecutionOptions options)
+    static BenchmarkLease CreateThreadGlobalRead(LuauExecutionOptions options, bool yielded = false)
     {
-        var (state, thread) = CreateSandboxedScriptThread(options);
+        var (state, thread) = CreateSandboxedScriptThread(options, yielded);
         return new BenchmarkLease(
             () =>
             {
@@ -414,9 +423,9 @@ sealed class Stage6BenchmarkSuite(BenchmarkConfiguration configuration)
             });
     }
 
-    static BenchmarkLease CreateThreadGlobalWrite(LuauExecutionOptions options)
+    static BenchmarkLease CreateThreadGlobalWrite(LuauExecutionOptions options, bool yielded = false)
     {
-        var (state, thread) = CreateSandboxedScriptThread(options);
+        var (state, thread) = CreateSandboxedScriptThread(options, yielded);
         var value = LuauValue.FromNumber(42);
         return new BenchmarkLease(
             () =>

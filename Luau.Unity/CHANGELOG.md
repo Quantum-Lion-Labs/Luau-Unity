@@ -134,6 +134,35 @@ API or ABI breaks.
   example a global or table access) could strand that operation, so the
   native VM was never closed and one callback registration leaked. The
   operation now ends even when its setup fails.
+- An ordinary host call on a thread a script had left suspended could crash
+  the process. After `thread.DoString("coroutine.yield(1) return 'A'")` on a
+  sandboxed thread, `thread["x"] = 5` threw `InvalidOperationException` ("did
+  not consume its managed stack boundary") and the next `thread.Resume()`
+  crashed with a segmentation fault: the sandbox's write guard is Luau code,
+  and Luau cannot run code on a thread that has yielded, is suspended by a
+  pending async callback, or ended with an error. The same happened when a
+  global read reached a script's `__index` function, when an async host
+  function formatted an argument with a `__tostring` metamethod
+  (`LuauCallContext.ToDisplayString`), when an async callback on a root call
+  indexed a table argument with `__index` or `__newindex`, and when
+  `LoadCompilerOutput` or `LoadVerifiedBytecode` resolved an import such as
+  `a.b` through an `__index` function on such a thread. These operations now
+  run that code on another thread of the same root and work whatever the
+  script is doing: globals of a yielded or suspended thread can be read and
+  written, async callbacks can format and index their arguments, and bytecode
+  loads on a suspended thread with that thread's globals. The suspended
+  thread's continuation is untouched, so `Resume` returns what it would have
+  returned. A metamethod run this way sees the host's thread in
+  `coroutine.running()` and cannot yield, as for any direct host operation.
+- Luau code that an async callback's own host calls ran, for example a
+  `__tostring` or `__index` reached while the callback formatted or indexed an
+  argument, failed with "not enough memory" at its first interrupt check,
+  even on a thread that could run it. The interrupt poll still reported the
+  callback's own pending suspension as new work.
+- `SandboxThread` on a coroutine that had ended with an error replaced the
+  thread's globals and then failed with a generic native error, leaving a
+  half-installed sandbox without its write guard. It now throws
+  `InvalidOperationException` before changing anything.
 
 ### Compatibility
 
@@ -144,6 +173,13 @@ API or ABI breaks.
   `LUAU_HOST_FRAME_SLOT_LIMIT`, and the required
   `LUAU_HOST_FEATURE_STACK_LIMIT` capability. The ABI version stays 2.0; the
   host fingerprint and feature check reject a mismatched plugin.
+- The native host ABI adds `LUAU_HOST_STATUS_THREAD_NOT_RUNNABLE` and the
+  required `LUAU_HOST_FEATURE_RUNNABLE_THREAD_GUARD` capability. Every host
+  operation that can run Luau code refuses a thread that cannot run it, and
+  `luau_host_pcall` reports that case with the new status instead of
+  `LUAU_HOST_STATUS_INVALID_ARGUMENT`. The ABI version stays 2.0 and the host
+  fingerprint changes, so this `Luau.dll` requires the matching rebuilt native
+  plugins.
 
 ## [0.3.1] - 2026-09-05
 

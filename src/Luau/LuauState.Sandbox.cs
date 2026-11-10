@@ -121,9 +121,16 @@ public unsafe partial class LuauState
         }
 
         using var access = EnterNativeAccess();
-        // Sandboxing runs the guard chunk on this thread. Reject a suspended
-        // thread before its globals change, so a rejection leaves it as it was.
+        // Sandboxing replaces this thread's globals and then runs the guard
+        // chunk on it. Reject a thread that cannot run Luau code before its
+        // globals change, so a rejection leaves it as it was.
         ThrowIfSuspendedUnderNativeAccess("sandbox a thread", chunkName: null, includeUnstartedCoroutine: false);
+        if (luau_host_thread_status(l) != LuauHostStatus.Ok)
+        {
+            ThrowHelper.ThrowInvalidOperationException(
+                "Cannot sandbox a Luau thread that ended with an error: Luau code cannot run on it until " +
+                "it is reset. Sandbox a new thread from CreateSandboxedThread instead.");
+        }
         LuauNativeProtection.Prepare(context);
         var status = luau_host_sandbox_thread(l);
         LuauNativeProtection.ThrowIfFailed(this, l, status, "sandbox a child thread");
@@ -234,7 +241,14 @@ public unsafe partial class LuauState
         {
             LuauNativeProtection.Prepare(context);
             var status = luau_host_global_get(l, pointer, &resultType);
-            LuauNativeProtection.ThrowIfFailed(this, l, status, operation);
+            if (status == LuauHostStatus.ThreadNotRunnable)
+            {
+                GetGlobalOnRunnableThread(pointer, name.Length - 1, operation);
+            }
+            else
+            {
+                LuauNativeProtection.ThrowIfFailed(this, l, status, operation);
+            }
         }
     }
 

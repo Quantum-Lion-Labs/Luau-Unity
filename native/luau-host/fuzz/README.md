@@ -11,7 +11,8 @@ The two libFuzzer targets bound each input before it reaches the host:
   first bytes as option selectors.
 - `luau_host_abi_fuzzer`: 4 KiB cap over caller sizes, nulls, statuses, opaque
   reference tokens, callback returns, interrupt actions, throttled interrupt
-  budgets and attention requests, and close/GC cleanup.
+  budgets and attention requests, every operation that can run Luau code on a
+  thread suspended by a host break, and close/GC cleanup.
 
 Run `cmake --build --preset linux-sanitize --target luau_host_fuzz_smoke`.
 Each input has a five-second libFuzzer timeout and a 2 GiB RSS ceiling; the CI

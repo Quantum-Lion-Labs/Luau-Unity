@@ -208,6 +208,14 @@
             allocator diagnostic call.
             </summary>
         </member>
+        <member name="M:Luau.LuauVmContext.AcquireHostOperationThread(Luau.LuauState,System.String)">
+            <summary>
+            Returns a runnable thread of this root for a direct host operation
+            whose own thread cannot run Luau code. The caller holds native access.
+            The handle is borrowed: the root's registry keeps the thread alive
+            until the root closes or a later call replaces it.
+            </summary>
+        </member>
         <member name="M:Luau.LuauVmContext.GetOperationCancellationToken(Luau.ScriptOperation,System.Int64)">
             <summary>
             Returns the callback-visible token of life <paramref name="generation"/>
@@ -695,6 +703,11 @@
             <summary>
             Formats a zero-based callback argument without allowing unbounded output.
             </summary>
+            <remarks>
+            An async callback's thread is suspended while it runs, so a
+            <c>__tostring</c> metamethod runs on another thread of the same root.
+            The metamethod cannot yield.
+            </remarks>
         </member>
         <member name="T:Luau.LuauCompilationException">
             <summary>Reports a source diagnostic produced by the Luau compiler.</summary>
@@ -2335,6 +2348,13 @@
             VM's shared cached child wrapper; dispose it only after all holders are
             finished. The setter only borrows its value for this call.
             </summary>
+            <remarks>
+            Works whatever this thread is doing, including while it has yielded or
+            waits on an async callback. Luau code the access reaches, such as a
+            sandboxed thread's write guard or an <c>__index</c> metamethod, then
+            runs on another thread of the same root and cannot yield; the
+            suspended continuation is left untouched.
+            </remarks>
             <param name="key">A UTF-8 name containing no NUL byte.</param>
         </member>
         <member name="P:Luau.LuauState.Item(System.String)">
@@ -2344,6 +2364,13 @@
             VM's shared cached child wrapper; dispose it only after all holders are
             finished. The setter only borrows its value for this call.
             </summary>
+            <remarks>
+            Works whatever this thread is doing, including while it has yielded or
+            waits on an async callback. Luau code the access reaches, such as a
+            sandboxed thread's write guard or an <c>__index</c> metamethod, then
+            runs on another thread of the same root and cannot yield; the
+            suspended continuation is left untouched.
+            </remarks>
             <param name="key">A non-null name containing no NUL character.</param>
         </member>
         <member name="M:Luau.LuauState.LoadCompilerOutput(Luau.LuauCompilerOutput,System.ReadOnlySpan{System.Char})">
@@ -2473,6 +2500,61 @@
             Constructs and registers a generated host library on the root state
             before root sandboxing. Child states and roots already sandboxed are
             rejected.
+            </summary>
+        </member>
+        <member name="M:Luau.LuauState.GetGlobalOnRunnableThread(System.Byte*,System.Int32,System.String)">
+            <summary>
+            Reads global <paramref name="name"/> of this thread on a runnable
+            thread. On success one value is appended to this thread.
+            </summary>
+        </member>
+        <member name="M:Luau.LuauState.SetGlobalOnRunnableThread(System.Byte*,System.Int32,System.String)">
+            <summary>
+            Writes this thread's top value to its global <paramref name="name"/>
+            on a runnable thread, consuming the value.
+            </summary>
+        </member>
+        <member name="M:Luau.LuauState.TableGetOnRunnableThread(System.String)">
+            <summary>
+            Performs <c>luau_host_table_get(this, -2)</c> on a runnable thread:
+            this thread's top two values, a table and a key, become the table and
+            its value.
+            </summary>
+        </member>
+        <member name="M:Luau.LuauState.TableSetOnRunnableThread(System.String)">
+            <summary>
+            Performs <c>luau_host_table_set(this, -3)</c> on a runnable thread:
+            this thread's top three values, a table, a key, and a value, become
+            the table.
+            </summary>
+        </member>
+        <member name="M:Luau.LuauState.ToDisplayStringOnRunnableThread(System.Int32,System.Nullable{System.Int32},System.Boolean@,System.String)">
+            <summary>
+            Formats the value at <paramref name="index"/> on a runnable thread.
+            This thread's stack is left as it was.
+            </summary>
+        </member>
+        <member name="M:Luau.LuauState.LoadOnThreadSharingGlobals(System.Byte*,System.Byte*,System.UInt64,Luau.Internal.Interop.LuauHostStatus*,System.String)">
+            <summary>
+            Performs <c>luau_host_load(this, ...)</c> on a new thread created from
+            this one, which shares this thread's globals: the loaded function's
+            environment and the imports resolved while loading are the ones a load
+            here would use. Returns the load's outer status; the value it appends
+            (a function, a load error, or an error object) is moved to this thread.
+            </summary>
+        </member>
+        <member name="M:Luau.LuauState.OpenLibraryOnThreadSharingGlobals(Luau.Internal.Interop.LuauHostLibrary,System.String)">
+            <summary>
+            Opens a standard library on a new thread created from this one, which
+            shares this thread's globals. The library's results are discarded.
+            </summary>
+        </member>
+        <member name="M:Luau.LuauState.CreateThreadSharingGlobals(Luau.Internal.Interop.LuauHostState*,System.String,Luau.Internal.Interop.LuauHostStatus@)">
+            <summary>
+            Creates a thread that inherits this thread's globals and parks it on
+            <paramref name="runner"/>, which keeps it reachable until the caller
+            restores the runner's top. Returns null when creation failed; the
+            failure's error object is then on this thread.
             </summary>
         </member>
         <member name="P:Luau.LuauState.IsRootSandboxed">

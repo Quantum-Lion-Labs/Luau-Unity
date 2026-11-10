@@ -3051,6 +3051,397 @@ void test_interrupt_throttle_independent_roots()
     REQUIRE(first.executionPolls >= 1);
 }
 
+// A thread that yielded, is suspended by a host break, waits on a broken
+// child, or ended with an error cannot run Luau code: the interpreter leaves a
+// function started there at its first safepoint with its frame and stack
+// broken. Each operation that could reach Luau code must refuse such a thread
+// before anything runs, and the thread's continuation must stay intact.
+enum class NotRunnableKind
+{
+    Yielded,
+    HostBreak,
+    WaitingOnBrokenChild,
+    Errored,
+};
+
+const char* not_runnable_name(NotRunnableKind kind)
+{
+    switch (kind)
+    {
+    case NotRunnableKind::Yielded: return "yielded";
+    case NotRunnableKind::HostBreak: return "host break";
+    case NotRunnableKind::WaitingOnBrokenChild: return "waiting on a broken child";
+    case NotRunnableKind::Errored: return "ended with an error";
+    }
+    return "unknown";
+}
+
+int32_t LUAU_HOST_CALL breaking_callback(luau_host_state* state)
+{
+    return luau_host_suspend(state);
+}
+
+struct RunnableProbeRoot
+{
+    Root root;
+    int32_t probe = 0;
+    int32_t touch = 0;
+};
+
+// The probe table's __index, __newindex, and __tostring, and the touch
+// function, are Luau code that counts each run in the global "hits". Any
+// interrupt makes the interpreter's status check deterministic, as in the
+// managed runtime, which always installs one.
+RunnableProbeRoot create_runnable_probe_root()
+{
+    RunnableProbeRoot result;
+    result.root = create_root();
+    luau_host_state* root = result.root.state;
+    int32_t count = 0;
+    for (auto library : {LUAU_HOST_LIBRARY_BASE, LUAU_HOST_LIBRARY_COROUTINE})
+    {
+        REQUIRE(luau_host_open_library(root, library, &count) == LUAU_HOST_STATUS_OK);
+        REQUIRE(luau_host_stack_set_top(root, 0) == LUAU_HOST_STATUS_OK);
+    }
+    set_global_callback(root, "host", breaking_callback);
+    luau_host_callback_table callbacks = callback_table();
+    callbacks.interrupt_poll = continue_interrupt_poll;
+    REQUIRE(luau_host_interrupt_install(root, &callbacks) == LUAU_HOST_STATUS_OK);
+
+    REQUIRE(compile_and_load(root,
+        "hits = 0 "
+        "local probe = setmetatable({}, { "
+        "  __index = function(_, key) hits += 1 return 'index ' .. tostring(key) end, "
+        "  __newindex = function() hits += 1 end, "
+        "  __tostring = function() hits += 1 return 'probe' end }) "
+        "return probe, function() hits += 1 end", "@runnable-probe") == LUAU_HOST_STATUS_OK);
+    REQUIRE(luau_host_resume(root, nullptr, 0) == LUAU_HOST_STATUS_OK);
+    REQUIRE(luau_host_stack_get_top(root) == 2);
+    REQUIRE(luau_host_reference_create(root, 1, &result.probe) == LUAU_HOST_STATUS_OK);
+    REQUIRE(luau_host_reference_create(root, 2, &result.touch) == LUAU_HOST_STATUS_OK);
+    REQUIRE(luau_host_stack_set_top(root, 0) == LUAU_HOST_STATUS_OK);
+    return result;
+}
+
+double read_hits(luau_host_state* root)
+{
+    int32_t type = 0;
+    REQUIRE(luau_host_global_get(root, bytes("hits"), &type) == LUAU_HOST_STATUS_OK);
+    int32_t isNumber = 0;
+    const double hits = luau_host_to_number(root, -1, &isNumber);
+    REQUIRE(isNumber != 0);
+    REQUIRE(luau_host_stack_set_top(root, -2) == LUAU_HOST_STATUS_OK);
+    return hits;
+}
+
+struct NotRunnableThread
+{
+    luau_host_state* thread = nullptr;
+    // The innermost suspended thread; the thread itself unless it waits on
+    // a broken child.
+    luau_host_state* target = nullptr;
+    int32_t reference = 0;
+};
+
+NotRunnableThread make_not_runnable(luau_host_state* root, NotRunnableKind kind)
+{
+    NotRunnableThread result;
+    REQUIRE(luau_host_thread_create(root, &result.thread) == LUAU_HOST_STATUS_OK);
+    REQUIRE(luau_host_reference_create(root, -1, &result.reference) == LUAU_HOST_STATUS_OK);
+    REQUIRE(luau_host_stack_set_top(root, -2) == LUAU_HOST_STATUS_OK);
+
+    const char* source = nullptr;
+    luau_host_status expected = LUAU_HOST_STATUS_OK;
+    switch (kind)
+    {
+    case NotRunnableKind::Yielded:
+        source = "local value = coroutine.yield('yielded') return 'resumed', value";
+        expected = LUAU_HOST_STATUS_YIELDED;
+        break;
+    case NotRunnableKind::HostBreak:
+        source = "local value = host(41) return 'resumed', value + 1";
+        expected = LUAU_HOST_STATUS_BREAK;
+        break;
+    case NotRunnableKind::WaitingOnBrokenChild:
+        source = "local co = coroutine.create(function() return host(41) end) "
+                 "local ok, value = coroutine.resume(co) return 'resumed', value + 1";
+        expected = LUAU_HOST_STATUS_BREAK;
+        break;
+    case NotRunnableKind::Errored:
+        source = "error('ended with an error')";
+        expected = LUAU_HOST_STATUS_LUA_ERROR;
+        break;
+    }
+
+    REQUIRE(compile_and_load(result.thread, source, "@not-runnable") == LUAU_HOST_STATUS_OK);
+    REQUIRE(luau_host_resume(result.thread, root, 0) == expected);
+    REQUIRE(luau_host_thread_status(result.thread) == expected);
+    result.target = luau_host_resume_target(result.thread);
+    REQUIRE((result.target != result.thread) == (kind == NotRunnableKind::WaitingOnBrokenChild));
+    REQUIRE(luau_host_thread_status(result.target) != LUAU_HOST_STATUS_OK);
+    return result;
+}
+
+void require_refused_without_running_code(
+    luau_host_state* root,
+    luau_host_state* state,
+    const RunnableProbeRoot& probeRoot,
+    const CompiledBuffer& bytecode)
+{
+    const luau_host_status statusBefore = luau_host_thread_status(state);
+    REQUIRE(statusBefore != LUAU_HOST_STATUS_OK);
+    const int32_t top = luau_host_stack_get_top(state);
+    const double hitsBefore = read_hits(root);
+
+    // global_get: the output is written only on success.
+    int32_t type = -99;
+    REQUIRE(luau_host_global_get(state, bytes("missing"), &type) == LUAU_HOST_STATUS_THREAD_NOT_RUNNABLE);
+    REQUIRE(type == -99);
+    REQUIRE(luau_host_stack_get_top(state) == top);
+
+    // global_set consumes nothing when refused.
+    REQUIRE(luau_host_push_number(state, 1) == LUAU_HOST_STATUS_OK);
+    REQUIRE(luau_host_global_set(state, bytes("written")) == LUAU_HOST_STATUS_THREAD_NOT_RUNNABLE);
+    REQUIRE(luau_host_stack_get_top(state) == top + 1);
+
+    // table_get and table_set through the probe's metamethods.
+    REQUIRE(luau_host_reference_push(state, probeRoot.probe, nullptr) == LUAU_HOST_STATUS_OK);
+    REQUIRE(luau_host_push_string(state, bytes("key"), 3) == LUAU_HOST_STATUS_OK);
+    REQUIRE(luau_host_table_get(state, -2, &type) == LUAU_HOST_STATUS_THREAD_NOT_RUNNABLE);
+    REQUIRE(type == -99);
+    REQUIRE(luau_host_stack_get_top(state) == top + 3);
+    REQUIRE(luau_host_push_number(state, 2) == LUAU_HOST_STATUS_OK);
+    REQUIRE(luau_host_table_set(state, -3) == LUAU_HOST_STATUS_THREAD_NOT_RUNNABLE);
+    REQUIRE(luau_host_stack_get_top(state) == top + 4);
+
+    // to_display_string through __tostring clears its outputs, as a failure.
+    const uint8_t* text = bytes("sentinel");
+    uint64_t length = 8;
+    REQUIRE(luau_host_to_display_string(state, -3, &text, &length) == LUAU_HOST_STATUS_THREAD_NOT_RUNNABLE);
+    REQUIRE(text == nullptr);
+    REQUIRE(length == 0);
+    REQUIRE(luau_host_stack_get_top(state) == top + 4);
+
+    // load and open_library leave their outputs unwritten.
+    luau_host_status loadStatus = LUAU_HOST_STATUS_UNSUPPORTED;
+    REQUIRE(
+        luau_host_load(state, bytes("@refused-load"), bytecode.value.data, bytecode.value.size, 0, &loadStatus) ==
+        LUAU_HOST_STATUS_THREAD_NOT_RUNNABLE);
+    REQUIRE(loadStatus == LUAU_HOST_STATUS_UNSUPPORTED);
+    int32_t count = -99;
+    REQUIRE(luau_host_open_library(state, LUAU_HOST_LIBRARY_BASE, &count) == LUAU_HOST_STATUS_THREAD_NOT_RUNNABLE);
+    REQUIRE(count == -99);
+    REQUIRE(luau_host_stack_get_top(state) == top + 4);
+
+    // pcall consumes neither the function nor its arguments.
+    REQUIRE(luau_host_reference_push(state, probeRoot.touch, nullptr) == LUAU_HOST_STATUS_OK);
+    REQUIRE(luau_host_pcall(state, 0, 0, 0) == LUAU_HOST_STATUS_THREAD_NOT_RUNNABLE);
+    REQUIRE(luau_host_stack_get_top(state) == top + 5);
+
+    REQUIRE(luau_host_stack_set_top(state, top) == LUAU_HOST_STATUS_OK);
+    REQUIRE(luau_host_thread_status(state) == statusBefore);
+    REQUIRE(read_hits(root) == hitsBefore);
+}
+
+// The documented way to do the same work: move the inputs to a runnable
+// thread of the root, and create a thread from the suspended one to load in
+// its globals.
+void require_work_runs_on_a_runnable_thread(
+    luau_host_state* root,
+    luau_host_state* state,
+    luau_host_state* helper,
+    const RunnableProbeRoot& probeRoot)
+{
+    const luau_host_abi_info abi = query_abi();
+    const int32_t top = luau_host_stack_get_top(state);
+    const int32_t helperTop = luau_host_stack_get_top(helper);
+    const double hitsBefore = read_hits(root);
+
+    REQUIRE(luau_host_reference_push(state, probeRoot.probe, nullptr) == LUAU_HOST_STATUS_OK);
+    REQUIRE(luau_host_stack_move(state, helper, 1) == LUAU_HOST_STATUS_OK);
+    const uint8_t* text = nullptr;
+    uint64_t length = 0;
+    REQUIRE(luau_host_to_display_string(helper, -1, &text, &length) == LUAU_HOST_STATUS_OK);
+    REQUIRE(std::string(reinterpret_cast<const char*>(text), static_cast<size_t>(length)) == "probe");
+    REQUIRE(luau_host_push_string(helper, bytes("key"), 3) == LUAU_HOST_STATUS_OK);
+    int32_t type = 0;
+    REQUIRE(luau_host_table_get(helper, -3, &type) == LUAU_HOST_STATUS_OK);
+    REQUIRE(string_at(helper, -1) == "index key");
+
+    // The suspended thread's own globals, indexed from the helper.
+    REQUIRE(luau_host_global_push(state) == LUAU_HOST_STATUS_OK);
+    REQUIRE(luau_host_stack_move(state, helper, 1) == LUAU_HOST_STATUS_OK);
+    REQUIRE(luau_host_push_string(helper, bytes("hits"), 4) == LUAU_HOST_STATUS_OK);
+    REQUIRE(luau_host_table_get(helper, -2, &type) == LUAU_HOST_STATUS_OK);
+    REQUIRE(type == abi.type_number);
+    REQUIRE(luau_host_stack_set_top(helper, helperTop) == LUAU_HOST_STATUS_OK);
+
+    // A thread created from the suspended one shares its globals and can
+    // load there; the function then moves back.
+    luau_host_state* fresh = nullptr;
+    REQUIRE(luau_host_thread_create(state, &fresh) == LUAU_HOST_STATUS_OK);
+    REQUIRE(luau_host_thread_status(fresh) == LUAU_HOST_STATUS_OK);
+    REQUIRE(compile_and_load(fresh, "return hits", "@moved-load") == LUAU_HOST_STATUS_OK);
+    REQUIRE(luau_host_stack_move(fresh, state, 1) == LUAU_HOST_STATUS_OK);
+    REQUIRE(luau_host_stack_remove(state, -2) == LUAU_HOST_STATUS_OK);
+    REQUIRE(luau_host_type(state, -1) == abi.type_function);
+    REQUIRE(luau_host_stack_set_top(state, top) == LUAU_HOST_STATUS_OK);
+
+    REQUIRE(read_hits(root) == hitsBefore + 2);
+}
+
+void require_continuation_intact(luau_host_state* root, NotRunnableThread& suspended, NotRunnableKind kind)
+{
+    int32_t isNumber = 0;
+    switch (kind)
+    {
+    case NotRunnableKind::Yielded:
+        REQUIRE(luau_host_stack_get_top(suspended.thread) == 1);
+        REQUIRE(string_at(suspended.thread, 1) == "yielded");
+        REQUIRE(luau_host_push_string(suspended.thread, bytes("argument"), 8) == LUAU_HOST_STATUS_OK);
+        REQUIRE(luau_host_resume(suspended.thread, root, 1) == LUAU_HOST_STATUS_OK);
+        REQUIRE(luau_host_stack_get_top(suspended.thread) == 2);
+        REQUIRE(string_at(suspended.thread, 1) == "resumed");
+        REQUIRE(string_at(suspended.thread, 2) == "argument");
+        break;
+    case NotRunnableKind::HostBreak:
+    case NotRunnableKind::WaitingOnBrokenChild:
+        // The callback's own argument is still in its frame.
+        REQUIRE(luau_host_stack_get_top(suspended.target) == 1);
+        REQUIRE(luau_host_to_number(suspended.target, 1, &isNumber) == 41.0);
+        REQUIRE(luau_host_stack_set_top(suspended.target, 0) == LUAU_HOST_STATUS_OK);
+        REQUIRE(luau_host_push_number(suspended.target, 41) == LUAU_HOST_STATUS_OK);
+        REQUIRE(luau_host_resume(suspended.thread, root, 1) == LUAU_HOST_STATUS_OK);
+        REQUIRE(luau_host_stack_get_top(suspended.thread) == 2);
+        REQUIRE(string_at(suspended.thread, 1) == "resumed");
+        REQUIRE(luau_host_to_number(suspended.thread, 2, &isNumber) == 42.0);
+        REQUIRE(isNumber != 0);
+        break;
+    case NotRunnableKind::Errored:
+        // The error object is still on top; the thread can only be reset.
+        REQUIRE(string_at(suspended.thread, -1).find("ended with an error") != std::string::npos);
+        REQUIRE(luau_host_resume(suspended.thread, root, 0) == LUAU_HOST_STATUS_LUA_ERROR);
+        REQUIRE(luau_host_thread_reset(suspended.thread) == LUAU_HOST_STATUS_OK);
+        break;
+    }
+
+    // Finished or reset, the thread is runnable again.
+    REQUIRE(luau_host_thread_status(suspended.thread) == LUAU_HOST_STATUS_OK);
+    REQUIRE(luau_host_stack_set_top(suspended.thread, 0) == LUAU_HOST_STATUS_OK);
+    int32_t type = 0;
+    REQUIRE(luau_host_global_get(suspended.thread, bytes("hits"), &type) == LUAU_HOST_STATUS_OK);
+    REQUIRE(luau_host_stack_set_top(suspended.thread, 0) == LUAU_HOST_STATUS_OK);
+    REQUIRE(luau_host_reference_release(root, suspended.reference) == LUAU_HOST_STATUS_OK);
+}
+
+void test_operations_refuse_threads_that_are_not_runnable()
+{
+    const CompiledBuffer bytecode = compile_source("return probe.value");
+    for (NotRunnableKind kind :
+        {NotRunnableKind::Yielded, NotRunnableKind::HostBreak, NotRunnableKind::WaitingOnBrokenChild, NotRunnableKind::Errored})
+    {
+        try
+        {
+            RunnableProbeRoot probeRoot = create_runnable_probe_root();
+            luau_host_state* root = probeRoot.root.state;
+            luau_host_state* helper = nullptr;
+            REQUIRE(luau_host_thread_create(root, &helper) == LUAU_HOST_STATUS_OK);
+            int32_t helperReference = 0;
+            REQUIRE(luau_host_reference_create(root, -1, &helperReference) == LUAU_HOST_STATUS_OK);
+            REQUIRE(luau_host_stack_set_top(root, 0) == LUAU_HOST_STATUS_OK);
+
+            NotRunnableThread suspended = make_not_runnable(root, kind);
+            require_refused_without_running_code(root, suspended.thread, probeRoot, bytecode);
+            if (suspended.target != suspended.thread)
+                require_refused_without_running_code(root, suspended.target, probeRoot, bytecode);
+            require_work_runs_on_a_runnable_thread(root, suspended.target, helper, probeRoot);
+            require_continuation_intact(root, suspended, kind);
+
+            // The root is still usable and nothing ran on a suspended thread.
+            REQUIRE(luau_host_collect(root) == LUAU_HOST_STATUS_OK);
+            REQUIRE(read_hits(root) == 2.0);
+            REQUIRE(compile_and_load(root, "return hits + 1", "@after-not-runnable") == LUAU_HOST_STATUS_OK);
+            REQUIRE(luau_host_resume(root, nullptr, 0) == LUAU_HOST_STATUS_OK);
+            int32_t isNumber = 0;
+            REQUIRE(luau_host_to_number(root, -1, &isNumber) == 3.0);
+            REQUIRE(luau_host_stack_set_top(root, 0) == LUAU_HOST_STATUS_OK);
+        }
+        catch (const TestFailure& failure)
+        {
+            throw std::runtime_error(std::string(not_runnable_name(kind)) + ": " + failure.what());
+        }
+    }
+}
+
+luau_host_status runningThreadStatus = LUAU_HOST_STATUS_INVALID_ARGUMENT;
+int32_t runningProbeReference = 0;
+
+int32_t LUAU_HOST_CALL index_own_thread_callback(luau_host_state* state)
+{
+    // A managed function runs on a running thread, so it may index there.
+    runningThreadStatus = luau_host_reference_push(state, runningProbeReference, nullptr);
+    if (runningThreadStatus != LUAU_HOST_STATUS_OK)
+        return 0;
+    runningThreadStatus = luau_host_push_string(state, bytes("running"), 7);
+    if (runningThreadStatus != LUAU_HOST_STATUS_OK)
+        return 0;
+    int32_t type = 0;
+    runningThreadStatus = luau_host_table_get(state, -2, &type);
+    return runningThreadStatus == LUAU_HOST_STATUS_OK ? 1 : 0;
+}
+
+void test_runnable_threads_still_run_metamethods()
+{
+    RunnableProbeRoot probeRoot = create_runnable_probe_root();
+    luau_host_state* root = probeRoot.root.state;
+    const luau_host_abi_info abi = query_abi();
+    int32_t type = 0;
+
+    // The idle root.
+    REQUIRE(luau_host_reference_push(root, probeRoot.probe, nullptr) == LUAU_HOST_STATUS_OK);
+    REQUIRE(luau_host_push_string(root, bytes("root"), 4) == LUAU_HOST_STATUS_OK);
+    REQUIRE(luau_host_table_get(root, -2, &type) == LUAU_HOST_STATUS_OK);
+    REQUIRE(string_at(root, -1) == "index root");
+    REQUIRE(luau_host_stack_set_top(root, 0) == LUAU_HOST_STATUS_OK);
+
+    // A coroutine whose function has not started: values pushed above the
+    // function do not disturb it.
+    luau_host_state* unstarted = nullptr;
+    REQUIRE(luau_host_thread_create(root, &unstarted) == LUAU_HOST_STATUS_OK);
+    REQUIRE(compile_and_load(unstarted, "return 'started'", "@unstarted") == LUAU_HOST_STATUS_OK);
+    REQUIRE(luau_host_thread_status(unstarted) == LUAU_HOST_STATUS_OK);
+    REQUIRE(luau_host_reference_push(unstarted, probeRoot.probe, nullptr) == LUAU_HOST_STATUS_OK);
+    REQUIRE(luau_host_push_string(unstarted, bytes("unstarted"), 9) == LUAU_HOST_STATUS_OK);
+    REQUIRE(luau_host_table_get(unstarted, -2, &type) == LUAU_HOST_STATUS_OK);
+    REQUIRE(string_at(unstarted, -1) == "index unstarted");
+    const uint8_t* text = nullptr;
+    uint64_t length = 0;
+    REQUIRE(luau_host_to_display_string(unstarted, -2, &text, &length) == LUAU_HOST_STATUS_OK);
+    REQUIRE(luau_host_stack_set_top(unstarted, 1) == LUAU_HOST_STATUS_OK);
+    REQUIRE(luau_host_resume(unstarted, root, 0) == LUAU_HOST_STATUS_OK);
+    REQUIRE(string_at(unstarted, -1) == "started");
+
+    // The same thread, finished.
+    REQUIRE(luau_host_push_number(unstarted, 3) == LUAU_HOST_STATUS_OK);
+    REQUIRE(luau_host_global_set(unstarted, bytes("finished")) == LUAU_HOST_STATUS_OK);
+    REQUIRE(luau_host_global_get(unstarted, bytes("finished"), &type) == LUAU_HOST_STATUS_OK);
+    REQUIRE(type == abi.type_number);
+    REQUIRE(luau_host_stack_set_top(unstarted, 0) == LUAU_HOST_STATUS_OK);
+    REQUIRE(luau_host_stack_set_top(root, 0) == LUAU_HOST_STATUS_OK);
+
+    // A running thread, from inside a managed function.
+    runningProbeReference = probeRoot.probe;
+    runningThreadStatus = LUAU_HOST_STATUS_INVALID_ARGUMENT;
+    set_global_callback(root, "indexOwnThread", index_own_thread_callback);
+    REQUIRE(compile_and_load(root, "return indexOwnThread()", "@running") == LUAU_HOST_STATUS_OK);
+    REQUIRE(luau_host_resume(root, nullptr, 0) == LUAU_HOST_STATUS_OK);
+    REQUIRE(runningThreadStatus == LUAU_HOST_STATUS_OK);
+    REQUIRE(string_at(root, -1) == "index running");
+    REQUIRE(luau_host_stack_set_top(root, 0) == LUAU_HOST_STATUS_OK);
+
+    REQUIRE(read_hits(root) == 4.0);
+}
+
 using TestFunction = void (*)();
 
 int run_test(const char* name, TestFunction test)
@@ -3124,6 +3515,10 @@ int main()
     failures += run_test("metamethods at the physical stack end", test_metamethods_at_the_physical_stack_end);
     failures += run_test("stack move when the destination cannot grow", test_stack_move_when_the_destination_cannot_grow);
     failures += run_test("coroutine resume at the frame slot limit", test_coroutine_resume_at_the_frame_slot_limit);
+    failures += run_test(
+        "operations that can run Luau code refuse threads that are not runnable",
+        test_operations_refuse_threads_that_are_not_runnable);
+    failures += run_test("runnable threads still run metamethods", test_runnable_threads_still_run_metamethods);
 
     if (failures != 0)
         std::cerr << failures << " conformance test group(s) failed\n";

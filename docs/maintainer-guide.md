@@ -93,6 +93,13 @@ it runs. A call that cannot get them, because the frame already holds
 rearrange the stack, and reference release, need no slot and cannot fail. Give
 each new protected operation its consumed-input and reserved-slot counts.
 
+Luau can run code only on a thread whose status is OK. Every operation that
+can reach Luau code, through a call, a metamethod, or an import resolved while
+loading, refuses a thread that yielded, is suspended by a break, or ended with
+an error with `THREAD_NOT_RUNNABLE`, after argument validation and before the
+slot reservation, and runs and consumes nothing (section 6.7). A new
+operation that can run Luau code must make the same check.
+
 ### 3.3 ABI handshake
 
 The first standalone compile or state creation verifies the native
@@ -387,8 +394,9 @@ invocation and script entrypoints, which run on the root, pay nothing for it.
 Nested module execution and `SandboxThread` run a protected call, which is
 valid on a running thread or an unstarted coroutine but not on a suspended
 one; they make the same check before they load a chunk or change the
-thread's globals. Direct host operations do not start a call and are not
-checked.
+thread's globals, and `SandboxThread` also rejects a thread that ended with an
+error. Direct host operations do not start a call and are not checked; they
+work on a suspended thread (section 6.7).
 
 A thread that a failed call reset accepts a new call. A script-created
 coroutine that died with an error is not suspended: the call reaches the VM,
@@ -399,6 +407,79 @@ A new entry point must begin its operation through `BeginOperation` and set
 `resumesThread` only when it continues a pending call, or make the same check
 under the native gate before it pushes. `SuspendedThreadEntryTests` covers
 every entry point against each kind of suspended thread.
+
+### 6.7 Direct operations on a thread that cannot run code
+
+Luau runs code only on a thread whose native status is OK: running, finished,
+or holding a coroutine function that has not started. On a thread that
+yielded, is suspended by a break (an async callback waiting, or a coroutine
+waiting in `coroutine.resume` on a broken child), or ended with an error, the
+interpreter, which checks the thread status at each interrupt safepoint and
+after each call, leaves any function started there as if it had just
+suspended, so `luaD_call` returns with that function's frame still in place.
+`protect()` contains errors, not this; the next resume continues from the
+corrupted frame and crashes. Direct host operations reach such threads in
+ordinary use: a host writes a script thread's globals every frame whatever the
+script is doing, an async callback runs while its thread (and, for a root call,
+the root, where every `LuauTable` operation runs) is suspended, and the
+sandbox's write guard, a `__index` or `__tostring`, and an import resolved
+while loading are all Luau code.
+
+The native host is the backstop. `table_get`, `table_set`, `global_get`,
+`global_set`, `to_display_string`, `load`, `open_library`, and `pcall` refuse
+such a thread with `THREAD_NOT_RUNNABLE`. The refusal is stack-neutral, so a
+managed bug cannot reach the crash: `ThrowIfFailed` turns an unhandled refusal
+into `InvalidOperationException`.
+
+The managed runtime treats the refusal as the signal to do the work elsewhere,
+in `LuauState.RunnableThread.cs`, so the common paths pay nothing for the
+check:
+
+- Global reads and writes, metamethod-aware `LuauTable` reads and writes, and
+  display conversion move their inputs with `stack_move` to the root's *host
+  operation thread*, run the operation there, and move the results back, so
+  the target thread's stack ends exactly as the refused operation would have
+  left it. Global access pushes the target's own globals with `global_push`
+  and indexes that table, which is what `lua_getfield(LUA_GLOBALSINDEX)` does.
+  Each needs no more slots on the target than the operation itself, and the
+  frame-slot limit applies to every push. The moves cost about 300 ns per
+  access (`entry-yielded-thread-global-*` benchmarks) and allocate nothing.
+- `load` and `open_library` depend on the thread's globals: imports resolve
+  against them, and libraries register into them. They run on a new thread
+  created from the target, which inherits its globals, parked on the host
+  operation thread while in use. These are rare, so the allocation is
+  acceptable.
+- The host operation thread is created from the root on first use and kept
+  by a registry reference in `LuauVmContext`. Code running there is inside a
+  protected call, so it can neither yield nor break; a hard stop is raised as
+  `CANCELED`, and a callback failure is raised and reported as on the root.
+  Because a metamethod can return `coroutine.running()`, the host can obtain
+  the thread and leave it suspended, so `AcquireHostOperationThread` checks
+  its status and replaces it when it is not runnable. Nested use (a metamethod
+  that calls back into a direct operation on another suspended thread) finds
+  it running, which is valid.
+- A metamethod run this way observes the host thread in `coroutine.running()`,
+  and it can resume the target if the target yielded: that is ordinary Luau
+  behavior, and the operation stays sound because nothing on the target's
+  stack is used after the code runs except to receive the results.
+
+An async callback's suspension used to leave `YieldReason.AsyncCallback` set
+while the callback ran, so the first interrupt poll in any Luau code the
+callback's direct operations ran stopped it as a hard stop.
+`MarkAsyncCallbackSuspended` clears the reason once the runner has acted on
+it.
+
+`SandboxThread` is the one direct operation that refuses instead: it
+replaces the thread's globals and then runs the guard chunk there, which is
+not valid on a thread with a pending continuation or a failed call, so it
+rejects either before changing anything.
+
+`SuspendedThreadHostOperationTests` checks the target's status and stack before
+it resumes, so a regression fails there rather than crashing the test host;
+the native conformance suite drives every refusing operation on a yielded,
+broken, waiting, and errored thread in its own process and under the
+sanitizer build. Allocation of the per-frame global paths on a yielded thread
+is pinned in `SuspendedThreadHostOperationAllocationTests`.
 
 ## 7. Managed callbacks
 
@@ -755,6 +836,9 @@ one compatibility unit.
   timer, token source, options record, or execution-context write.
 - Only `Resume` continues a suspended thread; every other entry rejects a
   thread with a pending continuation before it pushes anything.
+- No host operation runs Luau code on a thread whose status is not OK; the
+  native host refuses it, and direct operations run that code on a runnable
+  thread of the same root instead.
 - Generated host APIs are attributed, reflection-free, and IL2CPP-safe.
 - `require()` remains managed, opt-in, sandbox-aware, and on the shared engine.
 - Normal builds do not mutate the Unity package.
@@ -802,6 +886,13 @@ instead of the new call (section 6.6).
 `LuauCallContext` is callback scoped. Read arguments and return results during
 the active generation; copy durable managed values rather than retaining the
 context.
+
+### A host operation reports a thread that cannot run Luau code
+
+The native host refused an operation that can run Luau code on a thread that
+yielded, is suspended by a pending callback, or ended with an error, and the
+managed caller did not move the work to a runnable thread. Do the same as the
+direct operations in section 6.7; do not weaken the native check.
 
 ### Direct table/global access reports a yield
 

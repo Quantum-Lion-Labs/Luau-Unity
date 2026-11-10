@@ -15,9 +15,9 @@ internal static unsafe class LuauNativeProtection
     internal const ushort ExpectedAbiMajor = 2;
     internal const ushort MinimumAbiMinor = 0;
     internal const uint ExpectedAbiRecordSize = 112;
-    internal const uint ExpectedFeatureFlags = 0x7fffU;
+    internal const uint ExpectedFeatureFlags = 0xffffU;
     internal const ulong ExpectedUpstreamRevisionHash = 0x065976b2840123deUL;
-    internal const ulong ExpectedHostBuildFingerprint = 0xaf55c0083fd24bbfUL;
+    internal const ulong ExpectedHostBuildFingerprint = 0x9aa6f7d2c36545f7UL;
     internal const int AbiQueryOk = (int)LuauHostStatus.Ok;
     internal const int AbiQueryInvalidArgument = (int)LuauHostStatus.InvalidArgument;
 
@@ -110,6 +110,17 @@ internal static unsafe class LuauNativeProtection
         if (status == LuauHostStatus.StackLimit)
         {
             throw new LuauStackLimitException(chunkName, operation);
+        }
+
+        if (status == LuauHostStatus.ThreadNotRunnable)
+        {
+            // Direct host operations move this work to a runnable thread
+            // (LuauHostThreadFallback); reaching here means a caller did not.
+            throw new InvalidOperationException(LuauDiagnosticMessages.WithChunk(
+                $"Cannot {operation} on a Luau thread that has yielded, is suspended by a pending host " +
+                "callback, or ended with an error, because Luau code cannot run there. Resume the thread " +
+                "until it finishes, or use another thread of the same root.",
+                chunkName));
         }
 
         if (status == LuauHostStatus.InvalidArgument)
@@ -301,6 +312,7 @@ internal sealed unsafe class LuauNativeAbiVerifier
         (LuauHostFeature.CoroutineSuspension, "coroutine suspension"),
         (LuauHostFeature.StackLimit, "stack-slot limit"),
         (LuauHostFeature.InterruptThrottle, "interrupt throttle"),
+        (LuauHostFeature.RunnableThreadGuard, "runnable-thread guard"),
     ];
 
     readonly LuauNativeAbiInfoQuery query;

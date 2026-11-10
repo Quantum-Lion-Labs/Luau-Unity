@@ -51,6 +51,7 @@ namespace Luau.Internal.Interop
         Break = 10,
         ResourceExhausted = 11,
         StackLimit = 12,
+        ThreadNotRunnable = 13,
     }
 
     internal enum LuauHostAllocatorFailure : int
@@ -100,6 +101,7 @@ namespace Luau.Internal.Interop
         CoroutineSuspension = 1U << 12,
         StackLimit = 1U << 13,
         InterruptThrottle = 1U << 14,
+        RunnableThreadGuard = 1U << 15,
     }
 
     [Flags]
