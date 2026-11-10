@@ -22,7 +22,8 @@
       "inherits": "host-base",
       "generator": "Visual Studio 17 2022",
       "cacheVariables": {
-        "CMAKE_SYSTEM_VERSION": "10.0.22621.0"
+        "CMAKE_SYSTEM_VERSION": "10.0.22621.0",
+        "CMAKE_MSVC_RUNTIME_LIBRARY": "MultiThreaded$<$<CONFIG:Debug>:Debug>"
       },
       "architecture": {
         "value": "x64",
