@@ -31,6 +31,14 @@ API or ABI breaks.
 
 ### Fixed
 
+- The Android plugins no longer depend on `libc++_shared.so`. A Unity Android
+  player contains that library only when something else ships it, in practice
+  the GameActivity application entry point, so a project that used the classic
+  Activity entry point built successfully and then failed with
+  `DllNotFoundException` at the first Luau call. The plugins now link the C++
+  runtime statically and need only the Android system libraries `libc.so`,
+  `libm.so`, and `libdl.so`, so they work with both the Activity and the
+  GameActivity entry points. Each Android plugin is about 200 KB larger.
 - A script that returned more values than one Luau stack frame holds (8000)
   could corrupt native memory and crash the process. For example,
   `local t = table.create(7999, 1) return 1, 2, 3, 4, table.unpack(t)` made every

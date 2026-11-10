@@ -235,8 +235,18 @@ target_link_libraries(
 
 if(ANDROID)
     # The NDK runtime choice is part of the reviewed toolchain contract. The
-    # wrapper preset deliberately selects the shared libc++ used by Unity.
-    target_link_libraries(luau_host PRIVATE c++_shared)
+    # toolchain wrapper links libc++ statically, and --exclude-libs below keeps
+    # it out of the dynamic symbol table, so the plugin depends only on Android
+    # system libraries and loads whatever application entry point the player
+    # uses. This is safe because no C++ object, allocation, or exception crosses
+    # the C host ABI: every C++ exception and VM long jump is contained inside
+    # this library. native-artifacts and package-static reject any other
+    # dynamic dependency.
+    if(NOT ANDROID_STL STREQUAL "c++_static")
+        message(FATAL_ERROR
+            "luau_host requires ANDROID_STL=c++_static; ${ANDROID_STL} would make the "
+            "plugin depend on a C++ runtime that Unity players do not always contain")
+    endif()
 
     # NDK lld otherwise hashes host-specific unstripped debug metadata into the
     # GNU build ID, even though the reviewed stripped binaries are identical.
@@ -456,12 +466,6 @@ if(LUAU_HOST_BUILD_TESTS)
     target_compile_features(luau_host_conformance PRIVATE cxx_std_17)
     target_link_libraries(luau_host_conformance PRIVATE luau_host Threads::Threads)
     target_include_directories(luau_host_conformance PRIVATE "${LUAU_HOST_ROOT}/src")
-
-    if(ANDROID)
-        # The executable is only cross-compiled in Android CI, but it still
-        # needs the same explicit Unity-compatible C++ runtime as the host.
-        target_link_libraries(luau_host_conformance PRIVATE c++_shared)
-    endif()
 
     if(MSVC)
         target_compile_options(luau_host_conformance PRIVATE /W4 /WX /permissive- /EHsc)

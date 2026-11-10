@@ -71,3 +71,15 @@ license terms.
 - License: <https://www.gnu.org/licenses/gpl-3.0.html>
 - GCC Runtime Library Exception: <https://www.gnu.org/licenses/gcc-exception-3.1.html>
 - Source: <https://gcc.gnu.org/>
+
+## LLVM C++ runtime libraries
+
+The Android plugins statically link parts of the LLVM C++ standard library
+(libc++), C++ ABI library (libc++abi), and unwinder (libunwind), as distributed
+with Android NDK r27c. These libraries are licensed under the Apache License,
+version 2.0, with LLVM Exceptions. The exceptions permit distributing the
+portions embedded in the compiled plugins without the license's attribution
+requirements; this notice is provided for transparency.
+
+- License: <https://llvm.org/LICENSE.txt>
+- Source: <https://github.com/llvm/llvm-project>

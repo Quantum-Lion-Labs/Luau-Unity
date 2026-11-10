@@ -39,7 +39,12 @@ endif()
 
 set(CMAKE_ANDROID_NDK "${_luau_host_android_ndk}" CACHE PATH "" FORCE)
 set(ANDROID_PLATFORM "android-26" CACHE STRING "" FORCE)
-set(ANDROID_STL "c++_shared" CACHE STRING "" FORCE)
+# The host links the C++ runtime statically and exports only its C ABI, so the
+# plugin needs nothing beyond the Android system libraries. A Unity player
+# contains libc++_shared.so only when something else ships it (in practice the
+# GameActivity entry point), so a shared runtime would fail to load in a player
+# that uses the classic Activity entry point.
+set(ANDROID_STL "c++_static" CACHE STRING "" FORCE)
 # Required by Android 15+ devices/emulators that use 16 KiB pages. NDK r27
 # translates this into a 16 KiB maximum ELF page size while retaining 4 KiB
 # device compatibility.

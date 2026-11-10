@@ -46,6 +46,12 @@ dedicated servers. It is built against glibc 2.35 (Ubuntu 22.04) with the C++
 runtime linked in, so it loads on Ubuntu 22.04, Debian 12, and newer
 distributions without extra packages.
 
+The Android plugins (API level 26 or newer) link the C++ runtime in as well.
+Their only dynamic dependencies are the Android system libraries `libc.so`,
+`libm.so`, and `libdl.so`, so they work with both the Activity and the
+GameActivity application entry points, without another plugin providing
+`libc++_shared.so`.
+
 Before its first compile or state creation, the managed runtime verifies the
 native host's self-description, ABI layout, required features, pinned Luau
 revision, and build fingerprint, so a mismatched plugin fails immediately and
