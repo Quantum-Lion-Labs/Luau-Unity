@@ -12,6 +12,9 @@ internal static class ArtifactManifestCommand
     private const ulong ApprovedUpstreamRevisionHash = 0x065976b2840123de;
     private const ulong ApprovedHostBuildFingerprint = 0xaf55c0083fd24bbf;
     private const uint ApprovedFeatureFlags = 0x7fff;
+    // The number of symbols in native/luau-host/exports/luau_host.exports.
+    // Adding or removing an export is an ABI change that updates this too.
+    private const int ApprovedExportCount = 85;
 
     internal sealed record BinaryIdentity(
         uint RecordSize,
@@ -150,8 +153,9 @@ internal static class ArtifactManifestCommand
             .Select(static line => line.Trim())
             .Where(static line => line.Length > 0 && !line.StartsWith('#'))
             .ToArray();
-        Require(approvedExports.Length == 82 && approvedExports.Distinct(StringComparer.Ordinal).Count() == 82,
-            "Approved export allowlist must contain 82 unique symbols.");
+        Require(approvedExports.Length == ApprovedExportCount &&
+                approvedExports.Distinct(StringComparer.Ordinal).Count() == ApprovedExportCount,
+            $"Approved export allowlist must contain {ApprovedExportCount} unique symbols.");
         await AuditExportsAsync(repository, platform, preset, binary, exportsPath);
         var sourceCommit = (await ProcessRunner.RequireAsync("git", ["rev-parse", "HEAD"], repository.Root, echo: false)).StandardOutput.Trim().ToLowerInvariant();
         var status = await ProcessRunner.RequireAsync("git", ["status", "--porcelain=v1", "--untracked-files=all"], repository.Root, echo: false);
