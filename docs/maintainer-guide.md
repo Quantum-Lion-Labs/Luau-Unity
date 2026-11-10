@@ -250,9 +250,10 @@ The modes choose entry mechanics, not separate failure systems. All share:
 Each entry captures its base top and explicitly tracks values it produces or
 consumes. Success hands validated results to the caller. A void call
 (`InvokeVoid`, `InvokeVoidAsync`) wants none: `ScriptRunner` trims the stack to
-the base where it takes the result count, so `MaxResultCount` does not apply and
-nothing is decoded, while a frame without a free slot still fails with
-`LuauStackLimitException`. Managed failure restores the owned base. If native
+the base where it takes the result count, so `MaxResultCount` does not apply,
+nothing is decoded, and the free frame slot that reading a result needs is not
+required: a return that fills or overfills the frame is trimmed like any other.
+Managed failure restores the owned base. If native
 reset fails, the boundary performs no further stack action: the entire root
 becomes terminal and deferred close is the only remaining native operation.
 

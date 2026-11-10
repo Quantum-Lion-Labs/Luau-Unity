@@ -129,8 +129,9 @@ public sealed record LuauExecutionOptions
     /// To reject a function that returns values, call <c>InvokeInto</c> with
     /// an empty destination, or <c>Invoke</c> with a limit of zero. Removing
     /// the limit does not remove the VM's own ceiling: one Luau stack frame
-    /// holds at most 8000 values, and any call that returns more, including
-    /// <c>InvokeVoid</c>, fails with <see cref="LuauStackLimitException"/>.
+    /// holds at most 8000 values, and a call that would deliver more fails
+    /// with <see cref="LuauStackLimitException"/>. <c>InvokeVoid</c> reads
+    /// none of the values, so it discards them however many there are.
     /// </remarks>
     /// <exception cref="ArgumentOutOfRangeException">
     /// The assigned count is negative.

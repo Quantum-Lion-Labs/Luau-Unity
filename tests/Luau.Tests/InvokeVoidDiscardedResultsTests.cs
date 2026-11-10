@@ -5,10 +5,10 @@ namespace Luau.Tests;
 /// <summary>
 /// <c>InvokeVoid</c> and <c>InvokeVoidAsync</c> mean "call this and give me
 /// nothing back". Values the function returns are discarded and the call
-/// succeeds: no value reaches the host, so <c>MaxResultCount</c> does not
-/// apply. The frame ceiling still does, and everything else about the call
-/// (errors, budgets, cancellation, the rejection of a root yield, and an empty
-/// stack afterwards) is as for any other call.
+/// succeeds: no value reaches the host, so neither <c>MaxResultCount</c> nor
+/// the frame ceiling for delivered results applies. Everything else about the
+/// call (errors, budgets, cancellation, the rejection of a root yield, and an
+/// empty stack afterwards) is as for any other call.
 /// </summary>
 public sealed class InvokeVoidDiscardedResultsTests
 {
@@ -333,55 +333,88 @@ public sealed class InvokeVoidDiscardedResultsTests
         fixture.AssertUsable();
     }
 
-    // 8003 values: more than one frame holds (StackSlotLimitTests).
-    const string OverfullReturn = "local t = table.create(7999, 1) return 1, 2, 3, 4, table.unpack(t)";
+    // Returns around the frame ceiling of 8000 slots (StackSlotLimitTests).
+    // A call that delivers results needs one free slot to read them, so it
+    // rejects the last three; a void call reads nothing and drops them all.
+    static readonly (string Body, int Count)[] ReturnsAroundTheFrameCeiling =
+    [
+        ("return table.unpack(table.create(7998, 7))", 7998),
+        ("return table.unpack(table.create(7999, 7))", 7999),
+        ("return 1, table.unpack(table.create(7999, 7))", 8000),
+        ("local t = table.create(7999, 1) return 1, 2, 3, 4, table.unpack(t)", 8003),
+    ];
 
-    public static TheoryData<string, bool> OverloadsWithZeroLimit()
+    public static TheoryData<string, int, bool> OverloadsAroundTheFrameCeiling()
     {
-        var data = new TheoryData<string, bool>();
+        var data = new TheoryData<string, int, bool>();
         foreach (var overload in OverloadNames)
         {
-            data.Add(overload, false);
-            data.Add(overload, true);
+            for (var index = 0; index < ReturnsAroundTheFrameCeiling.Length; index++)
+            {
+                data.Add(overload, index, false);
+                data.Add(overload, index, true);
+            }
         }
 
         return data;
     }
 
     [Theory]
-    [MemberData(nameof(OverloadsWithZeroLimit))]
-    public async Task MoreValuesThanAFrameHoldsStillFailAndLeaveTheRootUsable(string overload, bool zeroLimit)
+    [MemberData(nameof(OverloadsAroundTheFrameCeiling))]
+    public async Task ReturnsThatFillOrOverfillTheFrameAreDiscarded(string overload, int index, bool zeroLimit)
     {
         using var fixture = new Fixture();
-        var (function, entrypoint) = fixture.Load(OverfullReturn);
+        var (body, count) = ReturnsAroundTheFrameCeiling[index];
+        var (function, entrypoint) = fixture.Load(body);
         var options = zeroLimit ? ZeroResultOptions : null;
         var top = fixture.Root.GetTop();
 
-        // Enough attempts to fill the frame if a failure leaked one value.
+        // The body returns what the comment says it does.
+        using (var counted = fixture.Root.DoString(
+            "return select('#', (function() " + body + " end)())",
+            "@void/count.luau"))
+        {
+            Assert.Equal(count, Assert.Single(counted).Read<int>());
+        }
+
+        var calls = fixture.Calls;
+
+        // Enough calls to fill the frame if one of them leaked a value.
         for (var attempt = 0; attempt < 64; attempt++)
         {
-            var exception = await Assert.ThrowsAsync<LuauStackLimitException>(
-                () => InvokeVoid(overload, function, entrypoint, options));
-            Assert.Contains("8000", exception.Message, StringComparison.Ordinal);
+            await InvokeVoid(overload, function, entrypoint, options);
             Assert.Equal(top, fixture.Root.GetTop());
         }
 
-        Assert.Equal(64, fixture.Calls);
+        Assert.Equal(calls + 64, fixture.Calls);
         fixture.AssertUsable();
     }
 
     [Fact]
-    public void ResultsThatLeaveOneFreeSlotAreDiscarded()
+    public void ACallThatDeliversResultsStillRejectsAFullFrame()
     {
-        using var fixture = new Fixture();
-        var (function, _) = fixture.Load("return table.unpack(table.create(7998, 7))");
-        var top = fixture.Root.GetTop();
+        // No result limit, so the frame ceiling is the check that decides.
+        using var root = LuauState.Create(TestBudgets.StateOptions with
+        {
+            DefaultExecutionOptions = TestBudgets.Execution with { MaxResultCount = null },
+        });
+        root.OpenBaseLibrary();
+        root.OpenTableLibrary();
+        using var loaded = root.DoString(
+            "return function() return 1, table.unpack(table.create(7999, 7)) end",
+            "@void/full-frame.luau");
+        using var function = loaded.Read<LuauFunction>(0).Retain();
+        var top = root.GetTop();
 
         function.InvokeVoid();
-        function.InvokeVoid(ZeroResultOptions);
+        Assert.Equal(top, root.GetTop());
+        Assert.Throws<LuauStackLimitException>(() => function.Invoke());
+        Assert.Equal(top, root.GetTop());
+        function.InvokeVoid();
 
-        Assert.Equal(top, fixture.Root.GetTop());
-        fixture.AssertUsable();
+        Assert.Equal(top, root.GetTop());
+        using var recovered = root.DoString("return 40 + 2", "@void/recovery.luau");
+        Assert.Equal(42, Assert.Single(recovered).Read<int>());
     }
 
     [Theory]

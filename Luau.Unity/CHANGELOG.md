@@ -30,12 +30,12 @@ API or ABI breaks.
   `DoString`, `Resume`, and the module a `require` loads, also during a void
   call). A module first required during a void call used to fail the same
   way, because the call's forced limit of 0 applied to it; it now gets the
-  limit of the call's own options. A function that returns more values than
-  one stack frame holds (8000) still fails, now with `LuauStackLimitException`
-  as for any other call without a result limit, and leaves the root usable.
-  Errors, budgets, cancellation, and the rejection of a yield on the root are
-  unchanged, the stack is left as it was, and a call whose function returns
-  values allocates nothing. To keep treating returned values as an error,
+  limit of the call's own options. The 8000-value frame ceiling does not
+  apply to the discarded values either: it exists so the host can read
+  results, and these calls read none. Errors, budgets, cancellation, and the
+  rejection of a yield on the root are unchanged, the stack is left as it
+  was, and a warmed synchronous call whose function returns values allocates
+  nothing. To keep treating returned values as an error,
   call `InvokeInto` with an empty destination (`ArgumentException`) or
   `Invoke` with `MaxResultCount = 0` (`LuauResultLimitException`).
 - `LuauExecutionOptions.Default`, and with it `LuauStateOptions.Default` and

@@ -203,8 +203,7 @@ public sealed class LuauScriptEntrypoint
     /// <remarks>
     /// Values the export returns are discarded and the call succeeds.
     /// <see cref="LuauExecutionOptions.MaxResultCount"/> does not apply, because
-    /// no value reaches the host. Returning more values than one Luau stack
-    /// frame holds still fails with <see cref="LuauStackLimitException"/>.
+    /// no value reaches the host.
     /// </remarks>
     public void InvokeVoid(LuauExecutionOptions? executionOptions = null) =>
         GetFunction().InvokeVoidLabeled(OperationLabel, executionOptions);
@@ -218,8 +217,7 @@ public sealed class LuauScriptEntrypoint
     /// <remarks>
     /// Values the export returns are discarded and the call succeeds.
     /// <see cref="LuauExecutionOptions.MaxResultCount"/> does not apply, because
-    /// no value reaches the host. Returning more values than one Luau stack
-    /// frame holds still fails with <see cref="LuauStackLimitException"/>.
+    /// no value reaches the host.
     /// </remarks>
     public void InvokeVoid(
         LuauValue argument,
@@ -235,8 +233,7 @@ public sealed class LuauScriptEntrypoint
     /// <remarks>
     /// Values the export returns are discarded and the call succeeds.
     /// <see cref="LuauExecutionOptions.MaxResultCount"/> does not apply, because
-    /// no value reaches the host. Returning more values than one Luau stack
-    /// frame holds still fails with <see cref="LuauStackLimitException"/>.
+    /// no value reaches the host.
     /// </remarks>
     public void InvokeVoid(
         ReadOnlySpan<LuauValue> arguments,
@@ -250,8 +247,7 @@ public sealed class LuauScriptEntrypoint
     /// <remarks>
     /// Values the export returns are discarded and the call succeeds.
     /// <see cref="LuauExecutionOptions.MaxResultCount"/> does not apply, because
-    /// no value reaches the host. Returning more values than one Luau stack
-    /// frame holds still fails with <see cref="LuauStackLimitException"/>.
+    /// no value reaches the host.
     /// </remarks>
     public ValueTask InvokeVoidAsync(
         CancellationToken cancellationToken = default,
@@ -272,8 +268,7 @@ public sealed class LuauScriptEntrypoint
     /// <remarks>
     /// Values the export returns are discarded and the call succeeds.
     /// <see cref="LuauExecutionOptions.MaxResultCount"/> does not apply, because
-    /// no value reaches the host. Returning more values than one Luau stack
-    /// frame holds still fails with <see cref="LuauStackLimitException"/>.
+    /// no value reaches the host.
     /// </remarks>
     public ValueTask InvokeVoidAsync(
         LuauValue argument,
@@ -296,8 +291,7 @@ public sealed class LuauScriptEntrypoint
     /// <remarks>
     /// Values the export returns are discarded and the call succeeds.
     /// <see cref="LuauExecutionOptions.MaxResultCount"/> does not apply, because
-    /// no value reaches the host. Returning more values than one Luau stack
-    /// frame holds still fails with <see cref="LuauStackLimitException"/>.
+    /// no value reaches the host.
     /// </remarks>
     public ValueTask InvokeVoidAsync(
         ReadOnlyMemory<LuauValue> arguments,

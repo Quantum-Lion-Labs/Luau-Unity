@@ -55,8 +55,9 @@ arguments, or a callback that returns that many fails with
 `LuauStackLimitException`. Under the default `MaxResultCount` of 64, an
 oversized return fails earlier with `LuauResultLimitException`. Either way, the
 values are dropped and the root stays usable. Removing the result limit does not
-remove this ceiling, and neither does calling with `InvokeVoid`, which discards
-what a function returns.
+remove this ceiling. The one exception is what a function returns to
+`InvokeVoid`: those values are discarded without being read, so the call
+succeeds however many there are.
 
 `LuauStateOptions.UnboundedResources` deliberately removes the optional ceilings.
 It still bounds diagnostic decoding, and it still leaves persistent bytecode set

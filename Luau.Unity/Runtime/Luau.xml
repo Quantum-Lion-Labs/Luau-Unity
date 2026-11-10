@@ -438,18 +438,19 @@
             <summary>
             Counts the values above <paramref name="baseTop"/> and checks them
             against the result limits. With <paramref name="discardResults"/>, the
-            caller wants none of them: they are dropped and the count is zero.
+            caller wants none of them: they are dropped unchecked and the count is
+            zero.
             </summary>
         </member>
         <member name="M:Luau.ScriptRunner.DiscardReturnedValues(Luau.ScriptOperation,System.IntPtr,System.Int32,System.Int32)">
             <summary>
             Drops the values a call returned to a caller that wants none of them.
             No value reaches the host, so <see cref="P:Luau.LuauExecutionOptions.MaxResultCount"/>
-            does not apply, and nothing is decoded or allocated. The frame ceiling
-            still does, as for every other call: a frame with no free slot fails
-            with <see cref="T:Luau.LuauStackLimitException"/>. Either way the stack ends
-            at <paramref name="baseTop"/>. A call that returned nothing costs no
-            native access here; otherwise one access checks the frame and trims it.
+            does not apply, and nothing is decoded or allocated. The free frame
+            slot that reading a result needs is not needed either: trimming pushes
+            nothing, so a return that fills the frame, or overfills it, is dropped
+            like any other. A call that returned nothing costs no native access
+            here; otherwise one access trims the stack to <paramref name="baseTop"/>.
             </summary>
         </member>
         <member name="M:Luau.ScriptRunner.ReadResults(Luau.ScriptOperation,Luau.LuauState,System.Span{Luau.LuauValue},System.Int32,System.Int32@)">
@@ -1064,8 +1065,9 @@
             To reject a function that returns values, call <c>InvokeInto</c> with
             an empty destination, or <c>Invoke</c> with a limit of zero. Removing
             the limit does not remove the VM's own ceiling: one Luau stack frame
-            holds at most 8000 values, and any call that returns more, including
-            <c>InvokeVoid</c>, fails with <see cref="T:Luau.LuauStackLimitException"/>.
+            holds at most 8000 values, and a call that would deliver more fails
+            with <see cref="T:Luau.LuauStackLimitException"/>. <c>InvokeVoid</c> reads
+            none of the values, so it discards them however many there are.
             </remarks>
             <exception cref="T:System.ArgumentOutOfRangeException">
             The assigned count is negative.
@@ -1172,8 +1174,7 @@
             <remarks>
             Values the closure returns are discarded and the call succeeds.
             <see cref="P:Luau.LuauExecutionOptions.MaxResultCount"/> does not apply, because
-            no value reaches the host. Returning more values than one Luau stack
-            frame holds still fails with <see cref="T:Luau.LuauStackLimitException"/>.
+            no value reaches the host.
             </remarks>
         </member>
         <member name="M:Luau.LuauFunction.InvokeVoid(Luau.LuauValue,Luau.LuauExecutionOptions)">
@@ -1184,8 +1185,7 @@
             <remarks>
             Values the closure returns are discarded and the call succeeds.
             <see cref="P:Luau.LuauExecutionOptions.MaxResultCount"/> does not apply, because
-            no value reaches the host. Returning more values than one Luau stack
-            frame holds still fails with <see cref="T:Luau.LuauStackLimitException"/>.
+            no value reaches the host.
             </remarks>
         </member>
         <member name="M:Luau.LuauFunction.InvokeVoid(System.ReadOnlySpan{Luau.LuauValue},Luau.LuauExecutionOptions)">
@@ -1196,8 +1196,7 @@
             <remarks>
             Values the closure returns are discarded and the call succeeds.
             <see cref="P:Luau.LuauExecutionOptions.MaxResultCount"/> does not apply, because
-            no value reaches the host. Returning more values than one Luau stack
-            frame holds still fails with <see cref="T:Luau.LuauStackLimitException"/>.
+            no value reaches the host.
             </remarks>
         </member>
         <member name="M:Luau.LuauFunction.InvokeVoidAsync(System.Threading.CancellationToken,Luau.LuauExecutionOptions)">
@@ -1207,8 +1206,7 @@
             <remarks>
             Values the closure returns are discarded and the call succeeds.
             <see cref="P:Luau.LuauExecutionOptions.MaxResultCount"/> does not apply, because
-            no value reaches the host. Returning more values than one Luau stack
-            frame holds still fails with <see cref="T:Luau.LuauStackLimitException"/>.
+            no value reaches the host.
             </remarks>
         </member>
         <member name="M:Luau.LuauFunction.InvokeVoidAsync(Luau.LuauValue,System.Threading.CancellationToken,Luau.LuauExecutionOptions)">
@@ -1219,8 +1217,7 @@
             <remarks>
             Values the closure returns are discarded and the call succeeds.
             <see cref="P:Luau.LuauExecutionOptions.MaxResultCount"/> does not apply, because
-            no value reaches the host. Returning more values than one Luau stack
-            frame holds still fails with <see cref="T:Luau.LuauStackLimitException"/>.
+            no value reaches the host.
             </remarks>
         </member>
         <member name="M:Luau.LuauFunction.InvokeVoidAsync(System.ReadOnlyMemory{Luau.LuauValue},System.Threading.CancellationToken,Luau.LuauExecutionOptions)">
@@ -1231,8 +1228,7 @@
             <remarks>
             Values the closure returns are discarded and the call succeeds.
             <see cref="P:Luau.LuauExecutionOptions.MaxResultCount"/> does not apply, because
-            no value reaches the host. Returning more values than one Luau stack
-            frame holds still fails with <see cref="T:Luau.LuauStackLimitException"/>.
+            no value reaches the host.
             </remarks>
         </member>
         <member name="M:Luau.LuauFunction.ResolvePublicState(Luau.LuauState)">
@@ -1955,8 +1951,7 @@
             <remarks>
             Values the export returns are discarded and the call succeeds.
             <see cref="P:Luau.LuauExecutionOptions.MaxResultCount"/> does not apply, because
-            no value reaches the host. Returning more values than one Luau stack
-            frame holds still fails with <see cref="T:Luau.LuauStackLimitException"/>.
+            no value reaches the host.
             </remarks>
         </member>
         <member name="M:Luau.LuauScriptEntrypoint.InvokeVoid(Luau.LuauValue,Luau.LuauExecutionOptions)">
@@ -1969,8 +1964,7 @@
             <remarks>
             Values the export returns are discarded and the call succeeds.
             <see cref="P:Luau.LuauExecutionOptions.MaxResultCount"/> does not apply, because
-            no value reaches the host. Returning more values than one Luau stack
-            frame holds still fails with <see cref="T:Luau.LuauStackLimitException"/>.
+            no value reaches the host.
             </remarks>
         </member>
         <member name="M:Luau.LuauScriptEntrypoint.InvokeVoid(System.ReadOnlySpan{Luau.LuauValue},Luau.LuauExecutionOptions)">
@@ -1983,8 +1977,7 @@
             <remarks>
             Values the export returns are discarded and the call succeeds.
             <see cref="P:Luau.LuauExecutionOptions.MaxResultCount"/> does not apply, because
-            no value reaches the host. Returning more values than one Luau stack
-            frame holds still fails with <see cref="T:Luau.LuauStackLimitException"/>.
+            no value reaches the host.
             </remarks>
         </member>
         <member name="M:Luau.LuauScriptEntrypoint.InvokeVoidAsync(System.Threading.CancellationToken,Luau.LuauExecutionOptions)">
@@ -1995,8 +1988,7 @@
             <remarks>
             Values the export returns are discarded and the call succeeds.
             <see cref="P:Luau.LuauExecutionOptions.MaxResultCount"/> does not apply, because
-            no value reaches the host. Returning more values than one Luau stack
-            frame holds still fails with <see cref="T:Luau.LuauStackLimitException"/>.
+            no value reaches the host.
             </remarks>
         </member>
         <member name="M:Luau.LuauScriptEntrypoint.InvokeVoidAsync(Luau.LuauValue,System.Threading.CancellationToken,Luau.LuauExecutionOptions)">
@@ -2011,8 +2003,7 @@
             <remarks>
             Values the export returns are discarded and the call succeeds.
             <see cref="P:Luau.LuauExecutionOptions.MaxResultCount"/> does not apply, because
-            no value reaches the host. Returning more values than one Luau stack
-            frame holds still fails with <see cref="T:Luau.LuauStackLimitException"/>.
+            no value reaches the host.
             </remarks>
         </member>
         <member name="M:Luau.LuauScriptEntrypoint.InvokeVoidAsync(System.ReadOnlyMemory{Luau.LuauValue},System.Threading.CancellationToken,Luau.LuauExecutionOptions)">
@@ -2027,8 +2018,7 @@
             <remarks>
             Values the export returns are discarded and the call succeeds.
             <see cref="P:Luau.LuauExecutionOptions.MaxResultCount"/> does not apply, because
-            no value reaches the host. Returning more values than one Luau stack
-            frame holds still fails with <see cref="T:Luau.LuauStackLimitException"/>.
+            no value reaches the host.
             </remarks>
         </member>
         <member name="T:Luau.LuauScriptInstance">

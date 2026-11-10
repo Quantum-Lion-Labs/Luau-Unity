@@ -459,7 +459,8 @@ internal static class ScriptRunner
     /// <summary>
     /// Counts the values above <paramref name="baseTop"/> and checks them
     /// against the result limits. With <paramref name="discardResults"/>, the
-    /// caller wants none of them: they are dropped and the count is zero.
+    /// caller wants none of them: they are dropped unchecked and the count is
+    /// zero.
     /// </summary>
     static int GetResultCount(
         ScriptOperation operation,
@@ -502,13 +503,13 @@ internal static class ScriptRunner
     /// <summary>
     /// Drops the values a call returned to a caller that wants none of them.
     /// No value reaches the host, so <see cref="LuauExecutionOptions.MaxResultCount"/>
-    /// does not apply, and nothing is decoded or allocated. The frame ceiling
-    /// still does, as for every other call: a frame with no free slot fails
-    /// with <see cref="LuauStackLimitException"/>. Either way the stack ends
-    /// at <paramref name="baseTop"/>. A call that returned nothing costs no
-    /// native access here; otherwise one access checks the frame and trims it.
+    /// does not apply, and nothing is decoded or allocated. The free frame
+    /// slot that reading a result needs is not needed either: trimming pushes
+    /// nothing, so a return that fills the frame, or overfills it, is dropped
+    /// like any other. A call that returned nothing costs no native access
+    /// here; otherwise one access trims the stack to <paramref name="baseTop"/>.
     /// </summary>
-    static unsafe void DiscardReturnedValues(
+    static void DiscardReturnedValues(
         ScriptOperation operation,
         IntPtr state,
         int baseTop,
@@ -519,33 +520,7 @@ internal static class ScriptRunner
             return;
         }
 
-        var full = false;
-        var trimmed = LuauHostStatus.Ok;
-        using (var access = operation.Context.EnterOperationNativeAccess(operation))
-        {
-            var pointer = (LuauHostState*)state;
-            try
-            {
-                full = operation.Context.IsFrameFullUnderNativeAccess(pointer);
-            }
-            finally
-            {
-                trimmed = luau_host_stack_set_top(pointer, baseTop);
-            }
-        }
-
-        // Shrinking the stack cannot fail natively. If it ever does, reset the
-        // thread rather than leave the values behind.
-        if (trimmed != LuauHostStatus.Ok)
-        {
-            Abort(operation, state);
-            RequireStackSetTopSuccess(trimmed);
-        }
-
-        if (full)
-        {
-            throw new LuauStackLimitException(operation.ChunkName, "return its results");
-        }
+        DiscardResultsAbove(operation, state, baseTop);
     }
 
     static unsafe bool IsFrameFull(ScriptOperation operation, IntPtr state)
