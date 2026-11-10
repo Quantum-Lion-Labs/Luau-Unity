@@ -3442,6 +3442,48 @@ void test_runnable_threads_still_run_metamethods()
     REQUIRE(read_hits(root) == 4.0);
 }
 
+// A call that lacks its operands is malformed whatever the thread's status,
+// so it is rejected as an invalid argument before the runnable-thread guard.
+void test_missing_operands_outrank_the_runnable_guard()
+{
+    Root root = create_root();
+    int32_t ignored = 0;
+    REQUIRE(luau_host_open_library(root.state, LUAU_HOST_LIBRARY_BASE, &ignored) == LUAU_HOST_STATUS_OK);
+    REQUIRE(luau_host_open_library(root.state, LUAU_HOST_LIBRARY_COROUTINE, &ignored) == LUAU_HOST_STATUS_OK);
+    REQUIRE(luau_host_stack_set_top(root.state, 0) == LUAU_HOST_STATUS_OK);
+
+    luau_host_state* yielded = nullptr;
+    luau_host_state* runnable = nullptr;
+    REQUIRE(luau_host_thread_create(root.state, &yielded) == LUAU_HOST_STATUS_OK);
+    REQUIRE(luau_host_thread_create(root.state, &runnable) == LUAU_HOST_STATUS_OK);
+    REQUIRE(compile_and_load(yielded, "coroutine.yield() return 7", "@operands/yield") == LUAU_HOST_STATUS_OK);
+    REQUIRE(luau_host_resume(yielded, root.state, 0) == LUAU_HOST_STATUS_YIELDED);
+    REQUIRE(luau_host_stack_get_top(yielded) == 0);
+
+    for (luau_host_state* state : {yielded, runnable})
+    {
+        // global_set needs a value.
+        REQUIRE(luau_host_global_set(state, bytes("x")) == LUAU_HOST_STATUS_INVALID_ARGUMENT);
+        REQUIRE(luau_host_stack_get_top(state) == 0);
+
+        // table_set needs a key and a value above the table.
+        REQUIRE(luau_host_table_create(state, 0, 0) == LUAU_HOST_STATUS_OK);
+        REQUIRE(luau_host_table_set(state, 1) == LUAU_HOST_STATUS_INVALID_ARGUMENT);
+        REQUIRE(luau_host_stack_get_top(state) == 1);
+        REQUIRE(luau_host_stack_set_top(state, 0) == LUAU_HOST_STATUS_OK);
+    }
+
+    // With its operands, the same call on the yielded thread reaches the guard.
+    REQUIRE(luau_host_push_number(yielded, 1) == LUAU_HOST_STATUS_OK);
+    REQUIRE(luau_host_global_set(yielded, bytes("x")) == LUAU_HOST_STATUS_THREAD_NOT_RUNNABLE);
+    REQUIRE(luau_host_stack_set_top(yielded, 0) == LUAU_HOST_STATUS_OK);
+
+    REQUIRE(luau_host_resume(yielded, root.state, 0) == LUAU_HOST_STATUS_OK);
+    int32_t isNumber = 0;
+    REQUIRE(luau_host_to_number(yielded, -1, &isNumber) == 7.0);
+    REQUIRE(isNumber != 0);
+}
+
 using TestFunction = void (*)();
 
 int run_test(const char* name, TestFunction test)
@@ -3519,6 +3561,7 @@ int main()
         "operations that can run Luau code refuse threads that are not runnable",
         test_operations_refuse_threads_that_are_not_runnable);
     failures += run_test("runnable threads still run metamethods", test_runnable_threads_still_run_metamethods);
+    failures += run_test("missing operands outrank the runnable guard", test_missing_operands_outrank_the_runnable_guard);
 
     if (failures != 0)
         std::cerr << failures << " conformance test group(s) failed\n";

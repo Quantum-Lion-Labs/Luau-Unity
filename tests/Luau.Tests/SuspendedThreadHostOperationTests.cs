@@ -601,6 +601,78 @@ public sealed class SuspendedThreadHostOperationTests
         Assert.Equal("yes", script["sharedWithCreator"].Read<string>());
         AssertRootUsable(root);
     }
+
+    [Fact]
+    public async Task RedirectedOperationsThatKeepStartingAnotherAreStoppedByTheNestingLimit()
+    {
+        // While an async callback is pending the root cannot run code, so a
+        // library open runs on a thread created for it. The registration
+        // writes math.abs, the script's __newindex calls back into the host,
+        // and that callback opens the library again, on yet another new
+        // thread. Luau bounds recursion per thread, so nothing counted this:
+        // it ran until the process stack overflowed. The callback stops
+        // recursing by itself well below that, so a regression fails this
+        // test instead of killing the test host.
+        const int SelfLimit = 200;
+        using var root = LuauState.Create(Options);
+        root.OpenBaseLibrary();
+        root.OpenCoroutineLibrary();
+        root.OpenMathLibrary();
+        var depth = 0;
+        var deepest = 0;
+        using var reopen = root.CreateFunction("reopen", _ =>
+        {
+            depth++;
+            deepest = Math.Max(deepest, depth);
+            try
+            {
+                if (depth < SelfLimit)
+                {
+                    root.OpenMathLibrary();
+                }
+            }
+            finally
+            {
+                depth--;
+            }
+        });
+        root["reopen"] = reopen;
+        using var wait = root.CreateAsyncFunction("wait", async context =>
+        {
+            await Task.Yield();
+            root.OpenMathLibrary();
+            context.Return(1);
+        });
+        root["wait"] = wait;
+
+        var exception = await Assert.ThrowsAsync<LuauManagedCallbackException>(async () =>
+        {
+            using var results = await root.DoStringAsync(
+                "math.abs = nil setmetatable(math, { __newindex = function() reopen() end }) return wait()");
+        });
+
+        var cause = exception.InnerException;
+        while (cause is LuauManagedCallbackException nested)
+        {
+            cause = nested.InnerException;
+        }
+
+        Assert.IsType<InvalidOperationException>(cause);
+        Assert.Contains("nested", cause!.Message, StringComparison.Ordinal);
+        Assert.InRange(deepest, 1, 32);
+        AssertRootUsable(root);
+
+        // The count is released on the way out: an ordinary redirected
+        // operation works afterwards.
+        using var thread = root.CreateThread();
+        using (thread.DoString("coroutine.yield() return x"))
+        {
+        }
+
+        thread["x"] = 5;
+        using var resumed = thread.Resume();
+        Assert.Equal(5, Assert.Single(resumed).Read<int>());
+    }
 }
 
 /// <summary>

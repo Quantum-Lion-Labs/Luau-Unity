@@ -462,6 +462,13 @@ check:
   and it can resume the target if the target yielded: that is ordinary Luau
   behavior, and the operation stays sound because nothing on the target's
   stack is used after the code runs except to receive the results.
+- Nesting is bounded by `MaximumHostOperationThreadDepth` (16). Luau counts
+  recursion per thread, and `load` and `open_library` run on a thread made for
+  that one use, so Luau code they reach that calls back into a host function
+  which starts another would recurse without any count until the process stack
+  overflowed. `AcquireHostOperationThread` counts every redirected operation
+  in progress and refuses the one past the limit with
+  `InvalidOperationException`; each caller releases the count in a `finally`.
 
 An async callback's suspension used to leave `YieldReason.AsyncCallback` set
 while the callback ran, so the first interrupt poll in any Luau code the

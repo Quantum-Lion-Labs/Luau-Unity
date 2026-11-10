@@ -43,6 +43,7 @@ public unsafe partial class LuauState
         {
             // Shrinking needs no free slot, so it cannot fail.
             _ = luau_host_stack_set_top(runner, runnerTop);
+            context.ReleaseHostOperationThread();
         }
     }
 
@@ -77,6 +78,7 @@ public unsafe partial class LuauState
         finally
         {
             _ = luau_host_stack_set_top(runner, runnerTop);
+            context.ReleaseHostOperationThread();
         }
     }
 
@@ -102,6 +104,7 @@ public unsafe partial class LuauState
         finally
         {
             _ = luau_host_stack_set_top(runner, runnerTop);
+            context.ReleaseHostOperationThread();
         }
     }
 
@@ -126,6 +129,7 @@ public unsafe partial class LuauState
         finally
         {
             _ = luau_host_stack_set_top(runner, runnerTop);
+            context.ReleaseHostOperationThread();
         }
     }
 
@@ -157,6 +161,7 @@ public unsafe partial class LuauState
         finally
         {
             _ = luau_host_stack_set_top(runner, runnerTop);
+            context.ReleaseHostOperationThread();
         }
     }
 
@@ -199,6 +204,7 @@ public unsafe partial class LuauState
         finally
         {
             _ = luau_host_stack_set_top(runner, runnerTop);
+            context.ReleaseHostOperationThread();
         }
     }
 
@@ -228,6 +234,7 @@ public unsafe partial class LuauState
         finally
         {
             _ = luau_host_stack_set_top(runner, runnerTop);
+            context.ReleaseHostOperationThread();
         }
     }
 

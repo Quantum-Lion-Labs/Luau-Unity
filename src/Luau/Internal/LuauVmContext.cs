@@ -85,6 +85,13 @@ internal sealed unsafe class LuauVmContext
     // only under the native gate.
     IntPtr hostOperationThread;
     int hostOperationThreadReference;
+    int hostOperationThreadDepth;
+
+    // Luau bounds recursion per thread, and some redirected operations run on
+    // a thread created for that one use, so recursion through them (Luau code
+    // the operation reaches calls back into a host function that starts
+    // another) is not counted anywhere. Real nesting is one or two deep.
+    const int MaximumHostOperationThreadDepth = 16;
 
     LuauHostMemoryInfo finalMemoryInfo;
     bool hasFinalMemoryInfo;
@@ -273,6 +280,29 @@ internal sealed unsafe class LuauVmContext
     /// until the root closes or a later call replaces it.
     /// </summary>
     internal LuauHostState* AcquireHostOperationThread(LuauState requester, string operation)
+    {
+        if (hostOperationThreadDepth >= MaximumHostOperationThreadDepth)
+        {
+            throw new InvalidOperationException(
+                $"Cannot {operation}: direct host operations on a thread that cannot run Luau code are nested " +
+                $"more than {MaximumHostOperationThreadDepth} deep. Luau code reached by one of them keeps " +
+                "starting another.");
+        }
+
+        var thread = GetOrCreateHostOperationThread(requester, operation);
+        // Counted only once the thread is in hand: every caller pairs this
+        // with ReleaseHostOperationThread in a finally block.
+        hostOperationThreadDepth++;
+        return thread;
+    }
+
+    /// <summary>Ends the use begun by <see cref="AcquireHostOperationThread"/>.</summary>
+    internal void ReleaseHostOperationThread()
+    {
+        hostOperationThreadDepth--;
+    }
+
+    LuauHostState* GetOrCreateHostOperationThread(LuauState requester, string operation)
     {
         var current = (LuauHostState*)hostOperationThread;
         // Code that ran on the thread can hand it to the host (for example a

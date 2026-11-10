@@ -216,6 +216,9 @@
             until the root closes or a later call replaces it.
             </summary>
         </member>
+        <member name="M:Luau.LuauVmContext.ReleaseHostOperationThread">
+            <summary>Ends the use begun by <see cref="M:Luau.LuauVmContext.AcquireHostOperationThread(Luau.LuauState,System.String)"/>.</summary>
+        </member>
         <member name="M:Luau.LuauVmContext.GetOperationCancellationToken(Luau.ScriptOperation,System.Int64)">
             <summary>
             Returns the callback-visible token of life <paramref name="generation"/>

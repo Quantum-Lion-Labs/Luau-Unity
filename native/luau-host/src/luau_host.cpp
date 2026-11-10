@@ -1862,7 +1862,8 @@ luau_host_status LUAU_HOST_CALL luau_host_table_get(luau_host_state* state, int3
 
 luau_host_status LUAU_HOST_CALL luau_host_table_set(luau_host_state* state, int32_t index)
 {
-    if (!state || !validordinaryindex(native(state), index)) return LUAU_HOST_STATUS_INVALID_ARGUMENT;
+    if (!state || !validordinaryindex(native(state), index) || lua_gettop(native(state)) < 2)
+        return LUAU_HOST_STATUS_INVALID_ARGUMENT;
     // lua_settable may call a __newindex metamethod.
     if (!runnable(native(state))) return LUAU_HOST_STATUS_THREAD_NOT_RUNNABLE;
     IndexContext c = {index, 0};
@@ -1957,7 +1958,7 @@ luau_host_status LUAU_HOST_CALL luau_host_global_get(luau_host_state* state, con
 
 luau_host_status LUAU_HOST_CALL luau_host_global_set(luau_host_state* state, const uint8_t* key)
 {
-    if (!state || !key) return LUAU_HOST_STATUS_INVALID_ARGUMENT;
+    if (!state || !key || lua_gettop(native(state)) < 1) return LUAU_HOST_STATUS_INVALID_ARGUMENT;
     // A sandboxed thread's globals have a Luau __newindex guard.
     if (!runnable(native(state))) return LUAU_HOST_STATUS_THREAD_NOT_RUNNABLE;
     StringContext c = {reinterpret_cast<const char*>(key), 0, LUA_GLOBALSINDEX, 0, nullptr};
