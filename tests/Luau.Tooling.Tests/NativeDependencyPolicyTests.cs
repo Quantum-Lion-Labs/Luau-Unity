@@ -135,11 +135,13 @@ public sealed class NativeDependencyPolicyTests
     {
         var plugins = Path.Combine(RepositoryRoot(), "Luau.Unity", "Runtime", "Plugins");
 
-        // Stable across plugin refreshes: only the C++ runtime entry changes.
+        // The Android plugins link the C++ runtime statically, so they need
+        // only the C runtime libraries, in the order readelf lists them.
         foreach (var platform in new[] { "android-arm64", "android-x64" })
         {
             var needed = NativeDependencyPolicy.ReadNeededLibraries(File.ReadAllBytes(Path.Combine(plugins, platform, "libluau_host.so")));
-            Assert.Equal(["libm.so", "libdl.so", "libc.so"], needed.Where(static name => name != "libc++_shared.so"));
+            Assert.Equal(["libm.so", "libdl.so", "libc.so"], needed);
+            NativeDependencyPolicy.Validate(platform, $"{platform} plugin", needed);
         }
 
         var linux = NativeDependencyPolicy.ReadNeededLibraries(File.ReadAllBytes(Path.Combine(plugins, "linux-x64", "libluau_host.so")));
