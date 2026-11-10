@@ -126,6 +126,10 @@ sealed class Stage6BenchmarkSuite(BenchmarkConfiguration configuration)
         cases.Add(Entry("entry-script-entrypoint-default", () => CreateScriptEntrypoint(defaults)));
         cases.Add(Entry("entry-table-read-default", () => CreateTableRead(defaults)));
         cases.Add(Entry("entry-table-write-default", () => CreateTableWrite(defaults)));
+        cases.Add(Entry("entry-global-read-default", () => CreateGlobalRead(defaults)));
+        cases.Add(Entry("entry-global-write-default", () => CreateGlobalWrite(defaults)));
+        cases.Add(Entry("entry-thread-global-read-default", () => CreateThreadGlobalRead(defaults)));
+        cases.Add(Entry("entry-thread-global-write-default", () => CreateThreadGlobalWrite(defaults)));
         cases.Add(Entry("entry-invoke-void-callback-default", () => CreateHookWithCallback(defaults)));
         cases.Add(Entry("entry-invoke-void-async-default", () => CreateHookInvokeAsync(defaults)));
     }
@@ -340,6 +344,91 @@ sealed class Stage6BenchmarkSuite(BenchmarkConfiguration configuration)
             () =>
             {
                 table.Dispose();
+                state.Dispose();
+            });
+    }
+
+    static BenchmarkLease CreateGlobalRead(LuauExecutionOptions options)
+    {
+        var state = CreateEntryState(options);
+        state["score"] = LuauValue.FromNumber(42);
+        return new BenchmarkLease(
+            () =>
+            {
+                for (var i = 0; i < EntryCallsPerSample; i++)
+                {
+                    if (state["score"].Type != LuauType.Number)
+                    {
+                        throw new InvalidOperationException("Unexpected global value.");
+                    }
+                }
+            },
+            state.Dispose);
+    }
+
+    static BenchmarkLease CreateGlobalWrite(LuauExecutionOptions options)
+    {
+        var state = CreateEntryState(options);
+        var value = LuauValue.FromNumber(42);
+        return new BenchmarkLease(
+            () =>
+            {
+                for (var i = 0; i < EntryCallsPerSample; i++)
+                {
+                    state["score"] = value;
+                }
+            },
+            state.Dispose);
+    }
+
+    // A script's own sandboxed thread, as a host that publishes per-frame
+    // state to each script sees it. A write runs the sandbox's Luau
+    // write guard; a read falls through the proxy to the frozen root.
+    static (LuauState State, LuauState Thread) CreateSandboxedScriptThread(LuauExecutionOptions options)
+    {
+        var state = CreateEntryState(options);
+        state.SandboxRoot();
+        var thread = state.CreateSandboxedThread();
+        thread["score"] = LuauValue.FromNumber(42);
+        return (state, thread);
+    }
+
+    static BenchmarkLease CreateThreadGlobalRead(LuauExecutionOptions options)
+    {
+        var (state, thread) = CreateSandboxedScriptThread(options);
+        return new BenchmarkLease(
+            () =>
+            {
+                for (var i = 0; i < EntryCallsPerSample; i++)
+                {
+                    if (thread["score"].Type != LuauType.Number)
+                    {
+                        throw new InvalidOperationException("Unexpected global value.");
+                    }
+                }
+            },
+            () =>
+            {
+                thread.Dispose();
+                state.Dispose();
+            });
+    }
+
+    static BenchmarkLease CreateThreadGlobalWrite(LuauExecutionOptions options)
+    {
+        var (state, thread) = CreateSandboxedScriptThread(options);
+        var value = LuauValue.FromNumber(42);
+        return new BenchmarkLease(
+            () =>
+            {
+                for (var i = 0; i < EntryCallsPerSample; i++)
+                {
+                    thread["score"] = value;
+                }
+            },
+            () =>
+            {
+                thread.Dispose();
                 state.Dispose();
             });
     }
