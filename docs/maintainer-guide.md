@@ -130,9 +130,15 @@ review CPU/platform importer settings when installing a rebuilt artifact.
 The Windows plugin comes from the `windows-x64` preset, built in CI with the
 pinned MSVC toolset. It links the Microsoft C and C++ runtimes statically
 (`CMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded$<$<CONFIG:Debug>:Debug>`, that is
-`/MT`, set by the preset and enforced at configure time for every target,
-including the upstream archives, the conformance executable, and the ABI
-fixtures), so its only import is `KERNEL32.dll`. A Unity Windows player does
+`/MT`, set by the preset), so its only import is `KERNEL32.dll`. The CMake
+build checks the selection at configure time: it stops on any other value, on
+a target whose `MSVC_RUNTIME_LIBRARY` differs (the upstream archives, the
+conformance executable, and the ABI fixtures included), and on an explicit
+`/MD` or `/MT` flag in the flag variables or in directory, target, or source
+options. Those checks catch a wrong selection early; what enforces the result
+is the import audit of the built DLL, described below.
+
+A Unity Windows player does
 not ship `MSVCP140.dll`, `VCRUNTIME140.dll`, or `VCRUNTIME140_1.dll`; a plugin
 that imported them, as the plugin did through 0.3.1, fails with
 `DllNotFoundException` on a machine without the Visual C++ redistributable.
@@ -180,7 +186,16 @@ allowlist in the shipping manifest (`linux_allowed_needed`,
 manifest records the MSVC runtime the build was configured with.
 `package-static` uses the same readers to check the committed plugins directly,
 without native tools, so every managed validation and release run rejects a
-plugin that needs anything else.
+plugin that declares any other dependency.
+
+The audit covers what a plugin file declares: `DT_NEEDED` entries for ELF, and
+imports, delay-load imports, and forwarded exports for PE. It cannot see a
+library that code loads by name at run time, and it does not follow the
+dependencies of the system libraries themselves. The statically linked
+Microsoft runtime, for example, imports `LoadLibraryExW` and probes for
+optional operating-system API sets with it; those are part of Windows and are
+not plugin dependencies. Do not add a run-time load of anything that is not
+part of the operating system.
 
 Both readers treat the file as untrusted and read what the loader reads. The
 ELF reader follows `PT_DYNAMIC` through its `PT_LOAD` mapping. The PE reader
@@ -188,12 +203,16 @@ locates the import, delay-load import, and export directories through the
 optional header's data directories, maps each address through the one section
 that contains it, and reads only bytes the loader would load from the file. It
 bounds the number of DLLs (64 per table), forwarders (64), exported functions
-(65536), and sections (96), and the length of each name (255 bytes), and fails
+(65536), and sections (96), and the length of each DLL name (255 bytes) and
+forwarder string (1,024 bytes), and fails
 on anything malformed, truncated, or ambiguous: overlapping or misaligned
 sections, a directory or name outside the file data of its section, a
 descriptor table without its terminator or whose declared size does not end
 there, a descriptor with no name, the obsolete address-based delay-load
-format, a bound import directory, or a name that is not printable ASCII.
+format, a bound import directory, or a name that is not printable ASCII. It
+is deliberately narrower than the PE format: it accepts x86-64 DLLs with 16
+data directories whose tables lie in section data, as the Microsoft linker
+writes them, and fails on any other layout instead of interpreting it.
 Adding a dependency is a compatibility decision, not a build detail.
 
 To refresh plugins after a native source change, dispatch the **Build Luau
@@ -926,7 +945,7 @@ fails on any committed plugin that needs more than the allowed system
 libraries.
 
 On Windows, the same exception in a player on a machine without the Visual C++
-redistributable means the plugin imports a runtime DLL. List its imports with
+redistributable can mean the plugin imports a runtime DLL. List its imports with
 `dumpbin /dependents` (or `llvm-readobj --coff-imports`); the shipped plugin
 imports only `KERNEL32.dll`, and `package-static` rejects anything else.
 

@@ -87,14 +87,13 @@ requirements; this notice is provided for transparency.
 ## Microsoft C and C++ runtime libraries
 
 The Windows x64 plugin statically links parts of the Microsoft C++ Standard
-Library and the Microsoft C runtime (the Universal CRT and the VC runtime), as
-distributed with the Visual Studio 2022 MSVC toolset 14.42. The C++ Standard
-Library is licensed under the Apache License, version 2.0, with LLVM
-Exceptions; the exceptions permit distributing the portions embedded in the
-compiled plugin without the license's attribution requirements. The C runtime
-libraries are part of Visual Studio and are linked under its license terms;
-Microsoft documents static linking as a supported way to deploy them. This
-notice is provided for transparency.
+Library and the Microsoft C runtime (the Universal CRT and the Visual C++
+runtime), taken from the Visual Studio 2022 MSVC toolset 14.42 and the Windows
+SDK 10.0.22621.0 that the plugin is built with. Microsoft publishes the C++
+Standard Library's source under the Apache License, version 2.0, with LLVM
+Exceptions. The C runtime libraries are distributed with Visual Studio and the
+Windows SDK under those products' license terms.
 
-- License: <https://github.com/microsoft/STL/blob/main/LICENSE.txt>
-- Source: <https://github.com/microsoft/STL>
+- C++ Standard Library license: <https://github.com/microsoft/STL/blob/main/LICENSE.txt>
+- C++ Standard Library source: <https://github.com/microsoft/STL>
+- Visual Studio license terms: <https://visualstudio.microsoft.com/license-terms/>

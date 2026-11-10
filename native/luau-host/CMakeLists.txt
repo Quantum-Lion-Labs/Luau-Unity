@@ -196,13 +196,27 @@ if(MSVC)
             "plugin depend on Visual C++ runtime DLLs that Unity players do not contain. "
             "Configure with the windows-x64 preset.")
     endif()
-    # An explicit runtime flag would override the selection above.
+    # An explicit runtime flag would override the selection above. It may
+    # stand alone or inside a generator expression. The flag variables are
+    # checked here; directory, target, and source options are checked once
+    # every target exists, at the end of this file.
+    set(LUAU_HOST_MSVC_RUNTIME_FLAG_PATTERN "(^|[ \t:;>])[/-]M[DT]d?([ \t;>,]|$)")
+    set(_luau_host_flag_suffixes _DEBUG _RELEASE _RELWITHDEBINFO _MINSIZEREL)
+    foreach(_luau_host_configuration IN LISTS CMAKE_CONFIGURATION_TYPES CMAKE_BUILD_TYPE)
+        string(TOUPPER "_${_luau_host_configuration}" _luau_host_flag_suffix)
+        list(APPEND _luau_host_flag_suffixes "${_luau_host_flag_suffix}")
+    endforeach()
+    list(REMOVE_DUPLICATES _luau_host_flag_suffixes)
     foreach(_luau_host_flags_variable IN ITEMS CMAKE_C_FLAGS CMAKE_CXX_FLAGS)
-        foreach(_luau_host_configuration IN ITEMS "" _DEBUG _RELEASE _RELWITHDEBINFO _MINSIZEREL)
-            if("${${_luau_host_flags_variable}${_luau_host_configuration}}" MATCHES "(^|[ \t])[/-]M[DT]d?([ \t]|$)")
+        set(_luau_host_flag_variables "${_luau_host_flags_variable}")
+        foreach(_luau_host_flag_suffix IN LISTS _luau_host_flag_suffixes)
+            list(APPEND _luau_host_flag_variables "${_luau_host_flags_variable}${_luau_host_flag_suffix}")
+        endforeach()
+        foreach(_luau_host_flag_variable IN LISTS _luau_host_flag_variables)
+            if("${${_luau_host_flag_variable}}" MATCHES "${LUAU_HOST_MSVC_RUNTIME_FLAG_PATTERN}")
                 message(FATAL_ERROR
-                    "${_luau_host_flags_variable}${_luau_host_configuration} selects a C runtime "
-                    "explicitly; luau_host selects the static runtime through CMAKE_MSVC_RUNTIME_LIBRARY.")
+                    "${_luau_host_flag_variable} selects a C runtime explicitly; luau_host selects "
+                    "the static runtime through CMAKE_MSVC_RUNTIME_LIBRARY.")
             endif()
         endforeach()
     endforeach()
@@ -630,10 +644,25 @@ endif()
 if(MSVC)
     # Every target that compiles code, here and in the upstream tree, must use
     # the static runtime: the host and the upstream archives linked into it, the
-    # conformance executable, and the ABI fixtures. A target-level override
-    # would otherwise mix runtimes in the plugin or test a different runtime
-    # than the one that ships.
+    # conformance executable, and the ABI fixtures. A target-level override, or
+    # a runtime flag passed as a directory, target, or source option, would
+    # otherwise mix runtimes in the plugin or test a different runtime than the
+    # one that ships. These checks catch a wrong selection at configure time;
+    # the import audit of the built DLL (native-artifacts, package-static) is
+    # what enforces the result. Keep this block after every target.
+    function(luau_host_reject_msvc_runtime_flag owner options)
+        foreach(_option IN LISTS options)
+            if("${_option}" MATCHES "${LUAU_HOST_MSVC_RUNTIME_FLAG_PATTERN}")
+                message(FATAL_ERROR
+                    "${owner} passes the C runtime flag '${_option}'; luau_host selects the "
+                    "static runtime through CMAKE_MSVC_RUNTIME_LIBRARY.")
+            endif()
+        endforeach()
+    endfunction()
+
     function(luau_host_require_msvc_runtime directory)
+        get_property(_directory_options DIRECTORY "${directory}" PROPERTY COMPILE_OPTIONS)
+        luau_host_reject_msvc_runtime_flag("Directory ${directory}" "${_directory_options}")
         get_property(_targets DIRECTORY "${directory}" PROPERTY BUILDSYSTEM_TARGETS)
         foreach(_target IN LISTS _targets)
             get_target_property(_type "${_target}" TYPE)
@@ -643,6 +672,27 @@ if(MSVC)
                     message(FATAL_ERROR
                         "Target ${_target} uses MSVC_RUNTIME_LIBRARY '${_runtime}'; every luau_host "
                         "target must use ${LUAU_HOST_MSVC_RUNTIME_LIBRARY}.")
+                endif()
+                foreach(_property IN ITEMS COMPILE_OPTIONS COMPILE_FLAGS)
+                    get_target_property(_target_options "${_target}" ${_property})
+                    if(_target_options)
+                        luau_host_reject_msvc_runtime_flag("Target ${_target}" "${_target_options}")
+                    endif()
+                endforeach()
+                get_target_property(_sources "${_target}" SOURCES)
+                if(_sources)
+                    foreach(_source IN LISTS _sources)
+                        if(NOT "${_source}" MATCHES "\\$<")
+                            foreach(_property IN ITEMS COMPILE_OPTIONS COMPILE_FLAGS)
+                                get_source_file_property(
+                                    _source_options "${_source}" TARGET_DIRECTORY "${_target}" ${_property})
+                                if(_source_options)
+                                    luau_host_reject_msvc_runtime_flag(
+                                        "Source ${_source} of target ${_target}" "${_source_options}")
+                                endif()
+                            endforeach()
+                        endif()
+                    endforeach()
                 endif()
             endif()
         endforeach()
