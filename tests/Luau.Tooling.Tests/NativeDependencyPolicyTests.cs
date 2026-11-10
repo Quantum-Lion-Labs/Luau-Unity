@@ -444,6 +444,20 @@ public sealed class NativeDependencyPolicyTests
     }
 
     [Fact]
+    public void ReadsTheCommittedWindowsPluginLikeDumpbin()
+    {
+        var plugin = File.ReadAllBytes(Path.Combine(RepositoryRoot(), "Luau.Unity", "Runtime", "Plugins", "win-x64", "luau_host.dll"));
+
+        // The Windows plugin links the C and C++ runtimes statically, so it
+        // imports only KERNEL32.dll, delay-loads nothing, and forwards nothing.
+        var dependencies = NativeDependencyPolicy.ReadPeDependencies(plugin);
+        Assert.Equal(["KERNEL32.dll"], dependencies.Imports);
+        Assert.Empty(dependencies.DelayImports);
+        Assert.Empty(dependencies.Forwarders);
+        NativeDependencyPolicy.ValidatePe("win-x64", "Windows plugin", plugin);
+    }
+
+    [Fact]
     public void ParsesAndroidNeededLibrariesFromNdkReadelf()
     {
         const string ndk = """
