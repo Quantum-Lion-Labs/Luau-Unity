@@ -41,6 +41,11 @@ The package requires Unity 6000.3.0f1 or newer in the 6000.3 stream. The
 canonical integration project remains pinned to 6000.3.19f1, while local Linux
 validation may use any installed 6000.3 patch.
 
+The Windows plugin links the Microsoft C and C++ runtimes in and imports only
+`KERNEL32.dll`, so players run on machines without the Visual C++
+redistributable. The package's validation rejects a Windows plugin that imports
+anything else.
+
 The Linux plugin serves the Linux editor and Linux x64 players, including
 dedicated servers. It is built against glibc 2.35 (Ubuntu 22.04) with the C++
 runtime linked in, so it loads on Ubuntu 22.04, Debian 12, and newer

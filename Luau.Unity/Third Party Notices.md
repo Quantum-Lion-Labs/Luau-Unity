@@ -83,3 +83,18 @@ requirements; this notice is provided for transparency.
 
 - License: <https://llvm.org/LICENSE.txt>
 - Source: <https://github.com/llvm/llvm-project>
+
+## Microsoft C and C++ runtime libraries
+
+The Windows x64 plugin statically links parts of the Microsoft C++ Standard
+Library and the Microsoft C runtime (the Universal CRT and the VC runtime), as
+distributed with the Visual Studio 2022 MSVC toolset 14.42. The C++ Standard
+Library is licensed under the Apache License, version 2.0, with LLVM
+Exceptions; the exceptions permit distributing the portions embedded in the
+compiled plugin without the license's attribution requirements. The C runtime
+libraries are part of Visual Studio and are linked under its license terms;
+Microsoft documents static linking as a supported way to deploy them. This
+notice is provided for transparency.
+
+- License: <https://github.com/microsoft/STL/blob/main/LICENSE.txt>
+- Source: <https://github.com/microsoft/STL>

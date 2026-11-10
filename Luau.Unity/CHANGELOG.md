@@ -151,6 +151,14 @@ API or ABI breaks.
   thread's sandbox and then fail with a generic native error. A finished or
   failed thread still accepts new calls, and a thread waiting on an
   asynchronous callback still reports that the VM is executing.
+- The Windows plugin no longer depends on the Visual C++ runtime. It imported
+  `MSVCP140.dll`, `VCRUNTIME140.dll`, `VCRUNTIME140_1.dll`, and the Universal
+  CRT's `api-ms-win-crt-*.dll` libraries, which a Unity Windows player does not
+  ship, so on a machine without the Visual C++ redistributable the plugin
+  failed to load and every Luau call threw `DllNotFoundException`. The plugin
+  now links the C and C++ runtimes statically and imports only `KERNEL32.dll`,
+  so it needs no redistributable. The package's validation rejects a Windows
+  plugin that imports, delay-loads, or forwards an export to any other DLL.
 - The Android plugins no longer depend on `libc++_shared.so`. A Unity Android
   player contains that library only when something else ships it, in practice
   the GameActivity application entry point, so a project that used the classic

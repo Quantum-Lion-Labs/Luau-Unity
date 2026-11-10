@@ -91,6 +91,11 @@ and delete `Demo Game/` to start your own.
 
 Only Windows x64 and Android ARM64/x86_64 are maintained targets.
 
+The Windows plugin links the Microsoft C and C++ runtimes in and imports only
+`KERNEL32.dll`, so a Windows player does not need the Visual C++
+redistributable on the machine it runs on. The package's own validation
+rejects a plugin that imports anything else.
+
 The Android plugins require API level 26 or newer and work with both the
 Activity and the GameActivity application entry points. They link the C++
 runtime in and need only Android system libraries, so no other plugin has to

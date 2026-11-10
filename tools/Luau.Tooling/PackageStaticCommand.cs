@@ -32,10 +32,11 @@ internal static class PackageStaticCommand
         "Samples~/Getting Started", "Tests", "Tests/EditMode",
     ];
 
-    // Every committed ELF plugin and the platform whose dependency policy it
-    // must satisfy.
-    internal static readonly (string Platform, string Path)[] ElfPlugins =
+    // Every committed plugin and the platform whose dependency policy it must
+    // satisfy.
+    internal static readonly (string Platform, string Path)[] NativePlugins =
     [
+        ("win-x64", "Runtime/Plugins/win-x64/luau_host.dll"),
         ("android-arm64", "Runtime/Plugins/android-arm64/libluau_host.so"),
         ("android-x64", "Runtime/Plugins/android-x64/libluau_host.so"),
         ("linux-x64", "Runtime/Plugins/linux-x64/libluau_host.so"),
@@ -203,15 +204,15 @@ internal static class PackageStaticCommand
     }
 
     // The committed binaries are read directly, without native tools, so every
-    // managed and release run rejects a plugin that needs a shared library a
-    // Unity player might not contain.
+    // managed and release run rejects a plugin that needs a library a Unity
+    // player might not contain.
     internal static void ValidateNativeDependencies(string packageRoot)
     {
-        foreach (var (platform, relative) in ElfPlugins)
+        foreach (var (platform, relative) in NativePlugins)
         {
             var path = Path.Combine(packageRoot, relative.Replace('/', Path.DirectorySeparatorChar));
             FileSystem.RequireFile(path, "Required package artifact");
-            NativeDependencyPolicy.ValidateElf(platform, $"Package plugin '{relative}'", File.ReadAllBytes(path));
+            NativeDependencyPolicy.ValidatePlugin(platform, $"Package plugin '{relative}'", File.ReadAllBytes(path));
         }
     }
 

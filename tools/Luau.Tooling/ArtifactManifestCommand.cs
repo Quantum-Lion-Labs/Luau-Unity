@@ -164,6 +164,15 @@ internal static class ArtifactManifestCommand
         {
             toolchain["android"] = new JsonObject { ["api"] = androidApi, ["ndk_revision"] = androidNdk };
         }
+        else if (platform == "win-x64")
+        {
+            var runtime = new CMakeCache(repository.PathOf("native", "luau-host", "out", "build", preset, "CMakeCache.txt"))
+                .Get("CMAKE_MSVC_RUNTIME_LIBRARY");
+            Require(runtime == NativeDependencyPolicy.WindowsMsvcRuntimeLibrary,
+                $"The Windows host was configured with MSVC runtime '{runtime}'; it must link the static runtime " +
+                $"'{NativeDependencyPolicy.WindowsMsvcRuntimeLibrary}'.");
+            toolchain["msvc_runtime_library"] = runtime;
+        }
 
         var manifest = new JsonObject
         {
