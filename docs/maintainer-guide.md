@@ -360,6 +360,46 @@ Nothing an operation might use is created up front:
 and each of these hazards; `entry-*` cases in `benchmarks/Luau.Benchmarks`
 measure the per-call cost.
 
+### 6.6 A new call needs a thread with nothing pending
+
+Native resume continues whatever a thread has pending. On a thread that
+yielded or was interrupted, `luau_host_resume` continues that continuation and
+drops a callee pushed above it, so the host's new chunk never runs and the
+call returns what the script's old code returns. On a script-created coroutine
+whose function has not started, a new callee runs above that function, and the
+reset after a failed call discards it. Every top-level entry other than
+`Resume*` (source, compiler output, verified bytecode, function invocation)
+therefore starts only on a thread with nothing pending; only an entry that
+passes `resumesThread: true` may continue a suspended one.
+
+`LuauVmContext.BeginOperation` makes the check, after the active-operation
+check and under both gates, before the entry pushes anything. No other
+operation can resume or reset the thread before this one enters it, and a
+rejection (`InvalidOperationException`) leaves the thread exactly as it was.
+The order a caller observes is: disposed, scheduler, another flow ("executing
+on another operation"), an active operation ("already executing"), then
+suspended. A thread waiting on an asynchronous callback is inside an active
+operation, so it reports that the VM is executing.
+
+The root skips the native read: `RejectRootYield` resets a root that an
+operation left suspended, so the check could never fire there, and function
+invocation and script entrypoints, which run on the root, pay nothing for it.
+Nested module execution and `SandboxThread` run a protected call, which is
+valid on a running thread or an unstarted coroutine but not on a suspended
+one; they make the same check before they load a chunk or change the
+thread's globals. Direct host operations do not start a call and are not
+checked.
+
+A thread that a failed call reset accepts a new call. A script-created
+coroutine that died with an error is not suspended: the call reaches the VM,
+which refuses to resume it with `LuauException`, and that failure resets the
+thread for the next call.
+
+A new entry point must begin its operation through `BeginOperation` and set
+`resumesThread` only when it continues a pending call, or make the same check
+under the native gate before it pushes. `SuspendedThreadEntryTests` covers
+every entry point against each kind of suspended thread.
+
 ## 7. Managed callbacks
 
 ### 7.1 Safe context
@@ -713,6 +753,8 @@ one compatibility unit.
   only its reference; an instance is reused only when nothing can name it.
 - The steady-state synchronous call allocates nothing: no per-operation
   timer, token source, options record, or execution-context write.
+- Only `Resume` continues a suspended thread; every other entry rejects a
+  thread with a pending continuation before it pushes anything.
 - Generated host APIs are attributed, reflection-free, and IL2CPP-safe.
 - `require()` remains managed, opt-in, sandbox-aware, and on the shared engine.
 - Normal builds do not mutate the Unity package.
@@ -746,6 +788,14 @@ Do not bypass the handshake.
 One root permits one active operation. Look for reentrant execution, access from
 outside the configured scheduler, or a callback attempting to start top-level
 execution on its own root.
+
+### A call reports a suspended thread
+
+The thread yielded, or it is a script-created coroutine whose function has not
+started, and a host tried to start a new call on it. Resume it until it
+finishes (`GetStatus()` reports `Dead`), or start the call on another thread.
+Do not weaken the check: native resume would continue the pending code
+instead of the new call (section 6.6).
 
 ### Retained call context throws
 
