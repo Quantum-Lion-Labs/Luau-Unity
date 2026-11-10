@@ -6,13 +6,13 @@ namespace Luau;
 internal sealed unsafe class LuauCSharpFunction : LuauFunction, ILuauManagedCallbackFunction
 {
     static readonly LuauHostManagedFunction callback = Call;
-    readonly Func<LuauState, CancellationToken, int> csharpDelegate;
+    readonly Func<LuauState, LuauOperationCancellation, int> csharpDelegate;
     readonly LuauVmContext context;
     int registrationId;
 
     public LuauCSharpFunction(
         LuauState state,
-        Func<LuauState, CancellationToken, int> func,
+        Func<LuauState, LuauOperationCancellation, int> func,
         string? name = null) : base(state)
     {
         csharpDelegate = func;
@@ -58,7 +58,7 @@ internal sealed unsafe class LuauCSharpFunction : LuauFunction, ILuauManagedCall
             }
 
             var state = LuauState.GetCachedState(l, context);
-            var resultCount = registration.SynchronousCallback(state, operation.CancellationToken);
+            var resultCount = registration.SynchronousCallback(state, new LuauOperationCancellation(operation));
             if (resultCount < 0 || resultCount > luau_host_stack_get_top(l))
             {
                 throw new InvalidOperationException(

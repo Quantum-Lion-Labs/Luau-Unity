@@ -77,8 +77,11 @@ clock is read every few safepoints, adapting so reads stay about
 20 microseconds of the deadline while the script's pace is steady. If the
 script abruptly slows down, for example from a tight loop into calls of an
 expensive host function, detection can trail by up to 128 of the new, slower
-safepoint gaps once, and never later than the operation's deadline timer
-fires (typically about 1 ms, and up to about 16 ms with Windows' default timer
+safepoint gaps once, and never later than a shared deadline watchdog notices
+the deadline and asks for a poll at the next safepoint. The watchdog is one
+timer for the whole process, armed for the earliest running operation's
+deadline; it fires within the system timer's resolution of that deadline
+(typically about 1 ms, and up to about 16 ms with Windows' default timer
 resolution). Cancellation, disposal, and managed callback failures are
 observed at the very next safepoint. Time spent inside a single host or
 library call is observed only when that call returns, as before.

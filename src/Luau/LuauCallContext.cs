@@ -62,7 +62,7 @@ public readonly struct LuauCallContext
 internal sealed class LuauCallFrame
 {
     readonly string? callbackName;
-    readonly CancellationToken cancellationToken;
+    readonly LuauOperationCancellation cancellation;
     readonly int argumentCount;
     LuauState? state;
     int active = 1;
@@ -73,12 +73,12 @@ internal sealed class LuauCallFrame
         LuauState state,
         string? callbackName,
         int argumentCount,
-        CancellationToken cancellationToken)
+        LuauOperationCancellation cancellation)
     {
         this.state = state;
         this.callbackName = callbackName;
         this.argumentCount = argumentCount;
-        this.cancellationToken = cancellationToken;
+        this.cancellation = cancellation;
     }
 
     internal int ArgumentCount
@@ -104,7 +104,9 @@ internal sealed class LuauCallFrame
         get
         {
             EnsureActive();
-            return cancellationToken;
+            // Created on first use for the whole operation; while this frame
+            // is active its operation is too.
+            return cancellation.Token;
         }
     }
 

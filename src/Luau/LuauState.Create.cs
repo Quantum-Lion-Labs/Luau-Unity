@@ -132,9 +132,9 @@ unsafe partial class LuauState
 
         return CreateRawFunction(
             name,
-            (state, cancellationToken) =>
+            (state, cancellation) =>
             {
-                var frame = new LuauCallFrame(state, name, state.GetTop(), cancellationToken);
+                var frame = new LuauCallFrame(state, name, state.GetTop(), cancellation);
                 try
                 {
                     callback(new LuauCallContext(frame));
@@ -169,16 +169,16 @@ unsafe partial class LuauState
 
         return CreateRawAsyncFunction(
             name,
-            (state, cancellationToken) => LuauManagedCallbackInvoker.InvokeAsync(
+            (state, cancellation) => LuauManagedCallbackInvoker.InvokeAsync(
                 state,
                 name,
                 callback,
-                cancellationToken));
+                cancellation));
     }
 
     internal LuauFunction CreateRawFunction(
         string? name,
-        Func<LuauState, CancellationToken, int> callback)
+        Func<LuauState, LuauOperationCancellation, int> callback)
     {
         ThrowIfDisposed();
         if (callback == null) throw new ArgumentNullException(nameof(callback));
@@ -187,7 +187,7 @@ unsafe partial class LuauState
 
     internal LuauFunction CreateRawAsyncFunction(
         string? name,
-        Func<LuauState, CancellationToken, ValueTask<int>> callback)
+        Func<LuauState, LuauOperationCancellation, ValueTask<int>> callback)
     {
         ThrowIfDisposed();
         if (callback == null) throw new ArgumentNullException(nameof(callback));
@@ -282,9 +282,9 @@ internal static class LuauManagedCallbackInvoker
         LuauState state,
         string? name,
         Func<LuauCallContext, ValueTask> callback,
-        CancellationToken cancellationToken)
+        LuauOperationCancellation cancellation)
     {
-        var frame = new LuauCallFrame(state, name, state.GetTop(), cancellationToken);
+        var frame = new LuauCallFrame(state, name, state.GetTop(), cancellation);
         try
         {
             await callback(new LuauCallContext(frame)).ConfigureAwait(false);

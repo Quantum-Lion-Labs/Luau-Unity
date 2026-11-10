@@ -112,6 +112,26 @@ public sealed record LuauExecutionOptions
     /// </summary>
     public bool HasBudget => wallClockLimit.HasValue || interruptCountLimit.HasValue || maxResultCount.HasValue;
 
+    static readonly LuauExecutionOptions ZeroResultExecutionOptions = Unbounded with
+    {
+        MaxResultCount = 0,
+    };
+
+    /// <summary>
+    /// Returns options that also require an operation to return no values.
+    /// </summary>
+    internal static LuauExecutionOptions RequireZeroResults(LuauExecutionOptions? executionOptions)
+    {
+        if (executionOptions == null)
+        {
+            return ZeroResultExecutionOptions;
+        }
+
+        return executionOptions.MaxResultCount == 0
+            ? executionOptions
+            : executionOptions with { MaxResultCount = 0 };
+    }
+
     internal static LuauExecutionOptions ResolveForOperation(
         LuauExecutionOptions stateDefaults,
         LuauExecutionOptions? operationOptions)

@@ -15,7 +15,7 @@ internal sealed class LuauManagedCallbackRegistration
         LuauVmContext owner,
         int id,
         string? name,
-        Func<LuauState, CancellationToken, int> callback)
+        Func<LuauState, LuauOperationCancellation, int> callback)
     {
         Owner = owner;
         Id = id;
@@ -28,7 +28,7 @@ internal sealed class LuauManagedCallbackRegistration
         LuauVmContext owner,
         int id,
         string? name,
-        Func<LuauState, CancellationToken, ValueTask<int>> callback)
+        Func<LuauState, LuauOperationCancellation, ValueTask<int>> callback)
     {
         Owner = owner;
         Id = id;
@@ -51,8 +51,8 @@ internal sealed class LuauManagedCallbackRegistration
 
     internal int Id { get; }
     internal string? Name { get; }
-    internal Func<LuauState, CancellationToken, int>? SynchronousCallback { get; }
-    internal Func<LuauState, CancellationToken, ValueTask<int>>? AsynchronousCallback { get; }
+    internal Func<LuauState, LuauOperationCancellation, int>? SynchronousCallback { get; }
+    internal Func<LuauState, LuauOperationCancellation, ValueTask<int>>? AsynchronousCallback { get; }
     internal bool IsAsync => AsynchronousCallback != null;
 
     internal IntPtr NativeReleaseToken => GCHandle.ToIntPtr(nativeReleaseHandle);

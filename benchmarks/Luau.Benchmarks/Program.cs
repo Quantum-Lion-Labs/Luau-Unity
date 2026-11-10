@@ -91,7 +91,300 @@ sealed class Stage6BenchmarkSuite(BenchmarkConfiguration configuration)
         AddCompilerMatrix(cases, "first-party", firstPartySource);
         AddCompilerMatrix(cases, "untrusted-mod", modSource);
         AddInterruptMatrix(cases);
+        AddEntryMatrix(cases);
         return cases;
+    }
+
+    // The fixed cost of entering and leaving the VM, which dominates per-frame
+    // script hooks: many small calls into the same functions on the same
+    // root. Each sample makes EntryCallsPerSample calls so timer overhead
+    // stays out of the per-call figures; allocation is per call.
+    const int EntryCallsPerSample = 64;
+
+    static readonly (string Name, LuauExecutionOptions Options)[] entryProfiles =
+    [
+        ("default", LuauExecutionOptions.Default),
+        ("wall-clock-2ms", LuauExecutionOptions.Unbounded with { WallClockLimit = TimeSpan.FromMilliseconds(2) }),
+        ("unbounded", LuauExecutionOptions.Unbounded),
+    ];
+
+    static void AddEntryMatrix(List<BenchmarkCase> cases)
+    {
+        foreach (var profile in entryProfiles)
+        {
+            var options = profile.Options;
+            cases.Add(Entry($"entry-invoke-void-{profile.Name}", () => CreateHookInvoke(options)));
+        }
+
+        var defaults = LuauExecutionOptions.Default;
+        cases.Add(Entry("entry-invoke-void-one-arg-default", () => CreateHookInvokeOneArgument(defaults)));
+        cases.Add(Entry("entry-invoke-into-default", () => CreateHookInvokeInto(defaults)));
+        cases.Add(Entry("entry-invoke-scope-default", () => CreateHookInvokeScope(defaults)));
+        cases.Add(Entry("entry-resume-into-default", () => CreateCoroutineResume(defaults)));
+        cases.Add(Entry("entry-execute-compiled-default", () => CreateExecuteCompiled(defaults, chunkName: null)));
+        cases.Add(Entry("entry-execute-compiled-named-default", () => CreateExecuteCompiled(defaults, "@hook.luau")));
+        cases.Add(Entry("entry-script-entrypoint-default", () => CreateScriptEntrypoint(defaults)));
+        cases.Add(Entry("entry-table-read-default", () => CreateTableRead(defaults)));
+        cases.Add(Entry("entry-table-write-default", () => CreateTableWrite(defaults)));
+        cases.Add(Entry("entry-invoke-void-callback-default", () => CreateHookWithCallback(defaults)));
+        cases.Add(Entry("entry-invoke-void-async-default", () => CreateHookInvokeAsync(defaults)));
+    }
+
+    static BenchmarkCase Entry(string name, Func<BenchmarkLease> create) =>
+        new(name, create, OperationsPerInvocation: EntryCallsPerSample);
+
+    static LuauState CreateEntryState(LuauExecutionOptions options)
+    {
+        var state = LuauState.Create(LuauStateOptions.Default with { DefaultExecutionOptions = options });
+        state.OpenBaseLibrary();
+        state.OpenCoroutineLibrary();
+        return state;
+    }
+
+    static (LuauState State, LuauFunction Function) CreateEntryFunction(LuauExecutionOptions options, string source)
+    {
+        var state = CreateEntryState(options);
+        using var owner = state.DoString(source);
+        return (state, owner[0].Read<LuauFunction>().Retain());
+    }
+
+    static BenchmarkLease CreateHookInvoke(LuauExecutionOptions options)
+    {
+        var (state, function) = CreateEntryFunction(options, "return function(dt) end");
+        var arguments = new[] { LuauValue.FromNumber(1d / 72) };
+        return new BenchmarkLease(
+            () =>
+            {
+                for (var i = 0; i < EntryCallsPerSample; i++)
+                {
+                    function.InvokeVoid(arguments);
+                }
+            },
+            () =>
+            {
+                function.Dispose();
+                state.Dispose();
+            });
+    }
+
+    static BenchmarkLease CreateHookInvokeOneArgument(LuauExecutionOptions options)
+    {
+        var (state, function) = CreateEntryFunction(options, "return function(dt) end");
+        var argument = LuauValue.FromNumber(1d / 72);
+        return new BenchmarkLease(
+            () =>
+            {
+                for (var i = 0; i < EntryCallsPerSample; i++)
+                {
+                    function.InvokeVoid(argument);
+                }
+            },
+            () =>
+            {
+                function.Dispose();
+                state.Dispose();
+            });
+    }
+
+    static BenchmarkLease CreateHookInvokeInto(LuauExecutionOptions options)
+    {
+        var (state, function) = CreateEntryFunction(options, "return function(dt) return dt * 2 end");
+        var arguments = new[] { LuauValue.FromNumber(1d / 72) };
+        var destination = new LuauValue[1];
+        return new BenchmarkLease(
+            () =>
+            {
+                for (var i = 0; i < EntryCallsPerSample; i++)
+                {
+                    if (function.InvokeInto(arguments, destination) != 1)
+                    {
+                        throw new InvalidOperationException("Unexpected result count.");
+                    }
+                }
+            },
+            () =>
+            {
+                function.Dispose();
+                state.Dispose();
+            });
+    }
+
+    static BenchmarkLease CreateHookInvokeScope(LuauExecutionOptions options)
+    {
+        var (state, function) = CreateEntryFunction(options, "return function(dt) return dt * 2 end");
+        var arguments = new[] { LuauValue.FromNumber(1d / 72) };
+        return new BenchmarkLease(
+            () =>
+            {
+                for (var i = 0; i < EntryCallsPerSample; i++)
+                {
+                    using var results = function.Invoke(arguments);
+                }
+            },
+            () =>
+            {
+                function.Dispose();
+                state.Dispose();
+            });
+    }
+
+    static BenchmarkLease CreateCoroutineResume(LuauExecutionOptions options)
+    {
+        var state = CreateEntryState(options);
+        var thread = state.CreateThread();
+        // The first resume starts the loop; each later one runs one iteration.
+        var start = thread.DoString(
+            "local dt = coroutine.yield() while true do dt = coroutine.yield(dt) end");
+        start.Dispose();
+        var arguments = new[] { LuauValue.FromNumber(1d / 72) };
+        var destination = new LuauValue[1];
+        return new BenchmarkLease(
+            () =>
+            {
+                for (var i = 0; i < EntryCallsPerSample; i++)
+                {
+                    thread.ResumeInto(arguments, destination);
+                }
+            },
+            () =>
+            {
+                thread.Dispose();
+                state.Dispose();
+            });
+    }
+
+    static BenchmarkLease CreateExecuteCompiled(LuauExecutionOptions options, string? chunkName)
+    {
+        var state = CreateEntryState(options);
+        var output = LuauCompiler.Compile("return 1"u8);
+        var destination = new LuauValue[1];
+        return new BenchmarkLease(
+            () =>
+            {
+                for (var i = 0; i < EntryCallsPerSample; i++)
+                {
+                    state.ExecuteCompilerOutputInto(output, destination, chunkName);
+                }
+            },
+            state.Dispose);
+    }
+
+    static BenchmarkLease CreateScriptEntrypoint(LuauExecutionOptions options)
+    {
+        var state = CreateEntryState(options);
+        state.SandboxRoot();
+        var instance = LuauScriptInstance.CreateAsync(
+            state,
+            "benchmark",
+            static (thread, _) => ValueTask.FromResult(
+                thread.DoString("return { update = function(dt) end }")))
+            .AsTask().GetAwaiter().GetResult();
+        var entrypoint = instance.GetRequiredEntrypoint("update");
+        var argument = LuauValue.FromNumber(1d / 72);
+        // One options instance reused for every call, as a Unity script
+        // phase does with its invocation options.
+        var invocationOptions = options with { };
+        return new BenchmarkLease(
+            () =>
+            {
+                for (var i = 0; i < EntryCallsPerSample; i++)
+                {
+                    entrypoint.InvokeVoid(argument, invocationOptions);
+                }
+            },
+            () =>
+            {
+                instance.Dispose();
+                state.Dispose();
+            });
+    }
+
+    static BenchmarkLease CreateTableRead(LuauExecutionOptions options)
+    {
+        var state = CreateEntryState(options);
+        var table = state.CreateTable();
+        var key = LuauValue.FromNumber(1);
+        table[key] = LuauValue.FromNumber(42);
+        return new BenchmarkLease(
+            () =>
+            {
+                for (var i = 0; i < EntryCallsPerSample; i++)
+                {
+                    if (table[key].Type != LuauType.Number)
+                    {
+                        throw new InvalidOperationException("Unexpected table value.");
+                    }
+                }
+            },
+            () =>
+            {
+                table.Dispose();
+                state.Dispose();
+            });
+    }
+
+    static BenchmarkLease CreateTableWrite(LuauExecutionOptions options)
+    {
+        var state = CreateEntryState(options);
+        var table = state.CreateTable();
+        var key = LuauValue.FromNumber(1);
+        var value = LuauValue.FromNumber(42);
+        return new BenchmarkLease(
+            () =>
+            {
+                for (var i = 0; i < EntryCallsPerSample; i++)
+                {
+                    table[key] = value;
+                }
+            },
+            () =>
+            {
+                table.Dispose();
+                state.Dispose();
+            });
+    }
+
+    static BenchmarkLease CreateHookWithCallback(LuauExecutionOptions options)
+    {
+        var state = CreateEntryState(options);
+        var callback = state.CreateFunction("hostTick", static _ => { });
+        state["hostTick"] = callback;
+        using var owner = state.DoString("return function(dt) hostTick() end");
+        var function = owner[0].Read<LuauFunction>().Retain();
+        var arguments = new[] { LuauValue.FromNumber(1d / 72) };
+        return new BenchmarkLease(
+            () =>
+            {
+                for (var i = 0; i < EntryCallsPerSample; i++)
+                {
+                    function.InvokeVoid(arguments);
+                }
+            },
+            () =>
+            {
+                function.Dispose();
+                callback.Dispose();
+                state.Dispose();
+            });
+    }
+
+    static BenchmarkLease CreateHookInvokeAsync(LuauExecutionOptions options)
+    {
+        var (state, function) = CreateEntryFunction(options, "return function(dt) end");
+        var arguments = new[] { LuauValue.FromNumber(1d / 72) };
+        return new BenchmarkLease(
+            () =>
+            {
+                for (var i = 0; i < EntryCallsPerSample; i++)
+                {
+                    function.InvokeVoidAsync(arguments).AsTask().GetAwaiter().GetResult();
+                }
+            },
+            () =>
+            {
+                function.Dispose();
+                state.Dispose();
+            });
     }
 
     // Every loop back-edge, call, and return is a Luau interrupt safepoint.

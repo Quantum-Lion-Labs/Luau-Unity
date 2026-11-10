@@ -495,7 +495,7 @@ public unsafe sealed class LuauTable : ILuauReference, ILuauCallbackBorrowedRefe
         {
             throw new ArgumentException("Nil is not a valid Luau table key.", nameof(key));
         }
-        if (key.Type == LuauType.Number && double.IsNaN(key.Read<double>()))
+        if (key.Type == LuauType.Number && double.IsNaN(key.NumberPayload))
         {
             throw new ArgumentException("NaN is not a valid Luau table key.", nameof(key));
         }

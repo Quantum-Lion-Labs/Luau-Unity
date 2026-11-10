@@ -117,6 +117,44 @@
             operations while keeping exceptions inside the originating execution.
             </summary>
         </member>
+        <member name="T:Luau.LuauDeadlineWatchdog">
+            <summary>
+            One process-wide timer that backs up the native host's wall-clock check.
+            The host reads its clock only every 1 to 128 safepoints, so after an abrupt
+            slowdown it can notice a deadline late; the watchdog asks the root to poll
+            at the first safepoint after the deadline instead, and cancels the
+            callback-visible token at the deadline.
+            </summary>
+            <remarks>
+            Each root publishes the deadline of its active operation in
+            <see cref="P:Luau.LuauVmContext.WatchdogDeadline"/>, so starting an operation
+            costs a fenced store and a read, not a timer. The timer is armed for the
+            earliest deadline it knows of and re-armed only when an operation starts
+            with an earlier one, or when it fires and finds a later one still running.
+            It therefore fires at an active operation's deadline plus the timer's own
+            resolution (about 1 ms on Linux and Android, up to about 16 ms with the
+            default Windows timer resolution), the same bound as a per-operation timer,
+            and does nothing while no operation with a wall-clock limit is running.
+            </remarks>
+        </member>
+        <member name="P:Luau.LuauDeadlineWatchdog.ArmedDue">
+            <summary>Gets the timestamp the timer is armed for, or <see cref="F:System.Int64.MaxValue"/>.</summary>
+        </member>
+        <member name="M:Luau.LuauDeadlineWatchdog.Register(System.WeakReference{Luau.LuauVmContext})">
+            <summary>
+            Adds a root to the set the watchdog scans. Called once per root,
+            before its first deadline is published and outside the root's gates.
+            </summary>
+        </member>
+        <member name="M:Luau.LuauDeadlineWatchdog.EnsureArmed(System.Int64)">
+            <summary>
+            Makes sure the timer fires no later than <paramref name="deadline"/>.
+            The caller has already published that deadline with a full fence;
+            <see cref="M:Luau.LuauDeadlineWatchdog.Tick"/> marks the timer idle with a full fence before it
+            scans. So either the scan sees the deadline, or this reads the idle
+            mark and arms the timer itself.
+            </summary>
+        </member>
         <member name="T:Luau.LuauNativeProtection">
             <summary>
             Verifies and translates the native protected-call ABI. The native bridge
@@ -152,9 +190,60 @@
             mirrors the fixed C record without exposing the internal interop assembly.
             </summary>
         </member>
+        <member name="T:Luau.LuauOperationStack">
+            <summary>
+            Stack work an operation does on entry, while it holds its own native
+            access: pushing invocation and resume arguments.
+            </summary>
+        </member>
         <member name="T:Luau.LuauStackBoundary">
             <summary>
             Owns restoration of one synchronous managed/native stack boundary.
+            </summary>
+        </member>
+        <member name="M:Luau.LuauVmContext.IsFrameFullUnderNativeAccess(Luau.Internal.Interop.LuauHostState*)">
+            <summary>
+            <see cref="M:Luau.LuauNativeProtection.IsFrameFull(Luau.LuauVmContext,Luau.Internal.Interop.LuauHostState*)"/> for a caller that holds
+            the native gate on an open root, without re-entering the gate for each
+            allocator diagnostic call.
+            </summary>
+        </member>
+        <member name="M:Luau.LuauVmContext.GetOperationCancellationToken(Luau.ScriptOperation,System.Int64)">
+            <summary>
+            Returns the callback-visible token of life <paramref name="generation"/>
+            of <paramref name="operation"/>, creating it on first use. The life is
+            checked and the token read or created under the lifecycle gate, which
+            <see cref="M:Luau.LuauVmContext.EndOperation(Luau.ScriptOperation,System.Int64)"/> holds while it ends the life and detaches
+            the source. A request that arrives after the life ended fails as an
+            expired call context does, even when the instance is already reused.
+            </summary>
+        </member>
+        <member name="M:Luau.LuauVmContext.PushAmbient(Luau.ScriptOperation)">
+            <summary>
+            Records <paramref name="operation"/> as the innermost operation of the
+            current flow, for <see cref="M:Luau.LuauVmContext.ThrowIfNativeAccessDenied"/>. A
+            synchronous operation begins and ends on one thread, so a
+            thread-static slot identifies it without touching the execution
+            context. An asynchronous operation can continue on any thread, so it
+            uses an <see cref="T:System.Threading.AsyncLocal`1"/> marker, as does a synchronous
+            operation that starts inside a flow that already carries one: there
+            the marker, not the thread, says which operation is innermost.
+            </summary>
+        </member>
+        <member name="M:Luau.LuauVmContext.PopAmbient(Luau.ScriptOperation,System.Int64)">
+            <summary>
+            Undoes <see cref="M:Luau.LuauVmContext.PushAmbient(Luau.ScriptOperation)"/>; false when the slots no longer name
+            this life, in which case they are left alone as before.
+            </summary>
+        </member>
+        <member name="M:Luau.LuauVmContext.ResolveOperationOptions(Luau.LuauExecutionOptions,System.Boolean)">
+            <summary>
+            Merges per-operation options into the state defaults. Options records
+            are immutable, so a merge is reused for the same instance:
+            <see cref="M:Luau.LuauFunction.InvokeVoid(Luau.LuauExecutionOptions)"/> merges
+            even without options, and the Unity scheduler passes one instance per
+            phase on every call. A few entries per kind cover several phases on
+            one root; a miss only costs the merge it replaces.
             </summary>
         </member>
         <member name="M:Luau.LuauVmContext.ConfigureInterruptBudget(Luau.ScriptOperation)">
@@ -167,11 +256,12 @@
             signaled.
             </summary>
         </member>
-        <member name="M:Luau.LuauVmContext.RequestInterruptAttention(Luau.ScriptOperation)">
+        <member name="M:Luau.LuauVmContext.RequestInterruptAttention(Luau.ScriptOperation,System.Int64)">
             <summary>
-            Makes the next interrupt safepoint poll <paramref name="operation"/>
-            from any thread. The request is dropped once the operation is no
-            longer active; holding the lifecycle gate keeps the root open for
+            Makes the next interrupt safepoint poll life <paramref name="generation"/>
+            of <paramref name="operation"/> from any thread. The request is dropped
+            once that life is no longer active, including when the instance has
+            since been reused; holding the lifecycle gate keeps the root open for
             the native call, since close begins only after the active operation
             ends or disposal takes this gate.
             </summary>
@@ -181,6 +271,57 @@
             Makes the next safepoint poll whichever operation is active, for
             disposal requests that do not know which operation they stop.
             </summary>
+        </member>
+        <member name="M:Luau.LuauVmContext.SignalWatchdogDeadline">
+            <summary>
+            Called by <see cref="T:Luau.LuauDeadlineWatchdog"/> when this root's published
+            deadline has passed. Signals the active life at most once, and only if
+            its own wall-clock limit has passed: requests the poll first, then
+            returns the callback-visible token source for the watchdog to cancel
+            outside every lock, since its registrations are host code.
+            </summary>
+        </member>
+        <member name="P:Luau.LuauVmContext.PooledOperation">
+            <summary>The finished synchronous operation kept for reuse, for tests.</summary>
+        </member>
+        <member name="T:Luau.ScriptOperation">
+            <summary>
+            Root-level execution state for one operation. A root reuses one
+            synchronous instance for consecutive operations, so an instance has many
+            lives; <see cref="P:Luau.ScriptOperation.Generation"/> identifies the current one. Anything that
+            can still hold the instance after its life ends (a cancellation
+            registration, the deadline watchdog, an ambient marker, a callback's lazy
+            token) must compare the generation, never the reference alone.
+            </summary>
+        </member>
+        <member name="M:Luau.ScriptOperation.Activate(System.Int64,Luau.LuauState,System.String,Luau.LuauExecutionOptions,System.Threading.CancellationToken,System.Threading.CancellationToken,System.Threading.CancellationToken,System.Boolean,Luau.ScriptOperationMode)">
+            <summary>
+            Starts a new life. Called by <see cref="M:Luau.LuauVmContext.BeginOperation(Luau.LuauState,System.String,Luau.LuauExecutionOptions,System.Threading.CancellationToken,System.Boolean,Luau.ScriptOperationMode,System.Boolean)"/>
+            under the root gates, before the operation is published, so nothing
+            else can observe the fields while they change.
+            </summary>
+        </member>
+        <member name="M:Luau.ScriptOperation.Deactivate">
+            <summary>
+            Ends a life that was never published, so nothing but the context
+            holds it; there is no registration or token to release.
+            </summary>
+        </member>
+        <member name="M:Luau.ScriptOperation.ClearForReuse">
+            <summary>
+            Drops every reference the finished life held, so a pooled instance
+            keeps no state, string, exception, or token alive.
+            </summary>
+        </member>
+        <member name="P:Luau.ScriptOperation.DeadlineTimestamp">
+            <summary>
+            The <see cref="T:System.Diagnostics.Stopwatch"/> timestamp at which the wall-clock limit has
+            certainly passed, or zero without one. The watchdog schedules by it;
+            the limit itself is still decided by <see cref="M:Luau.ScriptOperation.IsPastWallClockLimit"/>.
+            </summary>
+        </member>
+        <member name="P:Luau.ScriptOperation.HasCancelableCallerToken">
+            <summary>Whether the caller supplied a token that can be canceled.</summary>
         </member>
         <member name="M:Luau.ScriptOperation.RequestInterruptAttentionFromOwner">
             <summary>
@@ -196,6 +337,44 @@
             once the operation is active and outside the context locks: a token
             that is already canceled runs the request inline, and disposing the
             registration waits for a concurrent callback that may need those locks.
+            </summary>
+        </member>
+        <member name="M:Luau.ScriptOperation.GetCancellationToken(System.Int64)">
+            <summary>
+            Returns the callback-visible token of life <paramref name="expectedGeneration"/>,
+            creating it on first use. It is canceled by caller cancellation,
+            wall-clock expiry, and state or root disposal; a token created after
+            one of those already happened is returned canceled.
+            </summary>
+        </member>
+        <member name="M:Luau.ScriptOperation.GetOrCreateCancellationTokenLocked">
+            <summary>
+            Reads or creates this life's token. The caller holds the context's
+            lifecycle gate and has checked that this life is the active operation,
+            so the life cannot end, and the instance cannot be reused, in between:
+            a request from one life can neither return nor publish into the next.
+            </summary>
+        </member>
+        <member name="M:Luau.ScriptOperation.DetachTokenSourceLocked">
+            <summary>
+            Takes the token source when the life ends, under the same gate, for
+            the context to dispose once it has left its locks.
+            </summary>
+        </member>
+        <member name="P:Luau.ScriptOperation.TokenSource">
+            <summary>The callback-visible token source, if this life created one.</summary>
+        </member>
+        <member name="M:Luau.ScriptOperation.TryMarkDeadlineSignaled">
+            <summary>
+            Records that the watchdog saw the deadline pass; true only for the
+            first signal of a life. Set before the token source is read.
+            </summary>
+        </member>
+        <member name="M:Luau.ScriptOperation.IsPastWallClockLimit">
+            <summary>
+            Whether the wall-clock limit has passed. Compares timestamps against
+            <see cref="P:Luau.ScriptOperation.DeadlineTimestamp"/>, which is rounded up so that the
+            elapsed time a budget exception reports is never below the limit.
             </summary>
         </member>
         <member name="P:Luau.ScriptOperation.InterruptCountBudget">
@@ -217,6 +396,35 @@
             Checks the hard stops in precedence order. From an interrupt poll,
             <paramref name="interruptState"/> is the polling thread, and the
             native host's safepoint count decides the interrupt budget.
+            </summary>
+        </member>
+        <member name="T:Luau.AmbientOperationMarker">
+            <summary>
+            The value an asynchronous flow carries to identify the operation it runs
+            in. Immutable, so an execution context captured during one life keeps
+            naming that life after the operation instance is reused.
+            </summary>
+        </member>
+        <member name="T:Luau.LuauOperationCancellation">
+            <summary>
+            A callback's handle on its operation's cancellation token. The token is
+            created only when a callback reads it, so an operation whose callbacks
+            never ask for one allocates no cancellation machinery.
+            </summary>
+        </member>
+        <member name="M:Luau.ScriptRunner.ReadResults(Luau.ScriptOperation,Luau.LuauState,System.Span{Luau.LuauValue},System.Int32,System.Int32@)">
+            <summary>
+            Moves the top <paramref name="resultCount"/> values into
+            <paramref name="slots"/> under one native access. Values are read in
+            the order the per-value pop used to read them, last result first, and
+            a hard stop is still checked after each one. The stack is trimmed to
+            the results' base whether or not every value was read.
+            </summary>
+        </member>
+        <member name="M:Luau.ScriptRunner.Enter(Luau.ScriptOperation,System.IntPtr,System.IntPtr,System.Int32,System.Int32,System.Int32@,System.Int32@)">
+            <summary>
+            The first resume of a synchronous run: records the stack base below
+            the callee and its arguments, then resumes, under one native access.
             </summary>
         </member>
         <member name="T:Luau.Utf8BufferScope">
@@ -781,6 +989,11 @@
             Gets whether at least one execution budget is configured.
             </summary>
         </member>
+        <member name="M:Luau.LuauExecutionOptions.RequireZeroResults(Luau.LuauExecutionOptions)">
+            <summary>
+            Returns options that also require an operation to return no values.
+            </summary>
+        </member>
         <member name="T:Luau.LuauFunction">
             <summary>
             Represents either an owned script closure or a managed callback capability.
@@ -811,6 +1024,15 @@
             Creates an independently disposable owner for the same script closure.
             Managed callback capabilities already have host-defined ownership and
             cannot be retained through this operation.
+            </summary>
+        </member>
+        <member name="M:Luau.LuauFunction.GetInvocationState">
+            <summary>
+            Resolves the state an invocation begins its operation on, like
+            <see cref="P:Luau.LuauFunction.State"/> but without its lock: the invocation acquires this
+            function's reference under the lock before using it
+            (<see cref="M:Luau.LuauFunction.AcquireReferenceForOperation(Luau.ScriptOperation,System.Int32)"/>), which rejects a function
+            disposed in between.
             </summary>
         </member>
         <member name="M:Luau.LuauFunction.Invoke(System.ReadOnlySpan{Luau.LuauValue},Luau.LuauExecutionOptions)">
@@ -907,6 +1129,14 @@
             <summary>
             Releases this function owner. Disposal is idempotent and does not close
             the owning VM root.
+            </summary>
+        </member>
+        <member name="M:Luau.LuauFunction.AcquireReferenceForOperation(Luau.ScriptOperation,System.Int32)">
+            <summary>
+            Acquires this function's reference to push it as the callee of
+            <paramref name="operation"/>, which the caller has just begun on this
+            function's root. Holding the operation's native access replaces the
+            per-call scheduler and ambient checks of <see cref="M:Luau.LuauFunction.AcquireReference(System.Int32)"/>.
             </summary>
         </member>
         <member name="T:Luau.LuauLoadInputKind">
@@ -2249,6 +2479,12 @@
         <member name="M:Luau.LuauState.SandboxThread">
             <summary>
             Applies an isolated sandbox environment to an existing child thread.
+            </summary>
+        </member>
+        <member name="M:Luau.LuauState.ToValueUnderOperationAccess(System.Int32)">
+            <summary>
+            Reads the value at <paramref name="index"/> while the caller already
+            holds its operation's native access, as the result path does.
             </summary>
         </member>
         <member name="M:Luau.LuauState.ToValueForNativeTypeFixture(System.Int32,System.Int32)">

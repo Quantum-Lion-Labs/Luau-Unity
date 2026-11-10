@@ -203,7 +203,8 @@ One `LuauVmContext` owns a native root and all managed objects attached to it:
 - native allocator telemetry;
 - sandbox bookkeeping;
 - disposal cancellation;
-- at most one active operation.
+- at most one active operation, plus one finished synchronous operation
+  instance kept for the next one (section 6.5).
 
 Disposing a root invalidates every descendant and closes native state exactly
 once. Disposal of reference-backed wrappers during an active operation is
@@ -229,7 +230,7 @@ entry modes:
 The modes choose entry mechanics, not separate failure systems. All share:
 
 - root active-operation ownership;
-- scheduler enforcement and linked cancellation;
+- scheduler enforcement and cancellation;
 - interrupt and execution-budget observation;
 - allocator and managed callback failure ownership;
 - one explicit stack boundary;
@@ -277,9 +278,10 @@ requests attention when it happens:
 
 - pending callback work (`RecordCallbackFailure`, `QueueAsyncCallback`)
   requests from the operation's own thread, which keeps the root open;
-- caller cancellation, the deadline timer, and state or root disposal request
-  from other threads under the lifecycle gate, and only while their operation
-  is active, so the request can never race native close.
+- caller cancellation, the deadline watchdog, and state or root disposal
+  request from other threads under the lifecycle gate, and only while their
+  operation's life is active (section 6.5), so the request can never race
+  native close or reach a later operation.
 
 A new hard-stop source or kind of pending work must do the same, or it will be
 observed only at the next count or clock event. `InterruptThrottleTests` run
@@ -294,6 +296,70 @@ If it yields, the engine aborts/resets it and reports a deliberate managed
 failure. Do not reintroduce per-call `originalTop`/`restoreStack`/`resetAttempted`
 blocks; extend the shared boundary instead.
 
+### 6.5 Operation lives and lazy machinery
+
+Per-frame hooks make many small calls into the same root, so entering and
+leaving the VM must not allocate. A root therefore reuses one `ScriptOperation`
+for consecutive synchronous operations. Each `BeginOperation` starts a new
+*life* of an instance, with a new `Generation`; `EndOperation` ends it.
+
+Reuse is safe only under these rules:
+
+- `EndOperation` keeps the instance for the next operation, under both gates,
+  only when nothing can still name the finished life: the operation was
+  synchronous, had no caller cancellation registration, published no
+  asynchronous ambient marker, restored its thread-ambient slot, and its root
+  stays open. Asynchronous operations are always new instances, because an
+  execution context captured during one can reference it indefinitely.
+- Anything that can outlive a life compares the generation, not only the
+  reference: `RequestInterruptAttention(operation, generation)`,
+  `EndOperation`, the ambient check, the watchdog (which reads the active
+  life under the lifecycle gate), and a callback's
+  `LuauOperationCancellation`. `ReferenceEquals` alone does not identify a
+  life.
+- `Activate` publishes the new generation before resetting the per-life
+  fields, and `ClearForReuse` drops every reference the life held, so a kept
+  instance holds no state, string, exception, or token.
+
+Nothing an operation might use is created up front:
+
+- **Options.** The context caches merged per-operation options by instance,
+  so `InvokeVoid` and the Unity scheduler, which pass the same options object
+  on every call, do not rebuild a record per call.
+- **Callback token.** The callback-visible `CancellationToken` is created the
+  first time a callback reads it (`LuauCallContext.CancellationToken`, or a
+  generated member's `CancellationToken` parameter). It links the state's
+  lifetime token and the root's disposal token, which their owners cancel
+  only after requesting the poll; caller cancellation and the deadline cancel
+  it explicitly, also after requesting the poll. A token created after one of
+  those stops already happened is returned canceled, and its source is
+  disposed when the life ends, so a token a callback captured is never
+  canceled by a later life.
+- **Deadline.** There is no timer per operation. Each root publishes its
+  active operation's deadline timestamp, and one process-wide
+  `LuauDeadlineWatchdog` timer is armed for the earliest published deadline.
+  Starting an operation costs a fenced store and a read; the timer is
+  re-armed only when an operation starts with an earlier deadline, or when it
+  fires and a later one is still running, and stays idle while no operation
+  with a wall-clock limit runs. When it finds a passed deadline it requests
+  the poll first, then cancels that life's callback token if one exists, each
+  root's on its own work item. It fires at the deadline plus the timer
+  resolution (about 1 ms on Linux and Android, up to about 16 ms with
+  Windows' default resolution), the bound the per-operation timer gave.
+- **Ambient operation.** A synchronous operation begins and ends on one
+  thread, so it records itself in a thread-static slot rather than writing
+  the execution context. An asynchronous operation can continue on any
+  thread, so it publishes an `AsyncLocal` marker carrying its generation, and
+  so does a synchronous operation that begins inside a flow that already has
+  one. `ThrowIfNativeAccessDenied` uses the flow's marker when there is one
+  and the thread's slot otherwise. A flow forked from inside a synchronous
+  callback (for example by `Task.Run`) is therefore rejected while that
+  operation runs; it used to pass the check and then wait for the VM.
+
+`OperationReuseTests` pins the steady-state allocation of each entry point
+and each of these hazards; `entry-*` cases in `benchmarks/Luau.Benchmarks`
+measure the per-call cost.
+
 ## 7. Managed callbacks
 
 ### 7.1 Safe context
@@ -303,7 +369,7 @@ generation-checked callback value with:
 
 - zero-based `ArgumentCount` and `Read<T>(index)`;
 - typed `Return<T>` helpers;
-- operation cancellation;
+- operation cancellation, created on first read (section 6.5);
 - an optional callback name for diagnostics.
 
 It exposes no native handle, raw stack top, registry index, native callback
@@ -643,6 +709,10 @@ one compatibility unit.
 - Async managed work begins only after native resume has unwound.
 - Anything that can make the interrupt poll act requests native attention
   when it happens.
+- Anything that can outlive an operation life checks its generation, not
+  only its reference; an instance is reused only when nothing can name it.
+- The steady-state synchronous call allocates nothing: no per-operation
+  timer, token source, options record, or execution-context write.
 - Generated host APIs are attributed, reflection-free, and IL2CPP-safe.
 - `require()` remains managed, opt-in, sandbox-aware, and on the shared engine.
 - Normal builds do not mutate the Unity package.

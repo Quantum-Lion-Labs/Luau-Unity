@@ -14,6 +14,38 @@ API or ABI breaks.
 
 ### Changed
 
+- Calling into the VM is about three times cheaper, and a steady stream of
+  synchronous calls, such as per-frame script hooks, allocates no managed
+  memory. Each call used to create an operation object, a timer, several
+  cancellation token sources, a merged options record, and two execution
+  context entries. A root now reuses one operation object for consecutive
+  synchronous calls; a callback's `CancellationToken` is created only when the
+  callback reads it; wall-clock limits share one watchdog timer for the whole
+  process; merged execution options and repeated chunk names are reused; and
+  arguments, results, and resume values cross with fewer native calls and
+  locks. Measured on desktop x64 (.NET 9), per call of a function taking one
+  number:
+
+  | Call | Before | After |
+  | --- | --- | --- |
+  | `InvokeVoid`, `Default` options | 1,433 ns, 928 B | 459 ns, 0 B |
+  | `InvokeVoid`, 2 ms wall-clock limit only | 1,489 ns, 928 B | 479 ns, 0 B |
+  | `InvokeVoid`, `Unbounded` | 1,071 ns, 568 B | 385 ns, 0 B |
+  | Script entrypoint `InvokeVoid`, reused phase options | 1,441 ns, 992 B | 465 ns, 0 B |
+  | `InvokeInto`, one result | 1,885 ns, 864 B | 612 ns, 0 B |
+  | `ResumeInto`, one value | 1,527 ns, 864 B | 581 ns, 0 B |
+  | `ExecuteCompilerOutputInto`, named chunk | 1,661 ns, 1,008 B | 876 ns, 0 B |
+  | Table read outside an operation | 1,607 ns, 864 B | 998 ns, 0 B |
+  | `InvokeVoidAsync`, completing synchronously | 1,565 ns, 1,456 B | 825 ns, 936 B |
+
+  Execution budgets, cancellation, disposal, and failure precedence behave as
+  before, including for tokens a callback keeps after its call. The wall-clock
+  backstop after an abrupt slowdown keeps its bound: the shared watchdog fires
+  within the system timer's resolution of the earliest running deadline. One
+  check is stricter: code forked from inside a synchronous callback, for
+  example with `Task.Run`, can no longer use the root while that call runs. It
+  used to pass the access check and then wait for the VM, which deadlocked if
+  the callback waited for it.
 - Script loops and calls run 6 to 13 times faster. Every call, return, and loop
   iteration is an interrupt safepoint, and each one used to call back into
   managed code even with no limit configured. The native plugin now keeps the
