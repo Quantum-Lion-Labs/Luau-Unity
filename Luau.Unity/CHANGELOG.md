@@ -14,6 +14,33 @@ API or ABI breaks.
 
 ### Changed
 
+- Script loops and calls run 6 to 13 times faster. Every call, return, and loop
+  iteration is an interrupt safepoint, and each one used to call back into
+  managed code even with no limit configured. The native plugin now keeps the
+  interrupt count and checks the wall clock itself, and calls managed code
+  only when a limit is reached or a cancellation, disposal, or callback result
+  is pending. Measured on desktop x64 (.NET 9), per loop iteration, against
+  about 4 ns for a plain loop and 14.9 ns for a loop of Luau calls in the
+  stock Luau interpreter:
+
+  | Execution options | Plain loop | Loop of calls |
+  | --- | --- | --- |
+  | `Unbounded` | 50.0 → 5.3 ns | 131.9 → 20.7 ns |
+  | Wall-clock limit only | 68.5 → 5.4 ns | 226.8 → 21.6 ns |
+  | Interrupt-count limit only | 45.5 → 5.2 ns | 129.5 → 20.2 ns |
+  | `Default` (250 ms, 100,000) | 65.9 → 5.3 ns | 202.8 → 20.7 ns |
+
+  Interrupt-count limits still stop at exactly safepoint N + 1 and count the
+  same safepoints as before. Wall-clock limits are now detected within about
+  20 microseconds of the deadline while a script's pace is steady, and at worst
+  128 safepoints late after an abrupt slowdown; see
+  [Resource limits](Documentation~/resource-limits.md#execution-budgets).
+  Cancellation, disposal, and callback failures are still observed at the next
+  safepoint. The ABI stays 2.0 and adds the required
+  `LUAU_HOST_FEATURE_INTERRUPT_THROTTLE` capability with
+  `luau_host_interrupt_configure`, `luau_host_interrupt_request`, and
+  `luau_host_interrupt_count`, so this `Luau.dll` requires the matching
+  rebuilt native plugins.
 - **Breaking:** `int`, `uint`, `short`, `ushort`, `byte`, and `sbyte` values now
   cross into Luau as ordinary numbers instead of the distinct `integer` type.
   This applies to generated library and capability members, callback

@@ -260,6 +260,15 @@ namespace Luau.Internal.Interop
 
         [DllImport(__DllName, EntryPoint = "luau_host_interrupt_uninstall", CallingConvention = Call, ExactSpelling = true)]
         internal static extern void luau_host_interrupt_uninstall(LuauHostState* state);
+
+        [DllImport(__DllName, EntryPoint = "luau_host_interrupt_configure", CallingConvention = Call, ExactSpelling = true)]
+        internal static extern LuauHostStatus luau_host_interrupt_configure(LuauHostState* state, ulong count_limit, ulong time_limit_ns);
+
+        [DllImport(__DllName, EntryPoint = "luau_host_interrupt_request", CallingConvention = Call, ExactSpelling = true)]
+        internal static extern void luau_host_interrupt_request(LuauHostState* state);
+
+        [DllImport(__DllName, EntryPoint = "luau_host_interrupt_count", CallingConvention = Call, ExactSpelling = true)]
+        internal static extern ulong luau_host_interrupt_count(LuauHostState* state);
     }
 
 }

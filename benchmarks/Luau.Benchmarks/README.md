@@ -17,6 +17,14 @@ Run the release evidence pass with an explicit sample count and output:
 dotnet run --project benchmarks/Luau.Benchmarks -c Release -- --warmup 250 --iterations 5000 --output artifacts/stage-6-benchmarks/release.json
 ```
 
+Run a subset by name prefix with `--filter`; for example, the interrupt
+safepoint cases report nanoseconds per loop iteration under each execution
+budget profile:
+
+```bash
+dotnet run --project benchmarks/Luau.Benchmarks -c Release -- --filter interrupt- --warmup 20 --iterations 500
+```
+
 The compiler section retains the production-default baselines and also measures
 the full supported optimization (0-2) and type-information (0-1) matrix for both
 representative first-party and untrusted-mod scripts. Debug information remains

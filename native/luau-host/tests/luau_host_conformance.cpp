@@ -4,6 +4,8 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <cstddef>
 #include <cstdint>
@@ -278,6 +280,7 @@ void test_abi_query()
     REQUIRE((info.feature_flags & LUAU_HOST_FEATURE_DIRECT_CALLBACK_IDENTITY) != 0);
     REQUIRE((info.feature_flags & LUAU_HOST_FEATURE_OBSERVATION_ONLY_GC_INTERRUPT) != 0);
     REQUIRE((info.feature_flags & LUAU_HOST_FEATURE_STACK_LIMIT) != 0);
+    REQUIRE((info.feature_flags & LUAU_HOST_FEATURE_INTERRUPT_THROTTLE) != 0);
 
     constexpr uint32_t fixedPrefixSize = static_cast<uint32_t>(offsetof(luau_host_abi_info, compile_options_size));
     alignas(luau_host_abi_info) std::array<uint8_t, sizeof(luau_host_abi_info) + 16> storage = {};
@@ -2528,6 +2531,526 @@ void test_coroutine_resume_at_the_frame_slot_limit()
     require_reusable(root.state, "@frame-limit/resume-root");
 }
 
+
+// Interrupt throttle. One probe records what the polls of the running test
+// observe; tests that run several roots at once give each root its own.
+struct ThrottleProbe
+{
+    luau_host_state* root = nullptr;
+    std::atomic<int> polls = {0};
+    std::atomic<int> executionPolls = {0};
+    std::atomic<int> gcPolls = {0};
+    // Polls up to and including this ordinal continue; later ones stop.
+    std::atomic<int> continueThrough = {0};
+    // When nonzero, a poll stops only once the count passes this limit.
+    std::atomic<uint64_t> stopAboveCount = {0};
+    std::array<uint64_t, 16> countAtPoll = {};
+    std::atomic<uint64_t> countAtRequest = {0};
+};
+
+ThrottleProbe* throttleProbe = nullptr;
+std::array<ThrottleProbe*, 2> rootProbes = {};
+
+ThrottleProbe* probe_for(luau_host_state* state)
+{
+    luau_host_state* root = luau_host_main_thread(state);
+    for (ThrottleProbe* probe : rootProbes)
+    {
+        if (probe && probe->root == root)
+            return probe;
+    }
+    return throttleProbe;
+}
+
+int32_t LUAU_HOST_CALL throttle_poll(luau_host_state* state, luau_host_interrupt_kind kind)
+{
+    ThrottleProbe* probe = probe_for(state);
+    if (!probe)
+        return 0;
+
+    const int ordinal = probe->polls.fetch_add(1) + 1;
+    if (kind == LUAU_HOST_INTERRUPT_GC)
+    {
+        ++probe->gcPolls;
+        // Observation-only: a GC poll that asks to stop must change nothing.
+        return 1;
+    }
+
+    ++probe->executionPolls;
+    const uint64_t count = luau_host_interrupt_count(state);
+    if (ordinal <= int(probe->countAtPoll.size()))
+        probe->countAtPoll[size_t(ordinal - 1)] = count;
+    const uint64_t limit = probe->stopAboveCount.load();
+    if (limit != 0)
+        return count > limit ? 1 : 0;
+    return ordinal > probe->continueThrough.load() ? 1 : 0;
+}
+
+int32_t LUAU_HOST_CALL request_attention_callback(luau_host_state* state)
+{
+    if (throttleProbe)
+        throttleProbe->countAtRequest = luau_host_interrupt_count(state);
+    luau_host_interrupt_request(state);
+    return 0;
+}
+
+int32_t LUAU_HOST_CALL slow_callback(luau_host_state*)
+{
+    std::this_thread::sleep_for(std::chrono::microseconds(200));
+    return 0;
+}
+
+void set_global_callback(luau_host_state* state, const char* name, luau_host_managed_function function)
+{
+    luau_host_callback_table callbacks = callback_table();
+    callbacks.managed_function = function;
+    REQUIRE(luau_host_push_callback(state, &callbacks, bytes(name), std::strlen(name), 0, nullptr, nullptr) == LUAU_HOST_STATUS_OK);
+    REQUIRE(luau_host_global_set(state, bytes(name)) == LUAU_HOST_STATUS_OK);
+}
+
+Root create_library_root()
+{
+    Root root = create_root();
+    int32_t resultCount = 0;
+    for (luau_host_library library : {LUAU_HOST_LIBRARY_BASE, LUAU_HOST_LIBRARY_STRING, LUAU_HOST_LIBRARY_COROUTINE})
+    {
+        REQUIRE(luau_host_open_library(root.state, library, &resultCount) == LUAU_HOST_STATUS_OK);
+        REQUIRE(luau_host_stack_set_top(root.state, 0) == LUAU_HOST_STATUS_OK);
+    }
+    set_global_callback(root.state, "request", request_attention_callback);
+    set_global_callback(root.state, "slow", slow_callback);
+    return root;
+}
+
+void install_throttle_poll(luau_host_state* state)
+{
+    luau_host_callback_table callbacks = callback_table();
+    callbacks.interrupt_poll = throttle_poll;
+    REQUIRE(luau_host_interrupt_install(state, &callbacks) == LUAU_HOST_STATUS_OK);
+}
+
+luau_host_state* load_child(Root& root, const char* source, const char* chunkName)
+{
+    luau_host_state* child = nullptr;
+    REQUIRE(luau_host_thread_create(root.state, &child) == LUAU_HOST_STATUS_OK);
+    REQUIRE(compile_and_load(child, source, chunkName) == LUAU_HOST_STATUS_OK);
+    return child;
+}
+
+void test_interrupt_throttle_counts_every_safepoint_without_polling()
+{
+    // The throttled count must equal the number of EXECUTION polls an
+    // unthrottled install receives, for loops, calls, collection-heavy code,
+    // non-yieldable pattern matching, and error unwinding alike.
+    const char* scripts[] = {
+        "for i = 1, 1000 do end",
+        "local i = 0 while i < 1000 do i += 1 end",
+        "local function f(x) return x end for i = 1, 500 do f(i) end",
+        "local t = {} for i = 1, 20000 do t[i] = {i} end",
+        "local h = string.rep('x', 14) local p = string.rep('x?', 14) .. string.rep('x', 14) return (string.find(h, p))",
+        "for i = 1, 50 do pcall(error, 'x') end",
+    };
+
+    for (const char* script : scripts)
+    {
+        ThrottleProbe unthrottled;
+        throttleProbe = &unthrottled;
+        unthrottled.continueThrough = std::numeric_limits<int>::max();
+        {
+            Root root = create_library_root();
+            install_throttle_poll(root.state);
+            REQUIRE(compile_and_load(root.state, script, "@throttle-equivalence") == LUAU_HOST_STATUS_OK);
+            REQUIRE(luau_host_pcall(root.state, 0, 0, 0) == LUAU_HOST_STATUS_OK);
+            REQUIRE(luau_host_interrupt_count(root.state) == 0);
+        }
+
+        ThrottleProbe throttled;
+        throttleProbe = &throttled;
+        Root root = create_library_root();
+        install_throttle_poll(root.state);
+        REQUIRE(luau_host_interrupt_configure(root.state, 0, 0) == LUAU_HOST_STATUS_OK);
+        REQUIRE(compile_and_load(root.state, script, "@throttle-equivalence") == LUAU_HOST_STATUS_OK);
+        REQUIRE(luau_host_pcall(root.state, 0, 0, 0) == LUAU_HOST_STATUS_OK);
+
+        REQUIRE(unthrottled.executionPolls > 0);
+        REQUIRE(throttled.polls == 0);
+        REQUIRE(luau_host_interrupt_count(root.state) == uint64_t(unthrottled.executionPolls.load()));
+        throttleProbe = nullptr;
+    }
+
+    // Collection-heavy code produced GC notifications unthrottled; the
+    // throttled run above polled for none of them.
+    ThrottleProbe gcProbe;
+    gcProbe.continueThrough = std::numeric_limits<int>::max();
+    throttleProbe = &gcProbe;
+    Root root = create_library_root();
+    install_throttle_poll(root.state);
+    REQUIRE(compile_and_load(root.state, scripts[3], "@throttle-gc-baseline") == LUAU_HOST_STATUS_OK);
+    REQUIRE(luau_host_pcall(root.state, 0, 0, 0) == LUAU_HOST_STATUS_OK);
+    REQUIRE(gcProbe.gcPolls > 0);
+    throttleProbe = nullptr;
+}
+
+void test_interrupt_throttle_exact_count_limit()
+{
+    ThrottleProbe probe;
+    throttleProbe = &probe;
+    Root root = create_library_root();
+    install_throttle_poll(root.state);
+
+    // The first poll is the safepoint that makes the count limit + 1.
+    REQUIRE(luau_host_interrupt_configure(root.state, 1000, 0) == LUAU_HOST_STATUS_OK);
+    luau_host_state* child = load_child(root, "while true do end", "@throttle-count");
+    REQUIRE(luau_host_resume(child, root.state, 0) == LUAU_HOST_STATUS_BREAK);
+    REQUIRE(probe.polls == 1);
+    REQUIRE(probe.countAtPoll[0] == 1001);
+    REQUIRE(luau_host_interrupt_count(root.state) == 1001);
+    REQUIRE(luau_host_thread_reset(child) == LUAU_HOST_STATUS_OK);
+
+    // A poll that lets execution go on past the limit is asked again at
+    // every later safepoint, each one counted.
+    probe.polls = 0;
+    probe.continueThrough = 2;
+    REQUIRE(luau_host_interrupt_configure(root.state, 100, 0) == LUAU_HOST_STATUS_OK);
+    REQUIRE(luau_host_interrupt_count(root.state) == 0);
+    REQUIRE(compile_and_load(child, "while true do end", "@throttle-count-continue") == LUAU_HOST_STATUS_OK);
+    REQUIRE(luau_host_resume(child, root.state, 0) == LUAU_HOST_STATUS_BREAK);
+    REQUIRE(probe.polls == 3);
+    REQUIRE(probe.countAtPoll[0] == 101);
+    REQUIRE(probe.countAtPoll[1] == 102);
+    REQUIRE(probe.countAtPoll[2] == 103);
+    REQUIRE(luau_host_thread_reset(child) == LUAU_HOST_STATUS_OK);
+
+    // Non-yieldable: the same poll raises the sticky hard stop instead.
+    probe.polls = 0;
+    probe.continueThrough = 0;
+    REQUIRE(luau_host_interrupt_configure(root.state, 50, 0) == LUAU_HOST_STATUS_OK);
+    REQUIRE(compile_and_load(root.state, "while true do end", "@throttle-count-nonyieldable") == LUAU_HOST_STATUS_OK);
+    REQUIRE(luau_host_pcall(root.state, 0, 0, 0) == LUAU_HOST_STATUS_CANCELED);
+    REQUIRE(probe.polls == 1);
+    REQUIRE(probe.countAtPoll[0] == 51);
+    REQUIRE(luau_host_stack_set_top(root.state, 0) == LUAU_HOST_STATUS_OK);
+    REQUIRE(luau_host_memory_reset_failure(root.state) == LUAU_HOST_STATUS_OK);
+
+    // Configuring again resets the count and replaces the budget.
+    REQUIRE(luau_host_interrupt_configure(root.state, 0, 0) == LUAU_HOST_STATUS_OK);
+    REQUIRE(luau_host_interrupt_count(root.state) == 0);
+    probe.polls = 0;
+    REQUIRE(compile_and_load(root.state, "for i = 1, 10000 do end return 7", "@throttle-count-reconfigured") == LUAU_HOST_STATUS_OK);
+    REQUIRE(luau_host_pcall(root.state, 0, 1, 0) == LUAU_HOST_STATUS_OK);
+    REQUIRE(probe.polls == 0);
+    REQUIRE(luau_host_interrupt_count(root.state) > 10000);
+    throttleProbe = nullptr;
+}
+
+void test_interrupt_throttle_attention_at_next_safepoint()
+{
+    ThrottleProbe probe;
+    throttleProbe = &probe;
+    Root root = create_library_root();
+    install_throttle_poll(root.state);
+    REQUIRE(luau_host_interrupt_configure(root.state, 0, 0) == LUAU_HOST_STATUS_OK);
+
+    // A request made inside a callback is observed by the very next
+    // safepoint, before that safepoint is counted.
+    luau_host_state* child = load_child(
+        root,
+        "local s = 0 for i = 1, 100 do s += i end request() for i = 1, 1000 do s += i end return s",
+        "@throttle-attention");
+    probe.continueThrough = 0;
+    REQUIRE(luau_host_resume(child, root.state, 0) == LUAU_HOST_STATUS_BREAK);
+    REQUIRE(probe.polls == 1);
+    REQUIRE(probe.countAtRequest > 100);
+    REQUIRE(probe.countAtPoll[0] == probe.countAtRequest);
+
+    // A poll that stopped execution keeps attention raised: resuming polls
+    // again at the first safepoint, still uncounted.
+    REQUIRE(luau_host_resume(child, root.state, 0) == LUAU_HOST_STATUS_BREAK);
+    REQUIRE(probe.polls == 2);
+    REQUIRE(probe.countAtPoll[1] == probe.countAtRequest);
+
+    // Once a poll lets execution go on, the request is spent and the rest of
+    // the loop runs on the fast path.
+    probe.continueThrough = 3;
+    REQUIRE(luau_host_resume(child, root.state, 0) == LUAU_HOST_STATUS_OK);
+    REQUIRE(probe.polls == 3);
+    REQUIRE(luau_host_interrupt_count(root.state) > probe.countAtRequest + 1000);
+
+    // Configure clears a pending request.
+    luau_host_interrupt_request(root.state);
+    REQUIRE(luau_host_interrupt_configure(root.state, 0, 0) == LUAU_HOST_STATUS_OK);
+    REQUIRE(compile_and_load(root.state, "for i = 1, 100 do end", "@throttle-attention-cleared") == LUAU_HOST_STATUS_OK);
+    REQUIRE(luau_host_pcall(root.state, 0, 0, 0) == LUAU_HOST_STATUS_OK);
+    REQUIRE(probe.polls == 3);
+    throttleProbe = nullptr;
+}
+
+void test_interrupt_throttle_repeats_a_caught_hard_stop()
+{
+    ThrottleProbe probe;
+    throttleProbe = &probe;
+    Root root = create_library_root();
+    install_throttle_poll(root.state);
+    // A safety-net limit far above the counts this test expects.
+    REQUIRE(luau_host_interrupt_configure(root.state, 1000000, 0) == LUAU_HOST_STATUS_OK);
+
+    // A root pcall is not yieldable, so each stop is the sticky CANCELED hard
+    // stop. The script's own pcall catches the first; attention stays raised,
+    // so the next safepoint stops again instead of running the outer loop.
+    REQUIRE(
+        compile_and_load(
+            root.state,
+            "local ok = pcall(function() request() while true do end end) while true do end",
+            "@throttle-sticky") == LUAU_HOST_STATUS_OK);
+    REQUIRE(luau_host_pcall(root.state, 0, 0, 0) == LUAU_HOST_STATUS_CANCELED);
+    REQUIRE(probe.polls == 2);
+    REQUIRE(probe.countAtPoll[1] < 16);
+    REQUIRE(luau_host_stack_set_top(root.state, 0) == LUAU_HOST_STATUS_OK);
+    REQUIRE(luau_host_memory_reset_failure(root.state) == LUAU_HOST_STATUS_OK);
+    throttleProbe = nullptr;
+}
+
+void test_interrupt_throttle_gc_notifications_are_not_polled()
+{
+    ThrottleProbe probe;
+    throttleProbe = &probe;
+    Root root = create_library_root();
+    install_throttle_poll(root.state);
+    REQUIRE(luau_host_interrupt_configure(root.state, 0, 0) == LUAU_HOST_STATUS_OK);
+
+    // The probe stops at every poll; collection-heavy code still completes.
+    REQUIRE(
+        compile_and_load(
+            root.state,
+            "local t = {} for i = 1, 50000 do t[i] = {i} end return #t",
+            "@throttle-gc") == LUAU_HOST_STATUS_OK);
+    REQUIRE(luau_host_pcall(root.state, 0, 1, 0) == LUAU_HOST_STATUS_OK);
+    REQUIRE(probe.polls == 0);
+    REQUIRE(luau_host_stack_set_top(root.state, 0) == LUAU_HOST_STATUS_OK);
+
+    // A full collection with a request pending neither polls nor consumes the
+    // request: the next EXECUTION safepoint still observes it.
+    luau_host_interrupt_request(root.state);
+    REQUIRE(luau_host_collect(root.state) == LUAU_HOST_STATUS_OK);
+    REQUIRE(probe.polls == 0);
+    REQUIRE(compile_and_load(root.state, "for i = 1, 10 do end", "@throttle-gc-attention") == LUAU_HOST_STATUS_OK);
+    REQUIRE(luau_host_pcall(root.state, 0, 0, 0) == LUAU_HOST_STATUS_CANCELED);
+    REQUIRE(probe.polls == 1);
+    REQUIRE(probe.gcPolls == 0);
+    REQUIRE(luau_host_stack_set_top(root.state, 0) == LUAU_HOST_STATUS_OK);
+    REQUIRE(luau_host_memory_reset_failure(root.state) == LUAU_HOST_STATUS_OK);
+    throttleProbe = nullptr;
+}
+
+void test_interrupt_throttle_wall_clock()
+{
+    using Clock = std::chrono::steady_clock;
+    const char* scripts[] = {
+        // A tight loop that makes no calls, and one whose safepoints are calls.
+        "while true do end",
+        "local function f() end while true do f() f() f() f() end",
+    };
+
+    for (const char* script : scripts)
+    {
+        ThrottleProbe probe;
+        throttleProbe = &probe;
+        Root root = create_library_root();
+        install_throttle_poll(root.state);
+        luau_host_state* child = load_child(root, script, "@throttle-wall-clock");
+        const auto started = Clock::now();
+        REQUIRE(luau_host_interrupt_configure(root.state, 0, 2000000) == LUAU_HOST_STATUS_OK);
+        REQUIRE(luau_host_resume(child, root.state, 0) == LUAU_HOST_STATUS_BREAK);
+        const auto elapsed = Clock::now() - started;
+        REQUIRE(probe.polls == 1);
+        REQUIRE(elapsed >= std::chrono::milliseconds(2));
+        // Generous for loaded CI runners; the detection itself takes microseconds.
+        REQUIRE(elapsed < std::chrono::seconds(5));
+        throttleProbe = nullptr;
+    }
+
+    // Slow safepoints shrink the clock stride: a script whose every call
+    // takes 200 microseconds is still stopped soon after its deadline.
+    {
+        ThrottleProbe probe;
+        throttleProbe = &probe;
+        Root root = create_library_root();
+        install_throttle_poll(root.state);
+        luau_host_state* child = load_child(root, "while true do slow() end", "@throttle-wall-clock-slow");
+        const auto started = Clock::now();
+        REQUIRE(luau_host_interrupt_configure(root.state, 0, 5000000) == LUAU_HOST_STATUS_OK);
+        REQUIRE(luau_host_resume(child, root.state, 0) == LUAU_HOST_STATUS_BREAK);
+        const auto elapsed = Clock::now() - started;
+        REQUIRE(probe.polls == 1);
+        REQUIRE(elapsed >= std::chrono::milliseconds(5));
+        REQUIRE(elapsed < std::chrono::seconds(5));
+        throttleProbe = nullptr;
+    }
+
+    // Past the deadline, a poll that lets execution go on is asked again at
+    // the next counted safepoint.
+    {
+        ThrottleProbe probe;
+        probe.continueThrough = 2;
+        throttleProbe = &probe;
+        Root root = create_library_root();
+        install_throttle_poll(root.state);
+        luau_host_state* child = load_child(root, "while true do end", "@throttle-wall-clock-continue");
+        REQUIRE(luau_host_interrupt_configure(root.state, 0, 1000000) == LUAU_HOST_STATUS_OK);
+        REQUIRE(luau_host_resume(child, root.state, 0) == LUAU_HOST_STATUS_BREAK);
+        REQUIRE(probe.polls == 3);
+        REQUIRE(probe.countAtPoll[1] == probe.countAtPoll[0] + 1);
+        REQUIRE(probe.countAtPoll[2] == probe.countAtPoll[1] + 1);
+        throttleProbe = nullptr;
+    }
+}
+
+void test_interrupt_throttle_cross_thread_request()
+{
+    using Clock = std::chrono::steady_clock;
+    ThrottleProbe probe;
+    throttleProbe = &probe;
+    Root root = create_library_root();
+    install_throttle_poll(root.state);
+    // Only another thread's request can stop this tight loop promptly. The
+    // ten-second deadline is a safety net that fails the elapsed-time check
+    // instead of hanging when requests are ignored.
+    REQUIRE(luau_host_interrupt_configure(root.state, 0, UINT64_C(10000000000)) == LUAU_HOST_STATUS_OK);
+    luau_host_state* child = load_child(root, "while true do end", "@throttle-cross-thread");
+    std::thread requester([state = root.state] {
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        luau_host_interrupt_request(state);
+    });
+    const auto started = Clock::now();
+    const luau_host_status status = luau_host_resume(child, root.state, 0);
+    const auto elapsed = Clock::now() - started;
+    requester.join();
+    REQUIRE(status == LUAU_HOST_STATUS_BREAK);
+    REQUIRE(probe.polls == 1);
+    REQUIRE(elapsed < std::chrono::seconds(5));
+    REQUIRE(luau_host_thread_reset(child) == LUAU_HOST_STATUS_OK);
+
+    // A storm of requests from several threads while the script runs costs
+    // only uncounted polls: the count still matches a quiet run.
+    probe.polls = 0;
+    probe.continueThrough = std::numeric_limits<int>::max();
+    REQUIRE(luau_host_interrupt_configure(root.state, 0, 0) == LUAU_HOST_STATUS_OK);
+    REQUIRE(compile_and_load(child, "for i = 1, 200000 do end", "@throttle-request-storm") == LUAU_HOST_STATUS_OK);
+    std::atomic<bool> stop = {false};
+    std::vector<std::thread> requesters;
+    for (int index = 0; index < 3; ++index)
+    {
+        requesters.emplace_back([&stop, state = root.state] {
+            while (!stop.load())
+                luau_host_interrupt_request(state);
+        });
+    }
+    const luau_host_status stormStatus = luau_host_resume(child, root.state, 0);
+    stop = true;
+    for (std::thread& thread : requesters)
+        thread.join();
+    REQUIRE(stormStatus == LUAU_HOST_STATUS_OK);
+    REQUIRE(luau_host_interrupt_count(root.state) == 200001);
+    throttleProbe = nullptr;
+}
+
+void test_interrupt_throttle_lifecycle_and_races()
+{
+    ThrottleProbe probe;
+    throttleProbe = &probe;
+    REQUIRE(luau_host_interrupt_configure(nullptr, 0, 0) == LUAU_HOST_STATUS_INVALID_ARGUMENT);
+    luau_host_interrupt_request(nullptr);
+    REQUIRE(luau_host_interrupt_count(nullptr) == 0);
+
+    Root root = create_library_root();
+    // Configure requires an installed interrupt.
+    REQUIRE(luau_host_interrupt_configure(root.state, 10, 0) == LUAU_HOST_STATUS_INVALID_ARGUMENT);
+    REQUIRE(luau_host_interrupt_count(root.state) == 0);
+
+    // A child handle reaches the same root budget.
+    install_throttle_poll(root.state);
+    luau_host_state* child = load_child(root, "for i = 1, 100 do end", "@throttle-child-handle");
+    REQUIRE(luau_host_interrupt_configure(child, 0, 0) == LUAU_HOST_STATUS_OK);
+    REQUIRE(luau_host_resume(child, root.state, 0) == LUAU_HOST_STATUS_OK);
+    REQUIRE(luau_host_interrupt_count(child) == 101);
+    REQUIRE(luau_host_interrupt_count(root.state) == 101);
+    REQUIRE(probe.polls == 0);
+
+    // Uninstall ends throttling; a fresh install polls every safepoint again.
+    luau_host_interrupt_uninstall(root.state);
+    luau_host_interrupt_request(root.state);
+    install_throttle_poll(root.state);
+    REQUIRE(luau_host_interrupt_count(root.state) == 0);
+    probe.continueThrough = std::numeric_limits<int>::max();
+    REQUIRE(compile_and_load(root.state, "for i = 1, 100 do end", "@throttle-reinstalled") == LUAU_HOST_STATUS_OK);
+    REQUIRE(luau_host_pcall(root.state, 0, 0, 0) == LUAU_HOST_STATUS_OK);
+    REQUIRE(probe.executionPolls == 101);
+
+    // Requests from other threads race configure, execution, uninstall, and
+    // reinstall. They must all stop before close begins.
+    std::atomic<bool> stop = {false};
+    std::thread requester([&stop, state = root.state] {
+        while (!stop.load())
+            luau_host_interrupt_request(state);
+    });
+    for (int round = 0; round < 200; ++round)
+    {
+        REQUIRE(luau_host_interrupt_configure(root.state, 0, round % 2 == 0 ? 0 : 1000000000) == LUAU_HOST_STATUS_OK);
+        REQUIRE(compile_and_load(root.state, "for i = 1, 500 do end", "@throttle-race") == LUAU_HOST_STATUS_OK);
+        REQUIRE(luau_host_pcall(root.state, 0, 0, 0) == LUAU_HOST_STATUS_OK);
+        REQUIRE(luau_host_interrupt_count(root.state) == 501);
+        luau_host_interrupt_uninstall(root.state);
+        install_throttle_poll(root.state);
+    }
+    stop = true;
+    requester.join();
+    root.close();
+    throttleProbe = nullptr;
+}
+
+void test_interrupt_throttle_independent_roots()
+{
+    // Roots keep independent budgets while they run concurrently, even with
+    // another thread requesting attention on one of them throughout.
+    ThrottleProbe first;
+    ThrottleProbe second;
+    first.stopAboveCount = 200000;
+    second.stopAboveCount = 300000;
+    Root firstRoot = create_library_root();
+    Root secondRoot = create_library_root();
+    first.root = firstRoot.state;
+    second.root = secondRoot.state;
+    rootProbes = {&first, &second};
+    install_throttle_poll(firstRoot.state);
+    install_throttle_poll(secondRoot.state);
+    REQUIRE(luau_host_interrupt_configure(firstRoot.state, 200000, 0) == LUAU_HOST_STATUS_OK);
+    REQUIRE(luau_host_interrupt_configure(secondRoot.state, 300000, 0) == LUAU_HOST_STATUS_OK);
+    luau_host_state* firstChild = load_child(firstRoot, "while true do end", "@throttle-root-first");
+    luau_host_state* secondChild = load_child(secondRoot, "local function f() end while true do f() end", "@throttle-root-second");
+
+    std::atomic<bool> stop = {false};
+    std::thread requester([&stop, state = firstRoot.state] {
+        while (!stop.load())
+            luau_host_interrupt_request(state);
+    });
+    std::array<luau_host_status, 2> statuses = {};
+    run_threads_together<2>([&](size_t index) {
+        statuses[index] = index == 0
+            ? luau_host_resume(firstChild, firstRoot.state, 0)
+            : luau_host_resume(secondChild, secondRoot.state, 0);
+    });
+    stop = true;
+    requester.join();
+    rootProbes = {};
+
+    REQUIRE(statuses[0] == LUAU_HOST_STATUS_BREAK);
+    REQUIRE(statuses[1] == LUAU_HOST_STATUS_BREAK);
+    REQUIRE(luau_host_interrupt_count(firstRoot.state) == 200001);
+    REQUIRE(luau_host_interrupt_count(secondRoot.state) == 300001);
+    REQUIRE(second.polls == 1);
+    REQUIRE(first.executionPolls >= 1);
+}
+
 using TestFunction = void (*)();
 
 int run_test(const char* name, TestFunction test)
@@ -2584,6 +3107,17 @@ int main()
     failures += run_test(
         "multi-root interrupt uninstall ownership",
         test_multi_root_interrupt_uninstall_preserves_other_root);
+    failures += run_test(
+        "throttled interrupts count every safepoint without polling",
+        test_interrupt_throttle_counts_every_safepoint_without_polling);
+    failures += run_test("throttled interrupt exact count limit", test_interrupt_throttle_exact_count_limit);
+    failures += run_test("throttled interrupt attention at the next safepoint", test_interrupt_throttle_attention_at_next_safepoint);
+    failures += run_test("throttled interrupt repeats a caught hard stop", test_interrupt_throttle_repeats_a_caught_hard_stop);
+    failures += run_test("throttled interrupts never poll GC notifications", test_interrupt_throttle_gc_notifications_are_not_polled);
+    failures += run_test("throttled interrupt wall-clock deadline", test_interrupt_throttle_wall_clock);
+    failures += run_test("throttled interrupt cross-thread requests", test_interrupt_throttle_cross_thread_request);
+    failures += run_test("throttled interrupt lifecycle and request races", test_interrupt_throttle_lifecycle_and_races);
+    failures += run_test("throttled interrupt budgets of independent roots", test_interrupt_throttle_independent_roots);
     failures += run_test("stack slot limit refusals and recovery", test_stack_slot_limit_refusals_and_recovery);
     failures += run_test("stack growth failure without an error slot", test_stack_growth_failure_without_an_error_slot);
     failures += run_test("callback failure on a full frame", test_callback_failure_on_a_full_frame);

@@ -8,10 +8,13 @@ namespace Luau.Tooling;
 
 internal static class ArtifactManifestCommand
 {
-    private const string ApprovedBuildInputSha256 = "053e0c2160b19e5fc320c7549af1abcaaed3a6a931e6ea20b8cb983800be7863";
+    private const string ApprovedBuildInputSha256 = "e74f59480e8d64debb5389a4041d0d29b3121a8b15a4581dbe74b36068d8d753";
     private const ulong ApprovedUpstreamRevisionHash = 0x065976b2840123de;
-    private const ulong ApprovedHostBuildFingerprint = 0xa97c576544c22427;
-    private const uint ApprovedFeatureFlags = 0x3fff;
+    private const ulong ApprovedHostBuildFingerprint = 0xaf55c0083fd24bbf;
+    private const uint ApprovedFeatureFlags = 0x7fff;
+    // The number of symbols in native/luau-host/exports/luau_host.exports.
+    // Adding or removing an export is an ABI change that updates this too.
+    private const int ApprovedExportCount = 85;
 
     internal sealed record BinaryIdentity(
         uint RecordSize,
@@ -150,8 +153,9 @@ internal static class ArtifactManifestCommand
             .Select(static line => line.Trim())
             .Where(static line => line.Length > 0 && !line.StartsWith('#'))
             .ToArray();
-        Require(approvedExports.Length == 82 && approvedExports.Distinct(StringComparer.Ordinal).Count() == 82,
-            "Approved export allowlist must contain 82 unique symbols.");
+        Require(approvedExports.Length == ApprovedExportCount &&
+                approvedExports.Distinct(StringComparer.Ordinal).Count() == ApprovedExportCount,
+            $"Approved export allowlist must contain {ApprovedExportCount} unique symbols.");
         await AuditExportsAsync(repository, platform, preset, binary, exportsPath);
         var sourceCommit = (await ProcessRunner.RequireAsync("git", ["rev-parse", "HEAD"], repository.Root, echo: false)).StandardOutput.Trim().ToLowerInvariant();
         var status = await ProcessRunner.RequireAsync("git", ["status", "--porcelain=v1", "--untracked-files=all"], repository.Root, echo: false);

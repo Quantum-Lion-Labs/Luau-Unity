@@ -238,6 +238,7 @@ internal sealed unsafe class LuauVmContext
                 "Dispatch the call to the VM owner thread before compiling, pushing arguments, or resuming it.");
         }
 
+        ScriptOperation operation;
         lock (nativeGate)
         {
             lock (lifecycleGate)
@@ -252,7 +253,7 @@ internal sealed unsafe class LuauVmContext
                     ThrowHelper.ThrowInvalidOperationException("The Luau VM is already executing.");
                 }
 
-                var operation = new ScriptOperation(
+                operation = new ScriptOperation(
                     this,
                     state,
                     chunkName,
@@ -262,11 +263,93 @@ internal sealed unsafe class LuauVmContext
                     mode,
                     ambientOperation.Value);
 
-                ResetAllocatorFailure();
+                try
+                {
+                    ResetAllocatorFailure();
+                    ConfigureInterruptBudget(operation);
+                }
+                catch
+                {
+                    // Not yet published or registered, so disposing only
+                    // releases the operation's own timer and sources.
+                    operation.Dispose();
+                    throw;
+                }
+
                 activeOperation = operation;
                 ambientOperation.Value = operation;
-                return operation;
             }
+        }
+
+        try
+        {
+            operation.RegisterCallerCancellationSignal();
+        }
+        catch
+        {
+            operation.Dispose();
+            throw;
+        }
+
+        return operation;
+    }
+
+    /// <summary>
+    /// Hands the operation's budget to the native interrupt throttle, which
+    /// keeps the safepoint count and the clock and polls managed code only
+    /// when the count passes the limit, the deadline passes, or a request
+    /// is pending. Configuring also resets the count and clears requests, so
+    /// it must happen before the operation is published and can be
+    /// signaled.
+    /// </summary>
+    void ConfigureInterruptBudget(ScriptOperation operation)
+    {
+        var status = luau_host_interrupt_configure(
+            (LuauHostState*)mainPointer,
+            operation.InterruptCountBudget,
+            operation.GetRemainingWallClockNanoseconds());
+        if (status != LuauHostStatus.Ok)
+        {
+            throw new LuauException(
+                $"The Luau host could not configure the execution budget (status {(int)status}).");
+        }
+    }
+
+    /// <summary>
+    /// Makes the next interrupt safepoint poll <paramref name="operation"/>
+    /// from any thread. The request is dropped once the operation is no
+    /// longer active; holding the lifecycle gate keeps the root open for
+    /// the native call, since close begins only after the active operation
+    /// ends or disposal takes this gate.
+    /// </summary>
+    internal void RequestInterruptAttention(ScriptOperation operation)
+    {
+        lock (lifecycleGate)
+        {
+            if (ReferenceEquals(activeOperation, operation))
+            {
+                RequestActiveInterruptAttentionLocked();
+            }
+        }
+    }
+
+    /// <summary>
+    /// Makes the next safepoint poll whichever operation is active, for
+    /// disposal requests that do not know which operation they stop.
+    /// </summary>
+    internal void RequestActiveInterruptAttention()
+    {
+        lock (lifecycleGate)
+        {
+            RequestActiveInterruptAttentionLocked();
+        }
+    }
+
+    void RequestActiveInterruptAttentionLocked()
+    {
+        if (activeOperation != null && mainPointer != IntPtr.Zero)
+        {
+            luau_host_interrupt_request((LuauHostState*)mainPointer);
         }
     }
 
@@ -905,6 +988,10 @@ internal sealed unsafe class LuauVmContext
             }
 
             Volatile.Write(ref lifecycleState, 1);
+
+            // An active operation keeps the root open; its next safepoint
+            // now observes the disposal request.
+            RequestActiveInterruptAttentionLocked();
         }
 
         try
@@ -1120,13 +1207,22 @@ internal sealed unsafe class LuauVmContext
                 return 0;
             }
 
-            operation.PollInterrupt();
+            operation.PollInterrupt(state);
             return operation.YieldReason != ScriptYieldReason.None ? 1 : 0;
         }
         catch
         {
             // Interrupt callbacks must never throw across the native boundary.
-            // A later safepoint will retry cancellation or budget checks.
+            // The throttled host polls again only on request, so ask for the
+            // next safepoint to retry the cancellation and budget checks.
+            try
+            {
+                luau_host_interrupt_request(state);
+            }
+            catch
+            {
+            }
+
             return 0;
         }
     }

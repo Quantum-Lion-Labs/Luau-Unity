@@ -102,7 +102,37 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size)
     if (luau_host_interrupt_install(state, &callbacks) == LUAU_HOST_STATUS_OK)
     {
         (void)luau_host_collect(state);
+
+        // Throttled delivery with fuzz-chosen budgets: a small count limit, a
+        // short or absent deadline, and an optional pending request, over a
+        // loop that allocates so GC notifications interleave with safepoints.
+        const uint64_t budget = read_u64(payload, size_t(payloadSize));
+        const uint64_t countLimit = (selector & 2) != 0 ? budget % 4096 : 0;
+        const uint64_t timeLimitNs = (selector & 4) != 0 ? (budget >> 12) % 2000000 : 0;
+        (void)luau_host_interrupt_configure(state, countLimit, timeLimitNs);
+        if ((selector & 8) != 0)
+            luau_host_interrupt_request(state);
+
+        static const char loopSource[] = "local t = {} for i = 1, 2048 do t[i] = {i} end return #t";
+        luau_host_buffer bytecode = {};
+        if (luau_host_compile(
+                reinterpret_cast<const uint8_t*>(loopSource),
+                sizeof(loopSource) - 1,
+                nullptr,
+                &bytecode) == LUAU_HOST_STATUS_OK)
+        {
+            luau_host_status loadStatus = LUAU_HOST_STATUS_INVALID_ARGUMENT;
+            if (luau_host_load(state, reinterpret_cast<const uint8_t*>("=fuzz"), bytecode.data, bytecode.size, 0, &loadStatus) ==
+                    LUAU_HOST_STATUS_OK &&
+                loadStatus == LUAU_HOST_STATUS_OK)
+                (void)luau_host_pcall(state, 0, 1, 0);
+            luau_host_buffer_free(&bytecode);
+        }
+        (void)luau_host_interrupt_count(state);
+        (void)luau_host_stack_set_top(state, 0);
+        (void)luau_host_memory_reset_failure(state);
         luau_host_interrupt_uninstall(state);
+        luau_host_interrupt_request(state);
     }
 
     luau_host_state_close(state);

@@ -11,7 +11,10 @@ luau_host_get_abi_info
 luau_host_global_get
 luau_host_global_push
 luau_host_global_set
+luau_host_interrupt_configure
+luau_host_interrupt_count
 luau_host_interrupt_install
+luau_host_interrupt_request
 luau_host_interrupt_uninstall
 luau_host_is_global
 luau_host_is_yieldable

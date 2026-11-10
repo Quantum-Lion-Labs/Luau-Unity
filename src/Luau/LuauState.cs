@@ -354,7 +354,22 @@ public unsafe partial class LuauState : IDisposable, ILuauReference
             return;
         }
 
+        try
+        {
+            // A running operation on this state observes IsDisposed at its
+            // next interrupt poll; make that poll happen. Ask before running
+            // cancellation handlers: they are host code, and one that needs
+            // the VM would otherwise wait on the executing thread forever
+            // while that thread never polls.
+            context.RequestActiveInterruptAttention();
+        }
+        catch
+        {
+            // A missed request cannot be allowed to skip native teardown.
+        }
+
         RequestLifetimeCancellation();
+
         try
         {
             if (isMainThread)

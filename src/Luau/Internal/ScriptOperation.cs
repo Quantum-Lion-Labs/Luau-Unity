@@ -1,4 +1,6 @@
 using System.Diagnostics;
+using Luau.Internal.Interop;
+using static Luau.Internal.Interop.NativeMethods;
 
 namespace Luau;
 
@@ -33,7 +35,7 @@ internal enum ScriptHardStopReason
     WallClock,
 }
 
-internal sealed class ScriptOperation : IDisposable
+internal sealed unsafe class ScriptOperation : IDisposable
 {
     static readonly TimeSpan MaximumTimerDelay = TimeSpan.FromMilliseconds(int.MaxValue - 1d);
     static long nextCallbackFailureToken;
@@ -44,6 +46,7 @@ internal sealed class ScriptOperation : IDisposable
     readonly ScriptOperation? previousAmbient;
 
     Timer? deadlineTimer;
+    CancellationTokenRegistration callerCancellationRegistration;
     LuauManagedCallbackRegistration? pendingCallback;
     IntPtr pendingCallbackThread;
     string? pendingCallbackName;
@@ -218,6 +221,7 @@ internal sealed class ScriptOperation : IDisposable
         pendingCallbackThread = thread;
         Volatile.Write(ref asyncCallbackPhase, (int)AsyncCallbackPhase.PendingDispatch);
         Volatile.Write(ref yieldReason, (int)ScriptYieldReason.AsyncCallback);
+        RequestInterruptAttentionFromOwner();
     }
 
     internal void MarkAsyncCallbackSuspended()
@@ -261,6 +265,87 @@ internal sealed class ScriptOperation : IDisposable
         callbackFailureName = callbackName;
         Interlocked.Exchange(ref callbackFailure, exception);
         Volatile.Write(ref yieldReason, (int)ScriptYieldReason.CallbackFailure);
+        RequestInterruptAttentionFromOwner();
+    }
+
+    /// <summary>
+    /// Makes the next interrupt safepoint on this root poll managed state.
+    /// Pending work must reach Luau at the very next safepoint: the pointer
+    /// check in <see cref="RecordFailedCallbackSuspension"/> relies on no
+    /// instruction that could switch coroutines running in between.
+    /// </summary>
+    void RequestInterruptAttentionFromOwner()
+    {
+        // Only the thread running this operation calls this, while the
+        // operation is active, so its root cannot close concurrently and its
+        // thread handle stays reachable. The request is a lock-free native
+        // store; this also runs from reverse P/Invoke catch blocks, so it
+        // must never throw.
+        try
+        {
+            luau_host_interrupt_request((LuauHostState*)ThreadPointer);
+        }
+        catch
+        {
+        }
+    }
+
+    /// <summary>
+    /// Registers the cross-thread signal for caller cancellation. Called
+    /// once the operation is active and outside the context locks: a token
+    /// that is already canceled runs the request inline, and disposing the
+    /// registration waits for a concurrent callback that may need those locks.
+    /// </summary>
+    internal void RegisterCallerCancellationSignal()
+    {
+        if (!callerCancellationToken.CanBeCanceled)
+        {
+            return;
+        }
+
+        callerCancellationRegistration = callerCancellationToken.Register(
+            static operation => ((ScriptOperation)operation!).RequestInterruptAttention(),
+            this);
+    }
+
+    void RequestInterruptAttention()
+    {
+        try
+        {
+            Context.RequestInterruptAttention(this);
+        }
+        catch
+        {
+            // Cancellation and timer callbacks must not fail. Disposal or the
+            // end of the operation already won the race.
+        }
+    }
+
+    /// <summary>
+    /// The native interrupt budget for this operation: the count limit and
+    /// the wall-clock time left, in nanoseconds; zero disables either.
+    /// </summary>
+    internal ulong InterruptCountBudget =>
+        Options.InterruptCountLimit is { } limit ? (ulong)limit : 0UL;
+
+    internal ulong GetRemainingWallClockNanoseconds()
+    {
+        if (Options.WallClockLimit is not { } limit)
+        {
+            return 0;
+        }
+
+        var remainingTicks = (limit - GetElapsedTime()).Ticks;
+        if (remainingTicks <= 0)
+        {
+            // Already due: the first clock read must observe it.
+            return 1;
+        }
+
+        const long nanosecondsPerTick = 100;
+        return remainingTicks > long.MaxValue / nanosecondsPerTick
+            ? ulong.MaxValue
+            : (ulong)(remainingTicks * nanosecondsPerTick);
     }
 
     /// <summary>
@@ -327,7 +412,7 @@ internal sealed class ScriptOperation : IDisposable
         injectedCallbackFailureName = null;
     }
 
-    internal void PollInterrupt()
+    internal void PollInterrupt(LuauHostState* state)
     {
         if (Volatile.Read(ref pendingCallback) != null)
         {
@@ -341,7 +426,7 @@ internal sealed class ScriptOperation : IDisposable
             return;
         }
 
-        if (DetectHardStop(fromInterrupt: true) != ScriptHardStopReason.None)
+        if (DetectHardStop(state) != ScriptHardStopReason.None)
         {
             Volatile.Write(ref yieldReason, (int)ScriptYieldReason.HardStop);
         }
@@ -369,7 +454,7 @@ internal sealed class ScriptOperation : IDisposable
             return existing;
         }
 
-        var reason = DetectHardStop(fromInterrupt: false);
+        var reason = DetectHardStop(interruptState: null);
         if (reason == ScriptHardStopReason.None)
         {
             return null;
@@ -379,7 +464,12 @@ internal sealed class ScriptOperation : IDisposable
         return Interlocked.CompareExchange(ref hardStopException, candidate, null) ?? candidate;
     }
 
-    ScriptHardStopReason DetectHardStop(bool fromInterrupt)
+    /// <summary>
+    /// Checks the hard stops in precedence order. From an interrupt poll,
+    /// <paramref name="interruptState"/> is the polling thread, and the
+    /// native host's safepoint count decides the interrupt budget.
+    /// </summary>
+    ScriptHardStopReason DetectHardStop(LuauHostState* interruptState)
     {
         var existing = (ScriptHardStopReason)Volatile.Read(ref hardStopReason);
         if (existing != ScriptHardStopReason.None)
@@ -399,12 +489,9 @@ internal sealed class ScriptOperation : IDisposable
         }
         else
         {
-            var observedCount = fromInterrupt
-                ? Interlocked.Increment(ref interruptCount)
-                : Interlocked.Read(ref interruptCount);
-            if (fromInterrupt &&
+            if (interruptState != null &&
                 Options.InterruptCountLimit is { } interruptLimit &&
-                observedCount > interruptLimit)
+                ReadNativeInterruptCount(interruptState) > (ulong)interruptLimit)
             {
                 candidate = ScriptHardStopReason.InterruptCount;
             }
@@ -451,6 +538,17 @@ internal sealed class ScriptOperation : IDisposable
         };
     }
 
+    ulong ReadNativeInterruptCount(LuauHostState* interruptState)
+    {
+        // The host counts safepoints itself and polls only when the count
+        // passes the limit or other work is due. Its count is the authority
+        // and is compared unclamped; the latest observation is kept for the
+        // budget exception, which reports a signed count.
+        var nativeCount = luau_host_interrupt_count(interruptState);
+        Interlocked.Exchange(ref interruptCount, nativeCount > long.MaxValue ? long.MaxValue : (long)nativeCount);
+        return nativeCount;
+    }
+
     TimeSpan GetElapsedTime()
     {
         var elapsedTicks = Stopwatch.GetTimestamp() - startedTimestamp;
@@ -481,6 +579,11 @@ internal sealed class ScriptOperation : IDisposable
             return;
         }
 
+        // Ask for a poll before canceling: registrations on the
+        // callback-visible token are host code, and one that blocks on the VM
+        // must not delay the stop it is waiting for.
+        RequestInterruptAttention();
+
         try
         {
             deadlineSource.Cancel();
@@ -495,6 +598,12 @@ internal sealed class ScriptOperation : IDisposable
             // throwing cancellation callback cannot escape the timer thread;
             // the source is already canceled and the runner will observe it.
         }
+
+        // The native host also reads its own clock, but only every few
+        // safepoints; this request bounds detection by the timer as well. It
+        // repeats the one above in case that poll ran before the cancellation
+        // became visible.
+        RequestInterruptAttention();
     }
 
     static TimeSpan GetTimerDelay(TimeSpan remaining)
@@ -509,6 +618,9 @@ internal sealed class ScriptOperation : IDisposable
             return;
         }
 
+        // Dispose waits for a running cancellation callback, which may need
+        // the context locks; no lock is held here.
+        callerCancellationRegistration.Dispose();
         Interlocked.Exchange(ref deadlineTimer, null)?.Dispose();
         linkedCancellationSource.Dispose();
         deadlineCancellationSource?.Dispose();
