@@ -395,7 +395,14 @@ return ok, read()";
     [Fact]
     public async Task CallbackFailureDeliveredToAnotherFrameLeavesItsLocalsIntact()
     {
-        using var root = CreateRoot(LuauExecutionOptions.Default with { InterruptCountLimit = null });
+        // The pending failure ends the script's loop at its first interrupt.
+        // The wall-clock limit only stops the loop if that delivery regresses,
+        // so keep it well clear of a busy runner's scheduling delays.
+        using var root = CreateRoot(LuauExecutionOptions.Default with
+        {
+            InterruptCountLimit = null,
+            WallClockLimit = TimeSpan.FromSeconds(10),
+        });
         root["fail"] = root.CreateFunction("fail", _ => throw new InvalidOperationException("boom"));
         using var thread = root.CreateThread();
 

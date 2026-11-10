@@ -211,7 +211,16 @@ public sealed class CallbackRegressionTests
 
     static LuauState CreateRoot()
     {
-        var root = LuauState.Create();
+        // Callback routing is independent of runner load. The default 250 ms
+        // wall-clock budget includes time spent awaiting an async callback,
+        // which a busy runner can exceed.
+        var root = LuauState.Create(new LuauStateOptions
+        {
+            DefaultExecutionOptions = LuauExecutionOptions.Default with
+            {
+                WallClockLimit = TimeSpan.FromSeconds(10),
+            },
+        });
         root.OpenBaseLibrary();
         root.OpenCoroutineLibrary();
         return root;
