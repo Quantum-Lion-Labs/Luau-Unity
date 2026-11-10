@@ -127,6 +127,29 @@ and the managed ABI verifier whenever those files move.
 These are the only maintained targets. Preserve each binary's `.meta` file and
 review CPU/platform importer settings when installing a rebuilt artifact.
 
+The Windows plugin comes from the `windows-x64` preset, built in CI with the
+pinned MSVC toolset. It links the Microsoft C and C++ runtimes statically
+(`CMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded$<$<CONFIG:Debug>:Debug>`, that is
+`/MT`, set by the preset), so its only import is `KERNEL32.dll`. The CMake
+build checks the selection at configure time: it stops on any other value, on
+a target whose `MSVC_RUNTIME_LIBRARY` differs (the upstream archives, the
+conformance executable, and the ABI fixtures included), and on an explicit
+`/MD` or `/MT` flag in the flag variables or in directory, target, or source
+options. Those checks catch a wrong selection early; what enforces the result
+is the import audit of the built DLL, described below.
+
+A Unity Windows player does
+not ship `MSVCP140.dll`, `VCRUNTIME140.dll`, or `VCRUNTIME140_1.dll`; a plugin
+that imported them, as the plugin did through 0.3.1, fails with
+`DllNotFoundException` on a machine without the Visual C++ redistributable.
+Development machines and CI runners usually have it, so only a clean player
+machine shows the failure; the import audit below is what catches a
+regression. The static runtime is safe for the same reason as on Android
+(below): no C runtime object crosses the C ABI. The one allocation a caller
+receives, a `luau_host_compile` output buffer, is released by
+`luau_host_buffer_free` in the runtime that allocated it, and no export takes
+or returns a `FILE*`, locale, C++ object, or exception.
+
 The Linux plugin comes from the `linux-x64-shipping` preset, which CI builds in a
 digest-pinned Ubuntu 22.04 container with clang 15.0.7. It links the C++
 runtime statically, so its only dynamic dependencies are `libc`, `libm`, and the
@@ -149,13 +172,48 @@ caught inside the host, and `--exclude-libs` keeps the runtime's symbols out of
 the dynamic table. The integration project uses GameActivity, so its player
 smoke cannot catch a regression here; the dependency audit does.
 
-Each ELF plugin's allowed dynamic dependencies are listed once, in
-`tools/Luau.Tooling/NativeDependencyPolicy.cs`. `native-artifacts` checks every
-shipping build against that list with the pinned `readelf` and confirms the
-tooling's own ELF reader agrees. `package-static` uses that reader to check the
-committed plugins directly, without native tools, so every managed validation
-and release run rejects a plugin that needs anything else. Adding a dependency
-is a compatibility decision, not a build detail.
+Each plugin's allowed dynamic dependencies are listed once, in
+`tools/Luau.Tooling/NativeDependencyPolicy.cs`. For the ELF plugins,
+`native-artifacts` checks every shipping build against that list with the
+pinned `readelf` and confirms the tooling's own ELF reader agrees. For the
+Windows plugin it lists the imports with the pinned toolset's
+`dumpbin /dependents`, confirms the tooling's own PE reader finds the same
+import and delay-load lists, and applies the Windows policy: every imported or
+delay-loaded DLL must be `KERNEL32.dll` (compared without regard to case, as
+the loader does), and no export may forward to another DLL. It records each
+allowlist in the shipping manifest (`linux_allowed_needed`,
+`android_allowed_needed`, `windows_allowed_imports`), and the Windows audit
+manifest records the MSVC runtime the build was configured with.
+`package-static` uses the same readers to check the committed plugins directly,
+without native tools, so every managed validation and release run rejects a
+plugin that declares any other dependency.
+
+The audit covers what a plugin file declares: `DT_NEEDED` entries for ELF, and
+imports, delay-load imports, and forwarded exports for PE. It cannot see a
+library that code loads by name at run time, and it does not follow the
+dependencies of the system libraries themselves. The statically linked
+Microsoft runtime, for example, imports `LoadLibraryExW` and probes for
+optional operating-system API sets with it; those are part of Windows and are
+not plugin dependencies. Do not add a run-time load of anything that is not
+part of the operating system.
+
+Both readers treat the file as untrusted and read what the loader reads. The
+ELF reader follows `PT_DYNAMIC` through its `PT_LOAD` mapping. The PE reader
+locates the import, delay-load import, and export directories through the
+optional header's data directories, maps each address through the one section
+that contains it, and reads only bytes the loader would load from the file. It
+bounds the number of DLLs (64 per table), forwarders (64), exported functions
+(65536), and sections (96), and the length of each DLL name (255 bytes) and
+forwarder string (1,024 bytes), and fails
+on anything malformed, truncated, or ambiguous: overlapping or misaligned
+sections, a directory or name outside the file data of its section, a
+descriptor table without its terminator or whose declared size does not end
+there, a descriptor with no name, the obsolete address-based delay-load
+format, a bound import directory, or a name that is not printable ASCII. It
+is deliberately narrower than the PE format: it accepts x86-64 DLLs with 16
+data directories whose tables lie in section data, as the Microsoft linker
+writes them, and fails on any other layout instead of interpreting it.
+Adding a dependency is a compatibility decision, not a build detail.
 
 To refresh plugins after a native source change, dispatch the **Build Luau
 Host** workflow with `refresh-artifacts=true` on the branch. It rebuilds every
@@ -164,6 +222,17 @@ platform and skips the "committed plugin is current" checks. Download each
 `out/shipping/<platform>/` binary over the package plugin, then commit them
 with the matching managed DLL. Ordinary pull-request and main-branch runs fail
 if any committed plugin differs from a fresh build.
+
+In a refresh run, `native-artifacts` audits each fresh build, but the
+committed plugins are still the old ones. After a change that the old plugins
+do not satisfy, such as a stricter dependency policy, `package-static` (run by
+`package-release` in the release-package job, and by `validate-linux`) fails
+on the stale plugin until the refresh is committed; that failure is expected.
+The Windows job runs the whole .NET solution, tooling tests included, before it
+uploads its artifact, so a test asserting a property of the committed plugin
+that only the refresh makes true would fail that job and withhold the
+replacement. Add such a test after the refresh commit. Do not relax the audit
+to get a refresh through.
 
 ## 4. Package interop
 
@@ -753,7 +822,9 @@ dotnet run --project tools/Luau.Tooling -- package-consumer \
 ```
 
 The static check validates package boundaries, importer metadata, and the
-dynamic dependencies of the committed ELF plugins without launching Unity. The consumer check copies only
+dynamic dependencies of every committed plugin (ELF dependencies, and the
+Windows plugin's imports, delay-load imports, and forwarded exports) without
+launching Unity. The consumer check copies only
 `tests/Luau.Unity.PackageConsumerProbe` into a generated disposable Unity
 project, resolves the standalone package, compiles generated host bindings,
 loads the native plugin, and executes a representative script. It is not a
@@ -872,6 +943,11 @@ usually means a dynamic dependency is missing from the player. List them with
 `readelf -d` and compare them with the policy in section 3.4; `package-static`
 fails on any committed plugin that needs more than the allowed system
 libraries.
+
+On Windows, the same exception in a player on a machine without the Visual C++
+redistributable can mean the plugin imports a runtime DLL. List its imports with
+`dumpbin /dependents` (or `llvm-readobj --coff-imports`); the shipped plugin
+imports only `KERNEL32.dll`, and `package-static` rejects anything else.
 
 ### ABI compatibility rejection
 

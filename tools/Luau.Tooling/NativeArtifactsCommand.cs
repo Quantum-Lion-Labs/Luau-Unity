@@ -139,6 +139,10 @@ internal static class NativeArtifactsCommand
         else
         {
             File.Copy(source, shipping, true);
+            var cache = new CMakeCache(Path.Combine(outRoot, "build", artifact.Preset, "CMakeCache.txt"));
+            var dumpbin = Path.Combine(Path.GetDirectoryName(cache.Get("CMAKE_LINKER"))!, "dumpbin.exe");
+            FileSystem.RequireFile(dumpbin, "Pinned MSVC dumpbin");
+            await AssertPeDependenciesAsync(dumpbin, shipping, repository.Root, artifact.Platform);
             await ArtifactManifestCommand.WriteAsync(repository, shipping, artifact.Platform, auditManifest);
             var pdb = Path.Combine(outRoot, "build", "windows-x64", "Release", "luau_host.pdb");
             var symbolsDirectory = Path.Combine(outRoot, "symbols", artifact.Platform);
@@ -188,6 +192,11 @@ internal static class NativeArtifactsCommand
             shippingRecord["linux_toolchain_packages"] = new JsonObject(policy.LinuxToolchainPackages
                 .OrderBy(static package => package.Key, StringComparer.Ordinal)
                 .Select(static package => KeyValuePair.Create(package.Key, (JsonNode?)package.Value)));
+        }
+        else
+        {
+            shippingRecord["windows_msvc_runtime_library"] = NativeDependencyPolicy.WindowsMsvcRuntimeLibrary;
+            shippingRecord["windows_allowed_imports"] = new JsonArray(NativeDependencyPolicy.WindowsAllowedImports.Select(static name => (JsonNode)name).ToArray());
         }
         FileSystem.WriteUtf8(shippingManifest, shippingRecord.ToJsonString(JsonOptions.Compact) + "\n");
 
@@ -329,6 +338,61 @@ internal static class NativeArtifactsCommand
             $"{platform} shipping artifact dependencies differ between readelf ({string.Join(", ", needed)}) " +
             $"and the package audit ({string.Join(", ", managed)}).");
         NativeDependencyPolicy.Validate(platform, $"{platform} shipping artifact", needed);
+    }
+
+    // The Windows plugin may import only the operating system DLLs in
+    // NativeDependencyPolicy, may delay-load nothing else, and may forward no
+    // export. package-static audits the committed plugin with the managed PE
+    // reader, so every shipping build proves it agrees with the pinned dumpbin.
+    private static async Task AssertPeDependenciesAsync(string dumpbin, string binary, string root, string platform)
+    {
+        var output = (await ProcessRunner.RequireAsync(dumpbin, ["/nologo", "/dependents", binary], root, echo: false)).CombinedOutput;
+        var (imports, delayImports) = ParseDumpbinDependents(output);
+        var managed = NativeDependencyPolicy.ReadPeDependencies(File.ReadAllBytes(binary), $"{platform} shipping artifact");
+        Require(imports.SequenceEqual(managed.Imports, StringComparer.Ordinal) &&
+                delayImports.SequenceEqual(managed.DelayImports, StringComparer.Ordinal),
+            $"{platform} shipping artifact dependencies differ between dumpbin (imports: {string.Join(", ", imports)}; " +
+            $"delay-load: {string.Join(", ", delayImports)}) and the package audit (imports: {string.Join(", ", managed.Imports)}; " +
+            $"delay-load: {string.Join(", ", managed.DelayImports)}).");
+        NativeDependencyPolicy.ValidateWindows(platform, $"{platform} shipping artifact", managed);
+    }
+
+    // dumpbin /dependents lists the import directory's DLLs under one heading
+    // and the delay-load directory's under another, one name per line.
+    internal static (string[] Imports, string[] DelayImports) ParseDumpbinDependents(string output)
+    {
+        const string importsHeading = "Image has the following dependencies:";
+        const string delayHeading = "Image has the following delay load dependencies:";
+        var imports = new List<string>();
+        var delayImports = new List<string>();
+        List<string>? current = null;
+        var sawImports = false;
+        foreach (var line in output.Split('\n').Select(static line => line.Trim()))
+        {
+            if (line == importsHeading)
+            {
+                current = imports;
+                sawImports = true;
+            }
+            else if (line == delayHeading)
+            {
+                current = delayImports;
+            }
+            else if (line.Length == 0)
+            {
+                continue;
+            }
+            else if (current is not null && line != "Summary" && !line.Contains(' ', StringComparison.Ordinal))
+            {
+                current.Add(line);
+            }
+            else
+            {
+                current = null;
+            }
+        }
+        Require(sawImports, $"dumpbin /dependents did not list any dependencies:\n{output}");
+        return (imports.ToArray(), delayImports.ToArray());
     }
 
     private static async Task AssertLinuxSymbolVersionsAsync(string readelf, string binary, string root, string glibcMaximum)

@@ -70,7 +70,12 @@ suspended chain. Ordinary `luau_host_yield` and script yields retain their
 existing script-visible behavior. The host reserves native thread userdata
 and the debug-interrupt hook for these continuation links.
 
-Each plugin's dynamic dependencies are part of this contract. The Android
+Each plugin's dynamic dependencies are part of this contract. The Windows
+plugin imports only `KERNEL32.dll`, with no delay-load import or forwarded
+export: the Microsoft C and C++ runtimes are linked statically (`/MT`), which is
+valid for the same reason, and because the one allocation a caller receives,
+a compile output buffer, is released by `luau_host_buffer_free` in the runtime
+that allocated it. It therefore needs no Visual C++ redistributable. The Android
 plugins require API level 26 and load only `libc.so`, `libm.so`, and `libdl.so`;
 the C++ runtime is linked statically, which is valid because no C++ type,
 allocation, or exception crosses the C ABI. They therefore work with both the

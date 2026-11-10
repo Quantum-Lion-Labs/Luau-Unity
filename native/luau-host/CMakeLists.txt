@@ -176,6 +176,50 @@ if(MSVC)
     # timestamp/GUID variance from objects, and PDBALTPATH below prevents the
     # package DLL from embedding a build-machine absolute path.
     add_compile_options(/Zi /Brepro)
+
+    # The Microsoft C and C++ runtimes are linked statically, so the plugin
+    # imports only KERNEL32.dll. A Unity Windows player does not ship
+    # MSVCP140.dll or VCRUNTIME140*.dll, so a plugin that needed them would fail
+    # with DllNotFoundException on a machine without the Visual C++
+    # redistributable. This is safe because no C++ object, allocation, or
+    # exception crosses the C host ABI: every C++ exception and VM long jump is
+    # contained inside this library, and the one buffer a caller receives is
+    # released by luau_host_buffer_free in the same runtime that allocated it.
+    # The preset selects the runtime; it must hold for every target, including
+    # the upstream archives, which inherit it below. native-artifacts and
+    # package-static reject any other import.
+    set(LUAU_HOST_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+    if(NOT "${CMAKE_MSVC_RUNTIME_LIBRARY}" STREQUAL "${LUAU_HOST_MSVC_RUNTIME_LIBRARY}")
+        message(FATAL_ERROR
+            "luau_host requires CMAKE_MSVC_RUNTIME_LIBRARY=${LUAU_HOST_MSVC_RUNTIME_LIBRARY} "
+            "(the static C and C++ runtimes); '${CMAKE_MSVC_RUNTIME_LIBRARY}' would make the "
+            "plugin depend on Visual C++ runtime DLLs that Unity players do not contain. "
+            "Configure with the windows-x64 preset.")
+    endif()
+    # An explicit runtime flag would override the selection above. It may
+    # stand alone or inside a generator expression. The flag variables are
+    # checked here; directory, target, and source options are checked once
+    # every target exists, at the end of this file.
+    set(LUAU_HOST_MSVC_RUNTIME_FLAG_PATTERN "(^|[ \t:;>])[/-]M[DT]d?([ \t;>,]|$)")
+    set(_luau_host_flag_suffixes _DEBUG _RELEASE _RELWITHDEBINFO _MINSIZEREL)
+    foreach(_luau_host_configuration IN LISTS CMAKE_CONFIGURATION_TYPES CMAKE_BUILD_TYPE)
+        string(TOUPPER "_${_luau_host_configuration}" _luau_host_flag_suffix)
+        list(APPEND _luau_host_flag_suffixes "${_luau_host_flag_suffix}")
+    endforeach()
+    list(REMOVE_DUPLICATES _luau_host_flag_suffixes)
+    foreach(_luau_host_flags_variable IN ITEMS CMAKE_C_FLAGS CMAKE_CXX_FLAGS)
+        set(_luau_host_flag_variables "${_luau_host_flags_variable}")
+        foreach(_luau_host_flag_suffix IN LISTS _luau_host_flag_suffixes)
+            list(APPEND _luau_host_flag_variables "${_luau_host_flags_variable}${_luau_host_flag_suffix}")
+        endforeach()
+        foreach(_luau_host_flag_variable IN LISTS _luau_host_flag_variables)
+            if("${${_luau_host_flag_variable}}" MATCHES "${LUAU_HOST_MSVC_RUNTIME_FLAG_PATTERN}")
+                message(FATAL_ERROR
+                    "${_luau_host_flag_variable} selects a C runtime explicitly; luau_host selects "
+                    "the static runtime through CMAKE_MSVC_RUNTIME_LIBRARY.")
+            endif()
+        endforeach()
+    endforeach()
 endif()
 
 set(LUAU_BUILD_CLI OFF CACHE BOOL "" FORCE)
@@ -595,6 +639,69 @@ if(LUAU_HOST_BUILD_FUZZERS)
         USES_TERMINAL
         VERBATIM
     )
+endif()
+
+if(MSVC)
+    # Every target that compiles code, here and in the upstream tree, must use
+    # the static runtime: the host and the upstream archives linked into it, the
+    # conformance executable, and the ABI fixtures. A target-level override, or
+    # a runtime flag passed as a directory, target, or source option, would
+    # otherwise mix runtimes in the plugin or test a different runtime than the
+    # one that ships. These checks catch a wrong selection at configure time;
+    # the import audit of the built DLL (native-artifacts, package-static) is
+    # what enforces the result. Keep this block after every target.
+    function(luau_host_reject_msvc_runtime_flag owner options)
+        foreach(_option IN LISTS options)
+            if("${_option}" MATCHES "${LUAU_HOST_MSVC_RUNTIME_FLAG_PATTERN}")
+                message(FATAL_ERROR
+                    "${owner} passes the C runtime flag '${_option}'; luau_host selects the "
+                    "static runtime through CMAKE_MSVC_RUNTIME_LIBRARY.")
+            endif()
+        endforeach()
+    endfunction()
+
+    function(luau_host_require_msvc_runtime directory)
+        get_property(_directory_options DIRECTORY "${directory}" PROPERTY COMPILE_OPTIONS)
+        luau_host_reject_msvc_runtime_flag("Directory ${directory}" "${_directory_options}")
+        get_property(_targets DIRECTORY "${directory}" PROPERTY BUILDSYSTEM_TARGETS)
+        foreach(_target IN LISTS _targets)
+            get_target_property(_type "${_target}" TYPE)
+            if(_type MATCHES "^(STATIC_LIBRARY|SHARED_LIBRARY|MODULE_LIBRARY|OBJECT_LIBRARY|EXECUTABLE)$")
+                get_target_property(_runtime "${_target}" MSVC_RUNTIME_LIBRARY)
+                if(NOT "${_runtime}" STREQUAL "${LUAU_HOST_MSVC_RUNTIME_LIBRARY}")
+                    message(FATAL_ERROR
+                        "Target ${_target} uses MSVC_RUNTIME_LIBRARY '${_runtime}'; every luau_host "
+                        "target must use ${LUAU_HOST_MSVC_RUNTIME_LIBRARY}.")
+                endif()
+                foreach(_property IN ITEMS COMPILE_OPTIONS COMPILE_FLAGS)
+                    get_target_property(_target_options "${_target}" ${_property})
+                    if(_target_options)
+                        luau_host_reject_msvc_runtime_flag("Target ${_target}" "${_target_options}")
+                    endif()
+                endforeach()
+                get_target_property(_sources "${_target}" SOURCES)
+                if(_sources)
+                    foreach(_source IN LISTS _sources)
+                        if(NOT "${_source}" MATCHES "\\$<")
+                            foreach(_property IN ITEMS COMPILE_OPTIONS COMPILE_FLAGS)
+                                get_source_file_property(
+                                    _source_options "${_source}" TARGET_DIRECTORY "${_target}" ${_property})
+                                if(_source_options)
+                                    luau_host_reject_msvc_runtime_flag(
+                                        "Source ${_source} of target ${_target}" "${_source_options}")
+                                endif()
+                            endforeach()
+                        endif()
+                    endforeach()
+                endif()
+            endif()
+        endforeach()
+        get_property(_subdirectories DIRECTORY "${directory}" PROPERTY SUBDIRECTORIES)
+        foreach(_subdirectory IN LISTS _subdirectories)
+            luau_host_require_msvc_runtime("${_subdirectory}")
+        endforeach()
+    endfunction()
+    luau_host_require_msvc_runtime("${CMAKE_CURRENT_SOURCE_DIR}")
 endif()
 
 install(

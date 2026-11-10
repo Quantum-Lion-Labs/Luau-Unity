@@ -45,6 +45,44 @@ public sealed class NativeArtifactsCommandTests
     }
 
     [Fact]
+    public void ParsesImportAndDelayLoadDependenciesFromDumpbin()
+    {
+        const string kernelOnly = "Dump of file D:\\a\\out\\shipping\\win-x64\\luau_host.dll\r\n\r\nFile Type: DLL\r\n\r\n" +
+            "  Image has the following dependencies:\r\n\r\n    KERNEL32.dll\r\n\r\n  Summary\r\n\r\n" +
+            "        5000 .data\r\n        A000 .pdata\r\n       2A000 .rdata\r\n        2000 .reloc\r\n       DC000 .text\r\n";
+        const string withDelayLoads = """
+            Dump of file msdia140.dll
+
+            File Type: DLL
+
+              Image has the following dependencies:
+
+                KERNEL32.dll
+                ole32.dll
+                SHLWAPI.dll
+
+              Image has the following delay load dependencies:
+
+                ADVAPI32.dll
+                OLEAUT32.dll
+
+              Summary
+
+                    1000 .data
+            """;
+
+        var (imports, delayImports) = NativeArtifactsCommand.ParseDumpbinDependents(kernelOnly);
+        Assert.Equal(["KERNEL32.dll"], imports);
+        Assert.Empty(delayImports);
+
+        (imports, delayImports) = NativeArtifactsCommand.ParseDumpbinDependents(withDelayLoads);
+        Assert.Equal(["KERNEL32.dll", "ole32.dll", "SHLWAPI.dll"], imports);
+        Assert.Equal(["ADVAPI32.dll", "OLEAUT32.dll"], delayImports);
+
+        Assert.Throws<ToolingException>(() => NativeArtifactsCommand.ParseDumpbinDependents("LINK : fatal error LNK1181: cannot open input file"));
+    }
+
+    [Fact]
     public async Task ArtifactManifestRejectsPresetForAnotherPlatform()
     {
         var repository = RepositoryContext.Discover();
