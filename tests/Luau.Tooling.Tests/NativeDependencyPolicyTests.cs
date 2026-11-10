@@ -101,6 +101,35 @@ public sealed class NativeDependencyPolicyTests
         AssertMalformed("names an empty or unterminated dependency", Elf(SharedRuntimeAndroidNeeded, neededShift: -1));
     }
 
+    // The loader reads the dynamic table at its loaded address. A file whose
+    // PT_DYNAMIC offset names other bytes could show the audit an allowed list
+    // while the loader resolves a forbidden one.
+    [Fact]
+    public void RejectsADynamicSegmentThatIsNotTheImageOfItsLoadedAddress()
+    {
+        AssertMalformed(
+            "file offset is not the image of its loaded address",
+            Elf(["libm.so", "libdl.so", "libc.so"], dynamicAddressShift: 16));
+        AssertMalformed(
+            "file offset is not the image of its loaded address",
+            Elf(["libm.so", "libdl.so", "libc.so"], dynamicAddressShift: 0x100000));
+        AssertMalformed(
+            "has overlapping loaded segments",
+            Elf(["libm.so", "libdl.so", "libc.so"], overlappingLoad: true));
+    }
+
+    [Fact]
+    public void BoundsTheDependencyListBeforeDecodingIt()
+    {
+        Assert.Equal(64, NativeDependencyPolicy.ReadNeededLibraries(Elf(Enumerable.Repeat("libc.so", 64).ToArray())).Length);
+        AssertMalformed("lists more than 64 dependencies", Elf(Enumerable.Repeat("libc.so", 65).ToArray()));
+
+        Assert.Equal(
+            [new string('a', 255)],
+            NativeDependencyPolicy.ReadNeededLibraries(Elf([new string('a', 255)])));
+        AssertMalformed("or one longer than 255 bytes", Elf([new string('a', 256)]));
+    }
+
     [Fact]
     public void ReadsTheCommittedPluginsLikeReadelf()
     {
@@ -193,12 +222,15 @@ public sealed class NativeDependencyPolicyTests
         bool terminate = true,
         bool stringTable = true,
         ulong stringTableShift = 0,
-        long neededShift = 0)
+        long neededShift = 0,
+        ulong dynamicAddressShift = 0,
+        bool overlappingLoad = false)
     {
         const int headerSize = 64;
         const int programHeaderSize = 56;
-        const int dynamicOffset = headerSize + 2 * programHeaderSize;
         const ulong baseAddress = 0x10000;
+        var programHeaderCount = overlappingLoad ? 3 : 2;
+        var dynamicOffset = headerSize + programHeaderCount * programHeaderSize;
 
         var strings = new MemoryStream();
         strings.WriteByte(0);
@@ -236,11 +268,17 @@ public sealed class NativeDependencyPolicyTests
         BinaryPrimitives.WriteUInt64LittleEndian(bytes.AsSpan(0x20), headerSize);
         BinaryPrimitives.WriteUInt16LittleEndian(bytes.AsSpan(0x34), headerSize);
         BinaryPrimitives.WriteUInt16LittleEndian(bytes.AsSpan(0x36), programHeaderSize);
-        BinaryPrimitives.WriteUInt16LittleEndian(bytes.AsSpan(0x38), 2);
+        BinaryPrimitives.WriteUInt16LittleEndian(bytes.AsSpan(0x38), (ushort)programHeaderCount);
 
         WriteProgramHeader(bytes.AsSpan(headerSize), loadType, 0, baseAddress, (ulong)bytes.Length);
-        WriteProgramHeader(bytes.AsSpan(headerSize + programHeaderSize), dynamicType, dynamicOffset,
-            baseAddress + dynamicOffset, (ulong)(entries.Count * 16));
+        WriteProgramHeader(bytes.AsSpan(headerSize + programHeaderSize), dynamicType, (ulong)dynamicOffset,
+            baseAddress + (ulong)dynamicOffset + dynamicAddressShift, (ulong)(entries.Count * 16));
+        if (overlappingLoad)
+        {
+            // A second mapping of the same addresses onto different file bytes.
+            WriteProgramHeader(bytes.AsSpan(headerSize + 2 * programHeaderSize), 1, 16, baseAddress + 8,
+                (ulong)bytes.Length - 16);
+        }
         for (var index = 0; index < entries.Count; index++)
         {
             BinaryPrimitives.WriteInt64LittleEndian(bytes.AsSpan(dynamicOffset + index * 16), entries[index].Tag);

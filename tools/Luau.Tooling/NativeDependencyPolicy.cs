@@ -17,6 +17,11 @@ internal static class NativeDependencyPolicy
     // needs it fails to load under the classic Activity entry point.
     internal static readonly string[] AndroidAllowedNeeded = ["libc.so", "libdl.so", "libm.so"];
 
+    // Far above anything a host plugin needs. The limits keep a crafted file
+    // from making the audit allocate without bound.
+    private const int MaximumNeededLibraries = 64;
+    private const int MaximumLibraryNameBytes = 255;
+
     private const uint ProgramHeaderLoad = 1;
     private const uint ProgramHeaderDynamic = 2;
     private const long DynamicNull = 0;
@@ -46,9 +51,10 @@ internal static class NativeDependencyPolicy
         Validate(platform, description, ReadNeededLibraries(elf, description));
 
     // Reads DT_NEEDED entries the way the dynamic loader finds them: through
-    // PT_DYNAMIC and the PT_LOAD mapping of DT_STRTAB. Section headers are
-    // optional for loading and are not consulted. Any malformed or truncated
-    // structure fails the audit rather than hiding a dependency.
+    // the loaded address of PT_DYNAMIC and the PT_LOAD mapping of DT_STRTAB.
+    // Section headers are optional for loading and are not consulted. Any
+    // malformed, truncated, or ambiguous structure fails the audit rather than
+    // hiding a dependency.
     internal static string[] ReadNeededLibraries(byte[] elf, string description = "ELF plugin")
     {
         var bytes = elf.AsSpan();
@@ -64,7 +70,7 @@ internal static class NativeDependencyPolicy
             $"{description} has an invalid program header table.");
 
         var loads = new List<(ulong Address, ulong Offset, ulong Size)>();
-        (ulong Offset, ulong Size)? dynamicSegment = null;
+        (ulong Address, ulong Offset, ulong Size)? dynamicSegment = null;
         for (var index = 0; index < headerCount; index++)
         {
             var header = bytes.Slice((int)(headerOffset + (ulong)index * headerSize), headerSize);
@@ -85,16 +91,34 @@ internal static class NativeDependencyPolicy
             else
             {
                 Require(dynamicSegment is null, $"{description} has more than one dynamic segment.");
-                dynamicSegment = (offset, size);
+                dynamicSegment = (address, offset, size);
             }
         }
         Require(dynamicSegment is not null, $"{description} has no dynamic segment.");
+
+        // The loader maps each address through exactly one PT_LOAD. Overlapping
+        // segments would let the same address name different file bytes.
+        for (var first = 0; first < loads.Count; first++)
+        {
+            for (var second = first + 1; second < loads.Count; second++)
+            {
+                Require(!Overlaps(loads[first], loads[second]), $"{description} has overlapping loaded segments.");
+            }
+        }
+
+        // The loader reads the dynamic table at its loaded address, not at
+        // PT_DYNAMIC's file offset. Require both to name the same bytes, so a
+        // file cannot show the audit one table and the loader another.
+        var dynamic = dynamicSegment!.Value;
+        var dynamicLoad = loads.FindIndex(load => Contains(load, dynamic.Address, dynamic.Size));
+        Require(dynamicLoad >= 0 && dynamic.Offset == loads[dynamicLoad].Offset + (dynamic.Address - loads[dynamicLoad].Address),
+            $"{description} has a dynamic segment whose file offset is not the image of its loaded address.");
 
         var neededOffsets = new List<ulong>();
         ulong? tableAddress = null;
         ulong? tableSize = null;
         var terminated = false;
-        var entries = bytes.Slice((int)dynamicSegment!.Value.Offset, (int)dynamicSegment.Value.Size);
+        var entries = bytes.Slice((int)dynamic.Offset, (int)dynamic.Size);
         for (var entry = 0; entry + 16 <= entries.Length && !terminated; entry += 16)
         {
             var tag = BinaryPrimitives.ReadInt64LittleEndian(entries[entry..]);
@@ -105,6 +129,8 @@ internal static class NativeDependencyPolicy
                     terminated = true;
                     break;
                 case DynamicNeeded:
+                    Require(neededOffsets.Count < MaximumNeededLibraries,
+                        $"{description} lists more than {MaximumNeededLibraries} dependencies.");
                     neededOffsets.Add(value);
                     break;
                 case DynamicStringTable:
@@ -124,9 +150,7 @@ internal static class NativeDependencyPolicy
 
         var tableStart = tableAddress!.Value;
         var tableLength = tableSize!.Value;
-        var segment = loads.FindIndex(load =>
-            tableStart >= load.Address && tableStart - load.Address <= load.Size &&
-            tableLength <= load.Size - (tableStart - load.Address));
+        var segment = loads.FindIndex(load => Contains(load, tableStart, tableLength));
         Require(segment >= 0, $"{description} has a dynamic string table outside its loaded segments.");
         var table = bytes.Slice((int)(loads[segment].Offset + (tableStart - loads[segment].Address)), (int)tableLength);
 
@@ -136,12 +160,24 @@ internal static class NativeDependencyPolicy
             Require(neededOffsets[index] < (ulong)table.Length,
                 $"{description} names a dependency outside its dynamic string table.");
             var name = table[(int)neededOffsets[index]..];
-            var end = name.IndexOf((byte)0);
-            Require(end > 0, $"{description} names an empty or unterminated dependency.");
+            var end = name[..Math.Min(name.Length, MaximumLibraryNameBytes + 1)].IndexOf((byte)0);
+            Require(end > 0,
+                $"{description} names an empty or unterminated dependency, or one longer than {MaximumLibraryNameBytes} bytes.");
             names[index] = Encoding.ASCII.GetString(name[..end]);
         }
         return names;
     }
+
+    // Whether [address, address + size) lies inside the file-backed part of a
+    // loaded segment. Written to avoid overflow on hostile values.
+    private static bool Contains((ulong Address, ulong Offset, ulong Size) load, ulong address, ulong size) =>
+        address >= load.Address && address - load.Address <= load.Size && size <= load.Size - (address - load.Address);
+
+    private static bool Overlaps((ulong Address, ulong Offset, ulong Size) first, (ulong Address, ulong Offset, ulong Size) second) =>
+        first.Size != 0 && second.Size != 0 &&
+        (first.Address <= second.Address
+            ? second.Address - first.Address < first.Size
+            : first.Address - second.Address < second.Size);
 
     private static void Require(bool condition, string message) => PackageStaticCommand.Require(condition, message);
 }
