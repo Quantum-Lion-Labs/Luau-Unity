@@ -519,6 +519,73 @@ if(LUAU_HOST_BUILD_TESTS)
 
     add_test(NAME luau_host_conformance COMMAND luau_host_conformance)
 
+    # The host replaces a few library functions with versions that reach the
+    # interrupt callback while they work. This executable also links the
+    # upstream VM, as a plain reference to compare them against; its copy is
+    # separate from the one inside luau_host, whose symbols stay hidden.
+    add_executable(
+        luau_host_library_conformance
+        tests/luau_host_library_conformance.cpp
+    )
+    target_compile_features(luau_host_library_conformance PRIVATE cxx_std_17)
+    target_link_libraries(luau_host_library_conformance PRIVATE luau_host Luau.VM Threads::Threads)
+
+    if(MSVC)
+        target_compile_options(luau_host_library_conformance PRIVATE /W4 /WX /permissive- /EHsc)
+    else()
+        target_compile_options(luau_host_library_conformance PRIVATE -Wall -Wextra -Wpedantic -Werror)
+    endif()
+
+    add_test(NAME luau_host_library_conformance COMMAND luau_host_library_conformance)
+
+    # The same tests with the host compiled into the executable and counters
+    # on the rarely taken paths of the long library calls, which show that
+    # the corpus reaches those paths. Only this build defines
+    # LUAU_HOST_LIBRARY_COVERAGE; it shares one copy of the upstream VM with
+    # the reference, which changes nothing the tests compare.
+    add_executable(
+        luau_host_library_coverage
+        tests/luau_host_library_conformance.cpp
+        src/luau_host.cpp
+    )
+    target_compile_features(luau_host_library_coverage PRIVATE cxx_std_17)
+    target_compile_definitions(
+        luau_host_library_coverage
+        PRIVATE
+            LUAU_HOST_LIBRARY_COVERAGE=1
+            LUAU_HOST_BUILDING_LIBRARY=1
+            "LUAU_HOST_UPSTREAM_REVISION=\"${_luau_host_actual_upstream_revision}\""
+            "LUAU_HOST_BUILD_INPUT_FINGERPRINT=\"${LUAU_HOST_BUILD_INPUT_FINGERPRINT}\""
+            "LUAU_HOST_BUILD_CONFIGURATION=\"${_luau_host_build_configuration}\""
+    )
+    target_include_directories(luau_host_library_coverage PRIVATE "${LUAU_HOST_ROOT}/include")
+    target_link_libraries(
+        luau_host_library_coverage
+        PRIVATE
+            Luau.Compiler
+            Luau.VM
+            Luau.VM.Internals
+            Threads::Threads
+    )
+
+    if(MSVC)
+        target_compile_options(luau_host_library_coverage PRIVATE /W4 /WX /permissive- /EHsc)
+    else()
+        target_compile_options(luau_host_library_coverage PRIVATE -Wall -Wextra -Wpedantic -Werror)
+        if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+            target_compile_options(luau_host_library_coverage PRIVATE -Wno-nested-anon-types)
+        endif()
+    endif()
+
+    if(LUAU_HOST_ENABLE_SANITIZERS)
+        # The corpus then leaves out index arguments whose conversion to int
+        # is undefined in upstream's own code.
+        target_compile_definitions(luau_host_library_conformance PRIVATE LUAU_HOST_TEST_SANITIZED=1)
+        target_compile_definitions(luau_host_library_coverage PRIVATE LUAU_HOST_TEST_SANITIZED=1)
+    endif()
+
+    add_test(NAME luau_host_library_coverage COMMAND luau_host_library_coverage)
+
     # Purpose-built malformed ABI libraries exercise the managed handshake
     # without adding mutation hooks or test exports to the production host.
     # Each target compiles the same tiny C fixture with one fixed defect.

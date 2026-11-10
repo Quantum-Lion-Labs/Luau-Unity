@@ -613,6 +613,40 @@ namespace Luau.Unity.Tests
         }
 
         [Test]
+        public void TheWallClockLimitStopsALongPlainTextSearchInsideTheCall()
+        {
+            // A default state. Upstream's search compared almost the whole
+            // needle at every other position of this 50 MB subject, for about
+            // three seconds in one call that no budget could stop. The host's
+            // search is linear, so it would finish in a fifth of a second; the
+            // search runs under a 2 ms limit of its own, so that the limit
+            // passes while it runs.
+            using var root = LuauUnity.CreateState(new LuauUnityOptions { Log = _ => { } });
+            using var script = root.CreateSandboxedThread();
+            script.DoString(
+                "hay = string.rep('ab', 25 * 1048576) needle = string.rep('ab', 5000) .. 'ba'",
+                "@budgets/search-setup.luau").Dispose();
+            var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+
+            var exception = Assert.Throws<LuauExecutionBudgetException>(() => script.DoString(
+                "local r = string.find(hay, needle, 1, true) reached = true",
+                "@budgets/search.luau",
+                executionOptions: LuauExecutionOptions.Unbounded with { WallClockLimit = TimeSpan.FromMilliseconds(2) }));
+
+            Assert.That(exception.BudgetKind, Is.EqualTo(LuauExecutionBudgetKind.WallClock));
+            Assert.That(exception.Elapsed, Is.GreaterThanOrEqualTo(TimeSpan.FromMilliseconds(2)));
+            Assert.That(stopwatch.Elapsed, Is.LessThan(TimeSpan.FromSeconds(10)));
+            // No safepoint comes between the call's return and the assignment,
+            // so reached is nil only if the limit stopped the search itself.
+            using (var reached = script.DoString("return reached == nil"))
+            {
+                Assert.That(reached[0].Read<bool>(), Is.True);
+            }
+            using var results = script.DoString("return #hay");
+            Assert.That(results[0].Read<int>(), Is.EqualTo(50 * 1048576));
+        }
+
+        [Test]
         public void DisposalFromTheMainThreadStopsAnUnboundedLoopOnAWorker()
         {
             // No budget can stop this loop: only the disposal request can.

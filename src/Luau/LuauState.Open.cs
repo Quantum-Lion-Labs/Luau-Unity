@@ -27,6 +27,12 @@ unsafe partial class LuauState
     /// Opens the table library on the root state before <see cref="SandboxRoot"/>.
     /// Child states and roots already sandboxed are rejected.
     /// </summary>
+    /// <exception cref="LuauException">
+    /// Registering the library could run a script's <c>__newindex</c> metamethod:
+    /// the library table has a metatable with <c>__newindex</c>, or a new key
+    /// would be stored in a globals table whose metatable has one. Nothing is
+    /// registered; see the resource-limits documentation.
+    /// </exception>
     public void OpenTableLibrary()
     {
         OpenStandardLibrary(ProtectedStandardLibrary.Table, "table");
@@ -36,6 +42,12 @@ unsafe partial class LuauState
     /// Opens the string library on the root state before <see cref="SandboxRoot"/>.
     /// Child states and roots already sandboxed are rejected.
     /// </summary>
+    /// <exception cref="LuauException">
+    /// Registering the library could run a script's <c>__newindex</c> metamethod:
+    /// the library table has a metatable with <c>__newindex</c>, or a new key
+    /// would be stored in a globals table whose metatable has one. Nothing is
+    /// registered; see the resource-limits documentation.
+    /// </exception>
     public void OpenStringLibrary()
     {
         OpenStandardLibrary(ProtectedStandardLibrary.String, "string");
@@ -63,6 +75,12 @@ unsafe partial class LuauState
     /// Opens the UTF-8 library on the root state before <see cref="SandboxRoot"/>.
     /// Child states and roots already sandboxed are rejected.
     /// </summary>
+    /// <exception cref="LuauException">
+    /// Registering the library could run a script's <c>__newindex</c> metamethod:
+    /// the library table has a metatable with <c>__newindex</c>, or a new key
+    /// would be stored in a globals table whose metatable has one. Nothing is
+    /// registered; see the resource-limits documentation.
+    /// </exception>
     public void OpenUtf8Library()
     {
         OpenStandardLibrary(ProtectedStandardLibrary.Utf8, "utf8");

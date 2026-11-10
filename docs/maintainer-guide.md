@@ -234,6 +234,131 @@ that only the refresh makes true would fail that job and withhold the
 replacement. Add such a test after the refresh commit. Do not relax the audit
 to get a refresh through.
 
+### 3.5 Library functions the host replaces
+
+`luau_host_open_library` opens upstream's library and replaces a few of its
+functions with host versions in `luau_host.cpp` ("Long library calls"):
+
+| Function | What the host version changes |
+| --- | --- |
+| `string.find` | The plain-text search (a true fourth argument, or a pattern without special characters), and the check for special characters, both with safepoints; a pattern search goes to upstream's function after that check. Calls whose subject and pattern are both at most 4096 bytes go to upstream's function directly |
+| `string.split` | Subjects of more than 4096 bytes; shorter ones go to upstream's function, which compares nothing when the separator is longer than the subject |
+| `table.sort` | Safepoints for the default comparison, for C comparison functions, and for `__lt` metamethods that are not Luau functions |
+| `table.concat` | Safepoints |
+| `utf8.len` | Safepoints |
+
+Each of these could run for seconds, or for hours, in one C call that never
+reached an interrupt safepoint, so no budget, cancellation, or disposal could
+stop it. Upstream's plain-text search compares the needle at every position;
+the host's search does what upstream's does for needles of up to 32 bytes and
+switches to the two-way algorithm for longer ones once it has compared more
+than one byte per position (plus a 4096-byte allowance), so its time is linear
+in the subject. Each host version reaches the interrupt callback as a
+non-yieldable EXECUTION safepoint exactly like a step of upstream's pattern
+matcher (`match()` in `lstrlib.cpp`): the throttle counts it, a stop unwinds
+as the sticky `CANCELED` hard stop, and a script `pcall` that catches it sees
+the stop again at its next safepoint.
+
+The work between safepoints is bounded. Each version counts its work in units
+and reaches a safepoint whenever the units since the last one reach
+`kLibraryPollUnits` (16,384). A unit is one byte compared or examined by a
+loop of the host's own, sixteen bytes scanned, compared, copied, or hashed in
+bulk, or a sixteenth of a step (`kLibraryStepUnits`: a short-needle candidate,
+a sort comparison, a concatenated field or separator, a split piece, a table
+slot that a rehash moves). Every step is charged when it ends, and is at most
+`kLibraryPollUnits + kLibraryStepUnits` units, or a single VM operation the
+host cannot divide: one comparison of two strings, the creation of one
+string, one table insertion with its rehash, one append to a string buffer
+with its growth, or one sort comparison that calls a C function (a comparison
+function, or a `__lt` that reaches no safepoint itself), which is charged a
+full budget. So between two safepoints a version does fewer than
+`2 * kLibraryPollUnits + kLibraryStepUnits` units, and at most one step of it
+is such an operation. The work before the first safepoint is argument
+checks and a table length; after the last there is at most `table.concat`'s
+result string. What still runs without a safepoint is listed, with measured
+times, in the package's resource-limits documentation: the operations above
+when their inputs are large, and, when `string.find` hands a pattern search
+to upstream's function, upstream's own check of the pattern for special
+characters, a single scan up to the first one.
+
+No script can reach upstream's version of a replaced function. The string
+metatable's `__index` is the string table, and none of the functions is a
+fastcall builtin, so the table entry is the only route, and a reference a
+script saves is a copy of that entry. Registration itself is where a script
+could see upstream's function: `luaL_register` stores each function with
+`lua_setfield`, and a new library table is stored in the globals table with
+`lua_settable`, and both run a `__newindex` metamethod when the key is
+absent. The host therefore, for these three libraries:
+
+- refuses the open with a Luau error, before anything is registered, when a
+  store could reach a metamethod: when the table `luaL_register` registers
+  into (`_LOADED`'s entry, or else the global) has a metatable with
+  `__newindex`, or when a store of an absent key into the globals table
+  (a new library table, or `luaopen_table`'s global `unpack`) meets a
+  globals metatable with `__newindex`. Those stores, and the library table's
+  own `utf8.charpattern`, are the only operations of `luaopen_string`,
+  `luaopen_table`, and `luaopen_utf8` on a table a script can reach; the rest
+  are raw, touch only the registry and `_LOADED`, which scripts cannot reach
+  and which have no metatable, or touch tables the open just created. The
+  collector runs no Luau code. A sandboxed child thread's globals table has
+  `__index` only, and opens there go ahead;
+- creates every host closure and key before registration, runs `luaopen_*` in
+  a nested protected call, and afterwards, on success and on failure alike,
+  stores the host's closure over every name whose value changed, which only
+  registration does. That uses raw reads and raw stores to present keys, which
+  allocate nothing, so a failure partway (memory running out, or a read-only
+  globals table when `luaopen_table` stores `unpack`) is raised again only
+  after the table holds no upstream function.
+
+The table entry is replaced before anything can freeze the library table.
+`string.find` and `string.split` keep upstream's function pointer, the same in
+every state, and call it in the same frame, so argument errors still name the
+function.
+
+A host version must do exactly what upstream's function, as built here with
+every fast flag at its default, does for every input: the same argument
+coercion and errors, the same results, the same comparisons in the same order
+(an inconsistent sort comparator must produce the same permutation or error),
+and the same table writes in the same order, so that a table it returns has
+the same layout. This is not a change to language behavior; it is what keeps
+the host layer from becoming one. `luau_host_library_conformance` holds it to
+that: it links upstream's VM as a plain reference, runs a generated corpus of
+calls (periodic and adversarial subjects, rare candidates, long patterns on
+short and long subjects, coerced and rejected arguments including fractional,
+extreme, and wrongly typed indices and separators, inconsistent and failing
+comparators, C and Luau `__lt` metamethods, a quicksort adversary that reaches
+the heap-sort fallback, invalid UTF-8) in a host root and in the reference,
+and requires identical results, comparing the content of every piece
+`string.split` returns. One seed of each corpus runs against libraries that
+were opened a second time. It also checks that each version reaches the
+interrupt callback while it works, with exact poll counts where they prove
+something (rare candidates, one classification of a long pattern, none before
+`init` is checked), that a count limit, a deadline, and a request from another
+thread stop it inside the call, and that a library open is refused, or
+repaired after a failure, as described above. Outside sanitized builds the
+corpus also passes NaN, out-of-range indices, and a `table.concat` start of
+-2^31: upstream converts the first two with a cast, and decrements the last in
+`int`, both undefined behavior that UBSan rejects. The host's own code
+decrements without overflow.
+
+`luau_host_library_coverage` builds the same test with the host compiled into
+it and `LUAU_HOST_LIBRARY_COVERAGE` defined, which makes the host count how
+often its rarely taken paths run: the periodic and non-periodic two-way
+search, its switch to the critical byte, its continuation across split
+pieces, the heap-sort fallback, the hand-off of a pattern search, buffer
+growth, rehashes, and refused and repaired opens. That build fails unless the
+tests reach every one. No shipped build has the counters.
+
+When the submodule moves, run that test before anything else. A difference
+means upstream changed one of these functions: port the change into the host
+version, or remove the replacement if upstream's function no longer runs long.
+Check the open procedure against `luaL_register`, `luaL_findtable`, and each
+`luaopen_*` again. To replace another function, follow the same rules: hold
+no resource with a destructor (the VM raises errors with `longjmp`), charge
+every step of work, keep each step within the bound above, keep upstream's
+behavior exactly, add the function to the library's replacements so that the
+open guards it, and add it to the corpus and the interrupt tests.
+
 ## 4. Package interop
 
 The package owns the only interop source. `Luau.Interop` uses the internal
@@ -343,7 +468,8 @@ diagnostics, original/final stack top, and whether the root remains reusable.
 
 ### 6.3 Interrupt throttle
 
-Every call, return, and loop back-edge is a Luau interrupt safepoint, so a
+Every call, return, and loop back-edge is a Luau interrupt safepoint, as are
+the steps of a pattern match and of the library functions in section 3.5, so a
 reverse call into managed code at each one would cost far more than the Luau
 instructions in between. `BeginOperation` hands the
 operation's count limit and remaining wall-clock time to
@@ -809,7 +935,9 @@ cmake --install out/build/linux-x64
 Installing a rebuilt plugin is a deliberate action separate from managed
 refresh. Recheck exports, manifest identity, ABI handshake, and `.meta` importer
 settings. Native conformance includes thousands of mixed concurrent compiler
-calls and exact serial/parallel output comparison.
+calls and exact serial/parallel output comparison, and
+`luau_host_library_conformance` and `luau_host_library_coverage` compare the
+replaced library functions with upstream's (section 3.5).
 
 ### 12.4 Package validation
 
@@ -895,7 +1023,8 @@ one compatibility unit.
 ### Update upstream Luau
 
 1. Update the `native/luau` submodule deliberately.
-2. Review upstream behavior and ABI assumptions.
+2. Review upstream behavior and ABI assumptions, including the library
+   functions the host replaces (section 3.5).
 3. Rebuild all maintained native targets.
 4. Update fingerprints/manifests as one compatibility unit.
 5. Run native conformance, managed parity, Unity, and all player gates.
