@@ -217,6 +217,37 @@ API or ABI breaks.
   thread's globals and then failed with a generic native error, leaving a
   half-installed sandbox without its write guard. It now throws
   `InvalidOperationException` before changing anything.
+- The Full Luau Scripting Demo `Core/` granted scripts more than its README
+  said, in three places:
+  - A physics callback handed the other object over with the full
+    `GameObject` capability, so a script could rename, move, reconfigure
+    through `GetComponent`, or deactivate any object it collided with or
+    whose trigger it entered, even one it was never given. The other object
+    is now a full capability only when it is the behaviour's own GameObject,
+    the GameObject of one of its Object References, or an object it spawned.
+    Anything else arrives as a read-only `GameObjectView` (`name`, `tag`,
+    `layer`, `activeSelf`, `activeInHierarchy`, `CompareTag`, and a
+    `transform` with `position` and `rotation`), and setting any of its
+    properties fails with `Cannot set 'name': GameObject 'Pipe' was not
+    granted to this script. ...`. Both views are in `LuauUnityCapabilities`.
+  - Nothing bounded spawning across a runtime. Each behaviour's
+    **Max Spawned Objects** is set by whoever authors the scene or prefab, and
+    a spawned object can carry a behaviour of its own: with every behaviour
+    limited to two, a scene object listed as its own prefab produced 14 live
+    copies. `LuauBehaviourRuntime` now has its own **Max Spawned Objects**
+    (64 by default), which counts every live object spawned by any behaviour
+    on the runtime, including behaviours on spawned objects; a spawn must pass
+    both limits. A prefab that carries its own `LuauBehaviourRuntime` started
+    a new runtime with fresh limits for each copy (one admitted spawn produced
+    7 runtimes), so a behaviour now refuses to start with such a prefab
+    reference.
+  - The `Input` library read any key, every mouse button, and touch, so any
+    script could poll the whole keyboard every frame. Each runtime now opens
+    `Input` with its own serialized **Input Policy**: the key names, mouse
+    buttons, and touch its scripts may read. The default is what the demo game
+    reads: `Space`, the left mouse button, and touch. Reading anything else
+    fails with, for example, `Input key 'A' is not enabled for this Luau
+    runtime. ...`, instead of returning `false`.
 
 ### Compatibility
 
@@ -234,6 +265,14 @@ API or ABI breaks.
   `LUAU_HOST_STATUS_INVALID_ARGUMENT`. The ABI version stays 2.0 and the host
   fingerprint changes, so this `Luau.dll` requires the matching rebuilt native
   plugins.
+- Full Luau Scripting Demo: re-import the sample to pick up the changes
+  above. `LuauInputLibrary`'s members are now instance members and its
+  constructor takes a `LuauInputLibrary.Policy`. A script that changes an
+  object it only touched, or reads a key, mouse button, or touch the runtime's
+  policy does not enable, now fails and disables its behaviour; add the object
+  to the behaviour's Object References, or the input to the runtime's Input
+  Policy. A scene that spawns more than 64 live objects on one runtime needs a
+  higher runtime **Max Spawned Objects**.
 
 ## [0.3.1] - 2026-09-05
 

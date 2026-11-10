@@ -147,6 +147,6 @@ with explicit tick inputs, ordering, budgets, and rollback/snapshot policy.
 
 Import **Full Luau Scripting Demo** for a worked version of all of this: explicit
 `self` and named-reference injection, prefab spawning against a per-behaviour
-cap, owned-instance cleanup, shared trust-domain state, and failure isolation
-that disables one component instead of the scene. Keep its `Core/` and delete
-`Demo Game/` to start another game from it.
+cap and a per-runtime cap, owned-instance cleanup, shared trust-domain state,
+and failure isolation that disables one component instead of the scene. Keep
+its `Core/` and delete `Demo Game/` to start another game from it.

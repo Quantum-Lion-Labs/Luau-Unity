@@ -14,8 +14,9 @@ second and press again to start a new round on the same scene objects.
 
 To build something else on this foundation, keep **Core** and delete
 **Demo Game**. The Core README covers the behaviour hooks, the explicit
-reference model, the shared-table trust boundary, and exactly which Unity
-members Luau can see.
+reference model, what a physics callback receives, the shared-table trust
+boundary, the host's spawn and input limits, and exactly which Unity members
+Luau can see.
 
 ## Before you press Play
 

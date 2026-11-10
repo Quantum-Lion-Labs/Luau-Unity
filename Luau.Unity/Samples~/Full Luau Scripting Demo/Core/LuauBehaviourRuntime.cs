@@ -8,8 +8,9 @@ using UnityEngine.InputSystem;
 namespace Luau.Unity.Samples.FullLuauScriptingDemo
 {
     /// <summary>
-    /// Scene-level owner for one Luau trust domain, its shared table, and its
-    /// bounded Unity lifecycle phases.
+    /// Scene-level owner for one Luau trust domain, its shared table, its
+    /// bounded Unity lifecycle phases, and the host's limits on what that
+    /// domain's scripts may spawn and read as input.
     /// </summary>
     public sealed class LuauBehaviourRuntime : MonoBehaviour
     {
@@ -44,7 +45,23 @@ namespace Luau.Unity.Samples.FullLuauScriptingDemo
             "ordinary source scripts and untrusted mod content.")]
         bool useFirstPartyBytecode;
 
+        [Header("Host Limits")]
+        [SerializeField]
+        [Min(0)]
+        [Tooltip(
+            "Maximum live prefab instances all behaviours on this runtime may own " +
+            "together, including behaviours on spawned objects. Each behaviour's " +
+            "own Max Spawned Objects applies as well.")]
+        int maxSpawnedObjects = 64;
+
+        [SerializeField]
+        [Tooltip(
+            "The keys, mouse buttons, and touch input this runtime's scripts may " +
+            "read through Input. Anything else is a script error.")]
+        LuauInputLibrary.Policy inputPolicy = new LuauInputLibrary.Policy();
+
         readonly List<LuauBehaviour> behaviours = new List<LuauBehaviour>();
+        readonly List<GameObject> spawnedObjects = new List<GameObject>();
         readonly List<LuauBehaviour> pendingBehaviours =
             new List<LuauBehaviour>();
         readonly Dictionary<LuauScriptRegistration, LuauBehaviour> owners =
@@ -105,6 +122,7 @@ namespace Luau.Unity.Samples.FullLuauScriptingDemo
         {
             try
             {
+                var inputLibrary = new LuauInputLibrary(inputPolicy);
                 root = LuauUnity.CreateState(new LuauUnityOptions
                 {
                     UseFirstPartyBytecode = useFirstPartyBytecode,
@@ -116,10 +134,10 @@ namespace Luau.Unity.Samples.FullLuauScriptingDemo
                     ConfigureHostApis = state =>
                     {
                         state.OpenLibrary(new LuauQuaternionLibrary());
-                        state.OpenLibrary(new LuauInputLibrary());
+                        state.OpenLibrary(inputLibrary);
                     },
                 });
-                WarmHostApis();
+                WarmHostApis(inputLibrary);
                 shared = root.CreateTable();
                 scheduler = new LuauScriptScheduler(root);
                 updatePhase = CreatePhase("Update");
@@ -159,9 +177,10 @@ namespace Luau.Unity.Samples.FullLuauScriptingDemo
         /// Warms the generated host-call thunks outside the 2 ms frame lane so
         /// the first real input frame is not charged for JIT. Warming is an
         /// optimization: a failure here costs one frame of jitter, so it is
-        /// reported and swallowed rather than failing the whole runtime.
+        /// reported and swallowed rather than failing the whole runtime. Only
+        /// the input the policy enables is touched.
         /// </summary>
-        void WarmHostApis()
+        void WarmHostApis(LuauInputLibrary inputLibrary)
         {
             if (InputSystem.devices.Count == 0)
             {
@@ -175,11 +194,7 @@ namespace Luau.Unity.Samples.FullLuauScriptingDemo
             try
             {
                 using (root.DoString(
-                    "Input.GetKeyDown(\"Space\")\n" +
-                    "Input.GetKey(\"Space\")\n" +
-                    "Input.GetMouseButtonDown(0)\n" +
-                    "Input.GetMouseButton(0)\n" +
-                    "local _touchCount = Input.touchCount\n" +
+                    inputLibrary.CreateWarmupSource() +
                     "Quaternion.Euler(vector.create(0, 0, 0))\n" +
                     "return true",
                     "@FullLuauScriptingDemo/HostApiWarmup.luau"))
@@ -244,6 +259,40 @@ namespace Luau.Unity.Samples.FullLuauScriptingDemo
                 // second VM execution cannot begin reentrantly inside that callback.
                 initializationRequested = true;
             }
+        }
+
+        /// <summary>
+        /// Refuses a spawn once the behaviours on this runtime own
+        /// <see cref="maxSpawnedObjects"/> live instances between them.
+        /// Destroyed instances stop counting.
+        /// </summary>
+        internal void ThrowIfSpawnLimitReached()
+        {
+            for (var index = spawnedObjects.Count - 1; index >= 0; index--)
+            {
+                if (spawnedObjects[index] == null)
+                {
+                    spawnedObjects.RemoveAt(index);
+                }
+            }
+
+            if (spawnedObjects.Count >= maxSpawnedObjects)
+            {
+                throw new LuauException(
+                    "LuauBehaviourRuntime '" + name + "' reached its limit of " +
+                    maxSpawnedObjects + " live spawned object(s) across all of " +
+                    "its behaviours.");
+            }
+        }
+
+        internal void AddSpawnedObject(GameObject spawned)
+        {
+            spawnedObjects.Add(spawned);
+        }
+
+        internal void RemoveSpawnedObject(GameObject spawned)
+        {
+            spawnedObjects.Remove(spawned);
         }
 
         internal void Detach(LuauBehaviour behaviour)
@@ -466,6 +515,7 @@ namespace Luau.Unity.Samples.FullLuauScriptingDemo
                 snapshot[index]?.ShutdownFromRuntime();
             }
 
+            spawnedObjects.Clear();
             shared?.Dispose();
             shared = null;
             root?.Dispose();

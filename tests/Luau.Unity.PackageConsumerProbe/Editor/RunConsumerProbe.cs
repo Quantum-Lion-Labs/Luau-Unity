@@ -14,18 +14,40 @@ namespace Luau.Unity.PackageConsumerProbe
         public const string PassedMarker = "LUAU_PACKAGE_CONSUMER_PASS";
         public const string FailedMarker = "LUAU_PACKAGE_CONSUMER_FAIL";
 
+        /// <summary>
+        /// Runs the Edit Mode checks, then the Full Demo behaviour checks in
+        /// Play Mode. Unity is started without <c>-quit</c>, so every path
+        /// ends by exiting the Editor with the probe's result.
+        /// </summary>
         public static void Execute()
         {
             try
             {
                 Run();
-                Debug.Log(PassedMarker);
+                FullDemoAuthorityProbe.Begin(Complete);
             }
             catch (Exception exception)
             {
-                Debug.LogError(FailedMarker + "\n" + exception);
-                throw;
+                Complete(exception);
             }
+        }
+
+        static void Complete(Exception exception)
+        {
+            // The package registers its compiler-identity import dependency once
+            // the Editor is ready, which marks the imported .luau assets stale.
+            // Reimport them now, while the compilation service is running,
+            // rather than in the refresh Unity performs while it shuts down.
+            UnityEditor.AssetDatabase.Refresh();
+            if (exception == null)
+            {
+                Debug.Log(PassedMarker);
+                UnityEditor.EditorApplication.Exit(0);
+                return;
+            }
+
+            Debug.LogError(FailedMarker + "\n" + exception);
+            UnityEditor.EditorApplication.Exit(1);
         }
 
         static void Run()
@@ -48,6 +70,8 @@ namespace Luau.Unity.PackageConsumerProbe
 
             ValidateImportedGettingStartedLibrary();
             ValidateImportedFullDemo();
+            FullDemoAuthorityProbe.ValidateReadOnlyViews();
+            FullDemoAuthorityProbe.ValidateInputLibrary();
         }
 
         static void ValidateImportedGettingStartedLibrary()
@@ -98,10 +122,14 @@ namespace Luau.Unity.PackageConsumerProbe
             var inputLibraryType = Type.GetType(
                 namespaceName + "LuauInputLibrary, " + coreAssembly,
                 throwOnError: true);
+            var inputPolicyType = inputLibraryType.GetNestedType("Policy")
+                ?? throw new InvalidOperationException(
+                    "The imported Full Demo Input library is missing its Policy.");
             var quaternionLibrary =
                 (ILuauLibrary)Activator.CreateInstance(quaternionLibraryType);
-            var inputLibrary =
-                (ILuauLibrary)Activator.CreateInstance(inputLibraryType);
+            var inputLibrary = (ILuauLibrary)Activator.CreateInstance(
+                inputLibraryType,
+                Activator.CreateInstance(inputPolicyType));
             using var root = LuauUnity.CreateState(ConsumerApiProbe.CreateOptions(state =>
             {
                 state.OpenLibrary(quaternionLibrary);

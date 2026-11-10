@@ -2,7 +2,8 @@
     "name": "Luau.Unity.PackageConsumerProbe",
     "rootNamespace": "",
     "references": [
-        "Luau.Unity"
+        "Luau.Unity",
+        "Unity.InputSystem"
     ],
     "includePlatforms": [
         "Editor"

@@ -232,7 +232,8 @@ Getting Started teaches mechanisms; it isn't a framework. Import **Full Luau
 Scripting Demo** for a real composition: a shared trust-domain root, one sandboxed
 thread per component, bounded `Update`, `FixedUpdate`, and `LateUpdate` phases,
 failure isolation that disables one component instead of the scene, explicit Unity
-object references, and prefab spawning against a per-behaviour cap.
+object references, prefab spawning against a per-behaviour cap and a host-owned
+per-runtime cap, and a per-runtime input policy.
 
 Its `Core/` holds the reusable host and the `LuauUnityCapabilities` descriptors.
 `Demo Game/` is the Flappy Bird example, and you can delete it when starting

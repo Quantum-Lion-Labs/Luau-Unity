@@ -74,9 +74,11 @@ internal static class PackageConsumerCommand
 
             var log = Path.Combine(logs, "package-consumer.log");
             Console.WriteLine($"Running generated package consumer at {project} with Unity {editor.Version} after deleting the demo game and retaining its reusable Core.");
+            // No -quit: the probe finishes its Full Demo checks in Play Mode and
+            // exits the Editor itself with its result.
             var result = await UnityProcess.RunAsync(
                 editor, project, log,
-                ["-quit", "-executeMethod", "Luau.Unity.PackageConsumerProbe.RunConsumerProbe.Execute"],
+                ["-executeMethod", "Luau.Unity.PackageConsumerProbe.RunConsumerProbe.Execute"],
                 TimeSpan.FromMinutes(options.GetInt("--unity-timeout-minutes", 20)));
             var logText = File.Exists(log) ? File.ReadAllText(log) : result.CombinedOutput;
             var compileFailure = UnityProcess.HasCompilerErrors(logText) ||
@@ -95,7 +97,7 @@ internal static class PackageConsumerCommand
             }
 
             succeeded = true;
-            Console.WriteLine("Generated minimal Unity package consumer compiled samples, loaded the package's platform host, and executed successfully.");
+            Console.WriteLine("Generated minimal Unity package consumer compiled samples, loaded the package's platform host, executed successfully, and ran the Full Demo Core in Play Mode.");
             return 0;
         }
         finally

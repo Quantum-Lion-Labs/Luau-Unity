@@ -6,7 +6,8 @@ namespace Luau.Unity.Samples.FullLuauScriptingDemo
     /// <summary>
     /// Editable, reflection-free capability policy for the Unity types used by
     /// the sample. A handle grants only the members listed in these immutable
-    /// descriptors.
+    /// descriptors. Objects a script was granted use the full descriptors;
+    /// other objects it meets in a physics callback use the read-only views.
     /// </summary>
     public static class LuauUnityCapabilities
     {
@@ -155,6 +156,66 @@ namespace Luau.Unity.Samples.FullLuauScriptingDemo
                                         context,
                                         1,
                                         "Transform.InverseTransformPoint")))),
+                });
+
+        /// <summary>
+        /// Read-only view of a GameObject the script was not granted: enough to
+        /// recognise what a physics callback touched and react to it. Nothing on
+        /// it changes the object: it has no SetActive and no GetComponent, and
+        /// setting any of its properties is a script error saying the object
+        /// was not granted to the script.
+        /// </summary>
+        public static readonly LuauObjectDescriptor<GameObject> GameObjectViewDescriptor =
+            new LuauObjectDescriptor<GameObject>(
+                "GameObjectView",
+                LuauUnityObjectGuard.ThrowIfDestroyed,
+                new[]
+                {
+                    ReadOnlyProperty<GameObject>(
+                        "name",
+                        (target, context) => context.Return(target.name)),
+                    ReadOnlyProperty<GameObject>(
+                        "tag",
+                        (target, context) => context.Return(target.tag)),
+                    ReadOnlyProperty<GameObject>(
+                        "layer",
+                        (target, context) => context.Return(target.layer)),
+                    ReadOnlyProperty<GameObject>(
+                        "activeSelf",
+                        (target, context) => context.Return(target.activeSelf)),
+                    ReadOnlyProperty<GameObject>(
+                        "activeInHierarchy",
+                        (target, context) => context.Return(target.activeInHierarchy)),
+                    ReadOnlyProperty<GameObject>(
+                        "transform",
+                        (target, context) => ReturnHandle(
+                            context,
+                            target.transform,
+                            TransformViewDescriptor)),
+                    LuauObjectMember<GameObject>.Method(
+                        "CompareTag",
+                        (target, context) =>
+                            context.Return(target.CompareTag(context.Read<string>(1)))),
+                });
+
+        /// <summary>
+        /// Read-only view of the Transform of a GameObject the script was not
+        /// granted: its world position and rotation.
+        /// </summary>
+        public static readonly LuauObjectDescriptor<Transform> TransformViewDescriptor =
+            new LuauObjectDescriptor<Transform>(
+                "TransformView",
+                LuauUnityObjectGuard.ThrowIfDestroyed,
+                new[]
+                {
+                    ReadOnlyProperty<Transform>(
+                        "position",
+                        (target, context) =>
+                            LuauUnityValue.ReturnVector3(context, target.position)),
+                    ReadOnlyProperty<Transform>(
+                        "rotation",
+                        (target, context) =>
+                            LuauUnityTableValues.ReturnQuaternion(context, target.rotation)),
                 });
 
         public static readonly LuauObjectDescriptor<Rigidbody2D> Rigidbody2DDescriptor =
@@ -469,6 +530,32 @@ namespace Luau.Unity.Samples.FullLuauScriptingDemo
                                 context,
                                 2,
                                 name)));
+        }
+
+        // A property of a read-only view. Reading works; writing fails with an
+        // error that tells the script author why, instead of the descriptor's
+        // generic readonly-member error.
+        static LuauObjectMember<T> ReadOnlyProperty<T>(
+            string name,
+            System.Action<T, LuauCallContext> getter)
+            where T : Object
+        {
+            return LuauObjectMember<T>.Property(
+                name,
+                getter,
+                (target, context) => throw NotGranted(target, name));
+        }
+
+        static LuauException NotGranted(Object target, string memberName)
+        {
+            var objectName = target is Component component
+                ? component.gameObject.name
+                : target.name;
+            var kind = target is Transform ? "the Transform of" : "GameObject";
+            return new LuauException(
+                "Cannot set '" + memberName + "': " + kind + " '" + objectName +
+                "' was not granted to this script. A script can change only its " +
+                "own GameObject, its Object References, and objects it spawned.");
         }
 
         static LuauObjectMember<T> Vector2Property<T>(
