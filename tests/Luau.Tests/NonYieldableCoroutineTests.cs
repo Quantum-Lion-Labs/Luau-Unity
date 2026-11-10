@@ -15,7 +15,7 @@ public sealed class NonYieldableCoroutineTests
     [InlineData("require", true)]
     public async Task RejectedParentSuspensionDoesNotCorruptLaterInvocations(string boundary, bool asyncCallback)
     {
-        using var root = LuauState.Create();
+        using var root = TestBudgets.CreateRoot();
         root.OpenBaseLibrary();
         root.OpenCoroutineLibrary();
         root.OpenTableLibrary();
@@ -60,7 +60,7 @@ public sealed class NonYieldableCoroutineTests
         var failure = asyncCallback
             ? await Assert.ThrowsAsync<LuauManagedCallbackException>(async () =>
             {
-                using var rejected = await root.DoStringAsync(source).AsTask().WaitAsync(TimeSpan.FromSeconds(10));
+                using var rejected = await root.DoStringAsync(source).AsTask().WaitAsync(TestBudgets.WaitTimeout);
             })
             : Assert.Throws<LuauManagedCallbackException>(() =>
             {

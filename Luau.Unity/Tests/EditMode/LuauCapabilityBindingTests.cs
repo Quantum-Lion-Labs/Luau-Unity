@@ -16,13 +16,9 @@ namespace Luau.Unity.Tests
             var asset = ScriptableObject.CreateInstance<LuauAsset>();
             using var root = LuauUnity.CreateState(new LuauUnityOptions
             {
-                StateOptions = LuauStateOptions.Default with
-                {
-                    DefaultExecutionOptions = LuauExecutionOptions.Default with
-                    {
-                        WallClockLimit = TimeSpan.FromSeconds(5),
-                    },
-                },
+                // The async member resumes through the Editor loop, which the
+                // wall clock counts.
+                StateOptions = TestBudgets.StateOptions,
                 ConfigureHostApis = state => state.OpenLibrary(new CapabilityHostService()),
             });
             using var child = root.CreateSandboxedThread();
@@ -63,7 +59,10 @@ namespace Luau.Unity.Tests
         {
             var gameObject = new GameObject("DestroyedDoor");
             var door = gameObject.AddComponent<CapabilityDoorBehaviour>();
-            using var root = LuauUnity.CreateState();
+            using var root = LuauUnity.CreateState(new LuauUnityOptions
+            {
+                StateOptions = TestBudgets.StateOptions,
+            });
             using var child = root.CreateSandboxedThread();
             using var handle = root.CreateHandle(door);
             child["door"] = handle;
@@ -80,7 +79,7 @@ namespace Luau.Unity.Tests
             const int iterationCount = 32;
             using var root = LuauUnity.CreateState(new LuauUnityOptions
             {
-                StateOptions = LuauStateOptions.Default with
+                StateOptions = TestBudgets.StateOptions with
                 {
                     MaxManagedHandleCount = 1,
                 },

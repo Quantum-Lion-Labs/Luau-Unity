@@ -9,7 +9,7 @@ public sealed class RootYieldTests
     [InlineData(true, true)]
     public async Task YieldingInvocationIsRejectedAndNextFunctionActuallyRuns(bool isAsync, bool yieldsValue)
     {
-        using var root = LuauState.Create();
+        using var root = TestBudgets.CreateRoot();
         root.OpenCoroutineLibrary();
         var marks = new List<string>();
         using var mark = root.CreateFunction(context => marks.Add(context.Read<string>(0)));
@@ -40,7 +40,7 @@ public sealed class RootYieldTests
     [InlineData(true, true)]
     public async Task RootSourceYieldIsRejectedAndNextChunkActuallyRuns(bool isAsync, bool yieldsValue)
     {
-        using var root = LuauState.Create();
+        using var root = TestBudgets.CreateRoot();
         root.OpenCoroutineLibrary();
         var source = "coroutine.yield(" + (yieldsValue ? "7" : "") + "); return 9";
 

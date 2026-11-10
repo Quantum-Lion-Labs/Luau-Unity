@@ -5,7 +5,7 @@ public sealed class OperationModeTests
     [Fact]
     public void OwnedOperationBoundariesDeclareTheirExecutionMode()
     {
-        using var state = LuauState.Create();
+        using var state = TestBudgets.CreateRoot();
 
         using (var nested = state.BeginNestedOperationIfNeeded("@operation/nested.luau"))
         {
@@ -23,7 +23,7 @@ public sealed class OperationModeTests
     [Fact]
     public void ScriptExecutionUsesTheTopLevelResumeMode()
     {
-        using var state = LuauState.Create();
+        using var state = TestBudgets.CreateRoot();
         ScriptOperationMode? observed = null;
         using var callback = state.CreateFunction("observeMode", context =>
         {

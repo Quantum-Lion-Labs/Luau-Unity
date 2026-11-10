@@ -33,7 +33,7 @@ public sealed class BoundedUtf8DecoderTests
     [Fact]
     public void DisplayStringReportsTruncationForMalformedUtf8AtInputLimit()
     {
-        using var root = LuauState.Create();
+        using var root = TestBudgets.CreateRoot();
         root.OpenStringLibrary();
         using var capture = root.CreateFunction(context =>
         {

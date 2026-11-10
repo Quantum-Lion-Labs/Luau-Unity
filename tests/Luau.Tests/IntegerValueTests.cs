@@ -10,7 +10,7 @@ public sealed class IntegerValueTests
     [InlineData(long.MaxValue)]
     public void SignedIntegerBoundariesRoundTripLosslessly(long expected)
     {
-        using var state = LuauState.Create();
+        using var state = TestBudgets.CreateRoot();
         state["value"] = expected;
 
         var actual = state["value"];
@@ -85,7 +85,7 @@ public sealed class IntegerValueTests
     [Fact]
     public void HostUInt32MaximumRoundTripsAsAnExactNumber()
     {
-        using var state = LuauState.Create();
+        using var state = TestBudgets.CreateRoot();
         state.OpenBaseLibrary();
         state["big"] = uint.MaxValue;
 
@@ -102,7 +102,7 @@ public sealed class IntegerValueTests
     [Fact]
     public void HostInt32ValuesBehaveLikeScriptNumericLiterals()
     {
-        using var state = LuauState.Create();
+        using var state = TestBudgets.CreateRoot();
         state.OpenBaseLibrary();
         state.OpenMathLibrary();
         using (var getAmmo = state.CreateFunction("getAmmo", context => context.Return(30)))
@@ -136,7 +136,7 @@ public sealed class IntegerValueTests
     [Fact]
     public void GeneratedInt32MembersBehaveLikeScriptNumericLiterals()
     {
-        using var state = LuauState.Create();
+        using var state = TestBudgets.CreateRoot();
         state.OpenBaseLibrary();
         state.OpenLibrary(new IntegerInteropLibrary());
 
@@ -169,7 +169,7 @@ public sealed class IntegerValueTests
         };
         Assert.Equal(2, dictionary.Count);
 
-        using var state = LuauState.Create();
+        using var state = TestBudgets.CreateRoot();
         using var table = state.CreateTable();
         table.RawSet(integer, "integer");
         table.RawSet(number, "number");
@@ -181,7 +181,7 @@ public sealed class IntegerValueTests
     [Fact]
     public void IntegerLibraryMakesScriptConversionsAndArithmeticExplicit()
     {
-        using var state = LuauState.Create();
+        using var state = TestBudgets.CreateRoot();
         state.OpenIntegerLibrary();
         state["lhs"] = 40L;
         state["rhs"] = 2L;
@@ -200,7 +200,7 @@ public sealed class IntegerValueTests
     [Fact]
     public void SpanTableCreationRetainsLuauArraySemantics()
     {
-        using var state = LuauState.Create();
+        using var state = TestBudgets.CreateRoot();
         using var table = state.CreateTable(["first", "second"]);
         state["values"] = table;
 
@@ -214,7 +214,7 @@ public sealed class IntegerValueTests
     [Fact]
     public void OrdinaryScriptNumericLiteralsKeepNumberBehavior()
     {
-        using var state = LuauState.Create();
+        using var state = TestBudgets.CreateRoot();
 
         var result = Assert.Single(state.DoString("return 42", "@integer/script-number.luau"));
 
@@ -229,7 +229,7 @@ public sealed class IntegerValueTests
         int nativeType,
         string expectedKind)
     {
-        using var state = LuauState.Create();
+        using var state = TestBudgets.CreateRoot();
         state.PushString("stack-sentinel");
         var originalTop = state.GetTop();
 

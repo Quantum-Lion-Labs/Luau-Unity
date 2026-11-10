@@ -9,7 +9,7 @@ namespace Luau.Tests;
 /// </summary>
 public sealed class SuspendedThreadEntryTests
 {
-    static readonly TimeSpan TestTimeout = TimeSpan.FromSeconds(10);
+    static readonly TimeSpan TestTimeout = TestBudgets.WaitTimeout;
     const string NewChunk = "mark() return 'B'";
     const string NewChunkName = "@entry/new.luau";
     static readonly byte[] NewChunkUtf8 = "mark() return 'B'"u8.ToArray();
@@ -127,7 +127,7 @@ public sealed class SuspendedThreadEntryTests
     [Fact]
     public void ReportedReproductionRunsTheNewChunkOnlyAfterTheThreadFinishes()
     {
-        using var root = LuauState.Create();
+        using var root = TestBudgets.CreateRoot();
         root.OpenBaseLibrary();
         root.OpenCoroutineLibrary();
         using var thread = root.CreateThread();
@@ -169,7 +169,7 @@ public sealed class SuspendedThreadEntryTests
     [Fact]
     public void ResumeArgumentsReachTheOriginalContinuationAfterARejection()
     {
-        using var root = LuauState.Create();
+        using var root = TestBudgets.CreateRoot();
         root.OpenBaseLibrary();
         root.OpenCoroutineLibrary();
         using var thread = root.CreateThread();

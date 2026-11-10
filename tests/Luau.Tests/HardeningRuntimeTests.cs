@@ -7,7 +7,7 @@ public sealed class HardeningRuntimeTests
     {
         const long memoryLimit = 1_048_576;
         const string chunkName = "@mods/allocation-bomb.luau";
-        using var state = LuauState.Create(new LuauStateOptions
+        using var state = LuauState.Create(TestBudgets.StateOptions with
         {
             MemoryLimitBytes = memoryLimit,
             BytecodePolicy = LuauBytecodePolicy.Reject,
@@ -38,7 +38,7 @@ public sealed class HardeningRuntimeTests
     public void MemoryUsageTracksCurrentPeakAndConfiguredLimit()
     {
         const long memoryLimit = 4_194_304;
-        using var state = LuauState.Create(new LuauStateOptions
+        using var state = LuauState.Create(TestBudgets.StateOptions with
         {
             MemoryLimitBytes = memoryLimit,
             BytecodePolicy = LuauBytecodePolicy.Reject,
@@ -68,7 +68,7 @@ public sealed class HardeningRuntimeTests
     {
         for (var iteration = 0; iteration < 32; iteration++)
         {
-            using var state = LuauState.Create(new LuauStateOptions
+            using var state = LuauState.Create(TestBudgets.StateOptions with
             {
                 MemoryLimitBytes = 1_048_576,
                 BytecodePolicy = LuauBytecodePolicy.Reject,
@@ -93,7 +93,7 @@ public sealed class HardeningRuntimeTests
     public void MemoryUsageRetainsFinalTrackedPeakAndLimitAfterDisposal()
     {
         const long memoryLimit = 1_048_576;
-        var state = LuauState.Create(new LuauStateOptions
+        var state = LuauState.Create(TestBudgets.StateOptions with
         {
             MemoryLimitBytes = memoryLimit,
             BytecodePolicy = LuauBytecodePolicy.Reject,
@@ -115,7 +115,7 @@ public sealed class HardeningRuntimeTests
     public void OversizedSourceIsRejectedBeforeCompilationAndRetainsChunkName()
     {
         const string chunkName = "@mods/source-too-large.luau";
-        using var state = LuauState.Create(new LuauStateOptions
+        using var state = LuauState.Create(TestBudgets.StateOptions with
         {
             MaxSourceBytes = 8,
             BytecodePolicy = LuauBytecodePolicy.Reject,
@@ -139,7 +139,7 @@ public sealed class HardeningRuntimeTests
     {
         const string chunkName = "@mods/bytecode-too-large.luau";
         var validator = new RecordingValidator(accept: true);
-        using var state = LuauState.Create(new LuauStateOptions
+        using var state = LuauState.Create(TestBudgets.StateOptions with
         {
             MaxBytecodeBytes = 4,
             BytecodePolicy = LuauBytecodePolicy.RequireValidator,
@@ -166,7 +166,7 @@ public sealed class HardeningRuntimeTests
         const string chunkName = "@mods/rejected-bytecode.luau";
         var output = LuauCompiler.Compile("return 41"u8);
         var artifact = LuauBytecodeArtifact.Create(output, chunkName, "tests/default-policy");
-        using var state = LuauState.Create();
+        using var state = TestBudgets.CreateRoot();
         var stackTop = state.GetTop();
 
         var exception = Assert.Throws<LuauException>(() =>
@@ -187,7 +187,7 @@ public sealed class HardeningRuntimeTests
     {
         const string chunkName = "@host/oversized-bundle.luau";
         var output = LuauCompiler.Compile("return 1"u8);
-        using var state = LuauState.Create(new LuauStateOptions
+        using var state = LuauState.Create(TestBudgets.StateOptions with
         {
             MaxBytecodeBytes = output.BytecodeLength - 1,
         });
@@ -205,7 +205,7 @@ public sealed class HardeningRuntimeTests
     public void InternallyCompiledBytecodeIsBoundedBeforeManagedCopyAndLoad()
     {
         const string chunkName = "@mods/compiled-output-too-large.luau";
-        using var state = LuauState.Create(new LuauStateOptions
+        using var state = LuauState.Create(TestBudgets.StateOptions with
         {
             MaxSourceBytes = 1_024,
             MaxBytecodeBytes = 8,
@@ -225,7 +225,7 @@ public sealed class HardeningRuntimeTests
     public void OversizedCompilerDiagnosticIsNotReclassifiedAsBytecodeLimit()
     {
         const string chunkName = "@mods/oversized-diagnostic.luau";
-        using var state = LuauState.Create(new LuauStateOptions
+        using var state = LuauState.Create(TestBudgets.StateOptions with
         {
             MaxSourceBytes = 2_048,
             MaxBytecodeBytes = 8,
@@ -243,7 +243,7 @@ public sealed class HardeningRuntimeTests
     [Fact]
     public async Task PreCanceledExecutionDoesNotCompileSource()
     {
-        using var state = LuauState.Create();
+        using var state = TestBudgets.CreateRoot();
         using var cancellation = new CancellationTokenSource();
         cancellation.Cancel();
 
@@ -258,9 +258,9 @@ public sealed class HardeningRuntimeTests
     {
         const string chunkName = "@host/bounded-bundle.luau";
         var output = LuauCompiler.Compile("while true do end"u8);
-        using var state = LuauState.Create(new LuauStateOptions
+        using var state = LuauState.Create(TestBudgets.StateOptions with
         {
-            DefaultExecutionOptions = new LuauExecutionOptions
+            DefaultExecutionOptions = TestBudgets.Execution with
             {
                 InterruptCountLimit = 1,
             },
@@ -284,7 +284,7 @@ public sealed class HardeningRuntimeTests
             chunkName,
             "tests/rejected",
             [1, 2, 3]);
-        using var state = LuauState.Create(new LuauStateOptions
+        using var state = LuauState.Create(TestBudgets.StateOptions with
         {
             BytecodePolicy = LuauBytecodePolicy.RequireValidator,
             BytecodeValidator = validator,
@@ -309,7 +309,7 @@ public sealed class HardeningRuntimeTests
         var validator = new RecordingValidator(accept: true);
         var output = LuauCompiler.Compile("return 123"u8);
         var artifact = LuauBytecodeArtifact.Create(output, chunkName, "tests/accepted");
-        using var state = LuauState.Create(new LuauStateOptions
+        using var state = LuauState.Create(TestBudgets.StateOptions with
         {
             BytecodePolicy = LuauBytecodePolicy.RequireValidator,
             BytecodeValidator = validator,
@@ -327,7 +327,7 @@ public sealed class HardeningRuntimeTests
     [Fact]
     public void SyntaxAndRuntimeErrorsRetainTheirChunkNames()
     {
-        using var state = LuauState.Create(new LuauStateOptions
+        using var state = LuauState.Create(TestBudgets.StateOptions with
         {
             BytecodePolicy = LuauBytecodePolicy.Reject,
         });

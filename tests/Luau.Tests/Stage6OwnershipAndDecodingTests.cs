@@ -8,7 +8,7 @@ public sealed class Stage6OwnershipAndDecodingTests
     [Fact]
     public void DecodedStringLimitAcceptsExactBytesAndRejectsOneOverBeforeRecovery()
     {
-        using var exactState = LuauState.Create(new LuauStateOptions
+        using var exactState = LuauState.Create(TestBudgets.StateOptions with
         {
             MaxDecodedStringBytes = 4,
             MaxDecodedBytesPerOperation = 16,
@@ -18,7 +18,7 @@ public sealed class Stage6OwnershipAndDecodingTests
             Assert.Equal("test", exact.Read<string>(0));
         }
 
-        using var limitedState = LuauState.Create(new LuauStateOptions
+        using var limitedState = LuauState.Create(TestBudgets.StateOptions with
         {
             MaxDecodedStringBytes = 3,
             MaxDecodedBytesPerOperation = 16,
@@ -36,7 +36,7 @@ public sealed class Stage6OwnershipAndDecodingTests
     [Fact]
     public void AggregateDecodedLimitRejectsManyIndividuallyAdmittedStrings()
     {
-        using var state = LuauState.Create(new LuauStateOptions
+        using var state = LuauState.Create(TestBudgets.StateOptions with
         {
             MaxDecodedStringBytes = 4,
             MaxDecodedBytesPerOperation = 7,
@@ -54,7 +54,7 @@ public sealed class Stage6OwnershipAndDecodingTests
     [Fact]
     public void ExplicitDisplayLimitIsCappedByRootAndChargedToAggregateBudget()
     {
-        using var cappedState = LuauState.Create(new LuauStateOptions
+        using var cappedState = LuauState.Create(TestBudgets.StateOptions with
         {
             MaxDecodedStringBytes = 3,
             MaxDecodedBytesPerOperation = 32,
@@ -72,7 +72,7 @@ public sealed class Stage6OwnershipAndDecodingTests
             Assert.True(result.Read<bool>(1));
         }
 
-        using var aggregateState = LuauState.Create(new LuauStateOptions
+        using var aggregateState = LuauState.Create(TestBudgets.StateOptions with
         {
             MaxDecodedStringBytes = 4,
             MaxDecodedBytesPerOperation = 7,
@@ -96,7 +96,7 @@ public sealed class Stage6OwnershipAndDecodingTests
     [Fact]
     public void GlobalsRawTableReadsAndEnumerationUseDecodedOperationBoundaries()
     {
-        using var state = LuauState.Create(new LuauStateOptions
+        using var state = LuauState.Create(TestBudgets.StateOptions with
         {
             MaxDecodedStringBytes = 8,
             MaxDecodedBytesPerOperation = 3,
@@ -122,7 +122,7 @@ public sealed class Stage6OwnershipAndDecodingTests
     [Fact]
     public void IntoConversionFailureDisposesAlreadyWrittenReferenceResults()
     {
-        using var state = LuauState.Create(new LuauStateOptions
+        using var state = LuauState.Create(TestBudgets.StateOptions with
         {
             MaxDecodedStringBytes = 3,
             MaxDecodedBytesPerOperation = 16,
@@ -141,7 +141,7 @@ public sealed class Stage6OwnershipAndDecodingTests
     [Fact]
     public async Task IntoDestinationsRejectLiveReferenceOverwriteAndPreserveExistingOwner()
     {
-        using var state = LuauState.Create();
+        using var state = TestBudgets.CreateRoot();
         using var existing = state.CreateTable();
         existing["answer"] = 41;
         var destination = new LuauValue[2];
@@ -175,7 +175,7 @@ public sealed class Stage6OwnershipAndDecodingTests
     [Fact]
     public async Task IntoDestinationsRejectCachedThreadWrapperOverwrite()
     {
-        using var state = LuauState.Create();
+        using var state = TestBudgets.CreateRoot();
         state.OpenCoroutineLibrary();
         using var created = state.DoString(
             "return coroutine.create(function() return 1 end)");
@@ -195,7 +195,7 @@ public sealed class Stage6OwnershipAndDecodingTests
     [Fact]
     public async Task PartialConversionReleasesOnlyNewUnpublishedThreadWrappers()
     {
-        using var state = LuauState.Create(new LuauStateOptions
+        using var state = LuauState.Create(TestBudgets.StateOptions with
         {
             MaxDecodedStringBytes = 3,
             MaxDecodedBytesPerOperation = 16,
@@ -230,7 +230,7 @@ public sealed class Stage6OwnershipAndDecodingTests
     [Fact]
     public void ResultScopeOwnsReferencesAndRetainCreatesIndependentOwner()
     {
-        using var state = LuauState.Create();
+        using var state = TestBudgets.CreateRoot();
         var results = state.DoString("return { answer = 42 }, 'primitive'");
         var table = results.Read<LuauTable>(0);
         var primitive = results[1];
@@ -251,7 +251,7 @@ public sealed class Stage6OwnershipAndDecodingTests
     [Fact]
     public void ResultScopeCarvesOutCallerOwnedCachedThreadWrappers()
     {
-        using var root = LuauState.Create();
+        using var root = TestBudgets.CreateRoot();
         root.OpenCoroutineLibrary();
         var results = root.DoString(
             "return coroutine.create(function() return 42 end)");
@@ -273,7 +273,7 @@ public sealed class Stage6OwnershipAndDecodingTests
     [Fact]
     public void RepeatedThreadReadsShareOneCachedWrapperUntilExplicitRelease()
     {
-        using var root = LuauState.Create();
+        using var root = TestBudgets.CreateRoot();
         root.OpenCoroutineLibrary();
         using var results = root.DoString(
             "return { child = coroutine.create(function() return 7 end) }");
@@ -296,7 +296,7 @@ public sealed class Stage6OwnershipAndDecodingTests
     [Fact]
     public void TableEnumeratorDoesNotOwnSharedThreadKeysOrValues()
     {
-        using var root = LuauState.Create();
+        using var root = TestBudgets.CreateRoot();
         root.OpenCoroutineLibrary();
         var results = root.DoString(
             "local key = coroutine.create(function() end); " +
@@ -325,7 +325,7 @@ public sealed class Stage6OwnershipAndDecodingTests
     [Fact]
     public void CallbackReferencesAreBorrowedAndRetainOutlivesTheFrame()
     {
-        using var state = LuauState.Create();
+        using var state = TestBudgets.CreateRoot();
         LuauTable? borrowed = null;
         LuauTable? retained = null;
         using var callback = state.CreateFunction("inspect", context =>
@@ -355,7 +355,7 @@ public sealed class Stage6OwnershipAndDecodingTests
     [Fact]
     public void MixedCallbackReferenceKindsShareBorrowedExpiryAndRetainModel()
     {
-        using var state = LuauState.Create();
+        using var state = TestBudgets.CreateRoot();
         state.OpenBaseLibrary();
         using var sourceBuffer = state.CreateBuffer([1, 2, 3, 4]);
         using var sourceHandle = state.CreateHandle(new GeneratedCapabilityTarget { Value = 42 });
@@ -420,7 +420,7 @@ public sealed class Stage6OwnershipAndDecodingTests
     [Fact]
     public void GeneratedBindingsUseTheSameBorrowedReferenceModel()
     {
-        using var state = LuauState.Create();
+        using var state = TestBudgets.CreateRoot();
         var probe = new GeneratedOwnershipProbe();
         state.OpenLibrary(probe);
 
@@ -442,7 +442,7 @@ public sealed class Stage6OwnershipAndDecodingTests
     [Fact]
     public void GeneratedReferenceReturnsDoNotTransferOrDisposeLibraryOwnership()
     {
-        using var state = LuauState.Create();
+        using var state = TestBudgets.CreateRoot();
         using var shared = state.CreateTable();
         shared["answer"] = 42;
         var probe = new GeneratedOwnershipProbe { Shared = shared };
@@ -463,7 +463,7 @@ public sealed class Stage6OwnershipAndDecodingTests
     [Fact]
     public void ManualAndGeneratedThreadArgumentsUseTheSharedCachedWrapper()
     {
-        using var state = LuauState.Create();
+        using var state = TestBudgets.CreateRoot();
         state.OpenCoroutineLibrary();
         var probe = new GeneratedOwnershipProbe();
         state.OpenLibrary(probe);
@@ -491,7 +491,7 @@ public sealed class Stage6OwnershipAndDecodingTests
     [Fact]
     public void HostileBorrowedReferenceArgumentsAreReleasedAtEveryCallbackBoundary()
     {
-        using var state = LuauState.Create();
+        using var state = TestBudgets.CreateRoot();
         using var callback = state.CreateFunction("consume", context =>
         {
             var table = context.Read<LuauTable>(0);

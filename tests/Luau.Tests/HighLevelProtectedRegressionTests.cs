@@ -9,7 +9,7 @@ public sealed class HighLevelProtectedRegressionTests
     [Fact]
     public void InvalidStringIndexDoesNotConsumeAnUnrelatedStackValue()
     {
-        using var state = LuauState.Create();
+        using var state = TestBudgets.CreateRoot();
         state.PushInteger(42);
 
         Assert.Throws<InvalidOperationException>(() => state.ToString(2));
@@ -22,13 +22,13 @@ public sealed class HighLevelProtectedRegressionTests
     public void NonYieldableTostringMetamethodBudgetIsTypedAndVmRecovers()
     {
         const string chunkName = "@budgets/non-yieldable-tostring.luau";
-        using var state = LuauState.Create();
+        using var state = TestBudgets.CreateRoot();
         state.OpenBaseLibrary();
 
         var exception = Assert.Throws<LuauExecutionBudgetException>(() => state.DoString(
             "return tostring(setmetatable({}, { __tostring = function() while true do end end }))",
             chunkName,
-            executionOptions: new LuauExecutionOptions { InterruptCountLimit = 1 }));
+            executionOptions: LuauExecutionOptions.Unbounded with { InterruptCountLimit = 1 }));
 
         Assert.Equal(LuauExecutionBudgetKind.InterruptCount, exception.BudgetKind);
         Assert.Equal(chunkName, exception.ChunkName);
@@ -41,7 +41,7 @@ public sealed class HighLevelProtectedRegressionTests
     {
         const long memoryLimit = 1_048_576;
         const string chunkName = "@callbacks/push-string-quota.luau";
-        using var state = LuauState.Create(new LuauStateOptions
+        using var state = LuauState.Create(TestBudgets.StateOptions with
         {
             MemoryLimitBytes = memoryLimit,
             BytecodePolicy = LuauBytecodePolicy.Reject,
@@ -67,7 +67,7 @@ public sealed class HighLevelProtectedRegressionTests
     public void ToDisplayStringReturnsExactUtf8MetamethodOutputAndPreservesInput()
     {
         const string expected = "héllø 🐺 東京";
-        using var state = LuauState.Create();
+        using var state = TestBudgets.CreateRoot();
         state.OpenBaseLibrary();
         using var value = Assert.Single(state.DoString(
             $$"""
@@ -93,7 +93,7 @@ public sealed class HighLevelProtectedRegressionTests
     public void BoundedDisplayStringCapsManagedUtf8AndPreservesStack()
     {
         const string expected = "A🐺東京";
-        using var state = LuauState.Create();
+        using var state = TestBudgets.CreateRoot();
         state.OpenBaseLibrary();
         state.OpenStringLibrary();
         using var value = Assert.Single(state.DoString(
@@ -128,7 +128,7 @@ public sealed class HighLevelProtectedRegressionTests
     [Fact]
     public void ThrowingDisplayMetamethodRestoresStackAndLeavesVmReusable()
     {
-        using var state = LuauState.Create();
+        using var state = TestBudgets.CreateRoot();
         state.OpenBaseLibrary();
         using var value = Assert.Single(state.DoString(
             """
@@ -155,7 +155,7 @@ public sealed class HighLevelProtectedRegressionTests
     [Fact]
     public void ReferenceToStringDoesNotInvokeUntrustedMetamethods()
     {
-        using var state = LuauState.Create();
+        using var state = TestBudgets.CreateRoot();
         state.OpenBaseLibrary();
         using var value = Assert.Single(state.DoString(
             "return setmetatable({}, { __tostring = function() error('must not run') end })",
@@ -170,7 +170,7 @@ public sealed class HighLevelProtectedRegressionTests
     [Fact]
     public void InternalPushNilGrowsTheNativeStackSafely()
     {
-        using var state = LuauState.Create();
+        using var state = TestBudgets.CreateRoot();
 
         for (var index = 0; index < 512; index++)
         {

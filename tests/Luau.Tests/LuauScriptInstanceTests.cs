@@ -427,7 +427,7 @@ public sealed class LuauScriptInstanceTests
     [Fact]
     public async Task CreationValidatesRootNameAndSandboxContract()
     {
-        using var root = LuauState.Create();
+        using var root = TestBudgets.CreateRoot();
         LuauScriptLoader loader = (thread, _) =>
             new ValueTask<LuauResultScope>(thread.DoString("return {}"));
 
@@ -459,9 +459,9 @@ public sealed class LuauScriptInstanceTests
 
     static LuauState CreateSandboxedRoot(ILuauContinuationScheduler? scheduler = null)
     {
-        var root = LuauState.Create(new LuauStateOptions
+        var root = LuauState.Create(TestBudgets.StateOptions with
         {
-            DefaultExecutionOptions = LuauExecutionOptions.Default with
+            DefaultExecutionOptions = TestBudgets.Execution with
             {
                 ContinuationScheduler = scheduler,
             },

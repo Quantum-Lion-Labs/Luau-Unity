@@ -255,7 +255,7 @@ namespace Luau.Unity.Tests
                     ReadByteArray(new SerializedObject(precompiled), "provenanceData")),
                 Is.EqualTo(assetGuid));
 
-            using (var state = LuauState.Create(new LuauStateOptions
+            using (var state = LuauState.Create(TestBudgets.StateOptions with
             {
                 BytecodePolicy = LuauBytecodePolicy.RequireValidator,
                 BytecodeValidator = new AssetGuidValidator(

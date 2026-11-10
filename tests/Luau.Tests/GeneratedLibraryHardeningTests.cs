@@ -8,7 +8,7 @@ public sealed class GeneratedLibraryHardeningTests
     public void GeneratedPropertyWritesRequireAPublicSetter()
     {
         var library = new GeneratedHardeningLibrary();
-        using var state = LuauState.Create();
+        using var state = TestBudgets.CreateRoot();
         state.OpenBaseLibrary();
         state.OpenLibrary(library);
 
@@ -37,7 +37,7 @@ public sealed class GeneratedLibraryHardeningTests
     [Fact]
     public void GeneratedMetatableIsProtectedFromSandboxedChildren()
     {
-        using var root = LuauState.Create();
+        using var root = TestBudgets.CreateRoot();
         root.OpenBaseLibrary();
         root.OpenLibrary(new GeneratedHardeningLibrary());
         root.SandboxRoot();

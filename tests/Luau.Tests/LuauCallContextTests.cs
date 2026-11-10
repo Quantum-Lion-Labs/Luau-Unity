@@ -5,7 +5,7 @@ public sealed class LuauCallContextTests
     [Fact]
     public void ReadsAndReturnsManagedValuesAndExpiresAfterInvocation()
     {
-        using var state = LuauState.Create();
+        using var state = TestBudgets.CreateRoot();
         var retainedContext = default(LuauCallContext);
         using var callback = state.CreateFunction("sum", context =>
         {
@@ -26,7 +26,7 @@ public sealed class LuauCallContextTests
     [Fact]
     public void ConversionFailureIdentifiesCallbackAndArgument()
     {
-        using var state = LuauState.Create();
+        using var state = TestBudgets.CreateRoot();
         using var callback = state.CreateFunction(
             "needsInteger",
             context => context.Return(context.Read<long>(0)));
@@ -42,7 +42,7 @@ public sealed class LuauCallContextTests
     [Fact]
     public async Task AsyncContextCarriesTheOperationCancellationToken()
     {
-        using var state = LuauState.Create();
+        using var state = TestBudgets.CreateRoot();
         using var cancellation = new CancellationTokenSource();
         CancellationToken observed = default;
         using var callback = state.CreateAsyncFunction("observeCancellation", async context =>

@@ -13,7 +13,7 @@ public sealed class LuauValueTests
     [Fact]
     public void UserdataEqualityAndHashingUseWrapperIdentity()
     {
-        using var state = LuauState.Create();
+        using var state = TestBudgets.CreateRoot();
         using var first = new LuauUserData(state, -1);
         using var second = new LuauUserData(state, -1);
         var firstValue = LuauValue.FromUserData(first);
@@ -28,7 +28,7 @@ public sealed class LuauValueTests
     [Fact]
     public void ArbitraryStructsAreNotConvertedToUserdata()
     {
-        using var state = LuauState.Create();
+        using var state = TestBudgets.CreateRoot();
 
         Assert.Throws<ArgumentException>(() => LuauValue.CreateFrom(new UnsupportedStruct(1)));
     }

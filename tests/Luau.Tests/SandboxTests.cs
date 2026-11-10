@@ -8,7 +8,7 @@ public sealed class SandboxTests
     [Fact]
     public void RootSandboxRejectsMissingBaseLibraryBeforeFreezingState()
     {
-        using var root = LuauState.Create();
+        using var root = TestBudgets.CreateRoot();
 
         var exception = Assert.Throws<InvalidOperationException>(root.SandboxRoot);
 
@@ -25,7 +25,7 @@ public sealed class SandboxTests
     [Fact]
     public void RootSandboxRejectsReplacedGlobalEnvironmentBeforeFreezingState()
     {
-        using var root = LuauState.Create();
+        using var root = TestBudgets.CreateRoot();
         root.OpenBaseLibrary();
         using var replacement = root.CreateTable();
         root["_G"] = replacement;
@@ -57,7 +57,7 @@ public sealed class SandboxTests
     [Fact]
     public void SandboxedChildCanReadButCannotReplaceProtectedRootGlobal()
     {
-        using var root = LuauState.Create();
+        using var root = TestBudgets.CreateRoot();
         root.OpenBaseLibrary();
         root["hostAnswer"] = 42;
         root.SandboxRoot();
@@ -75,7 +75,7 @@ public sealed class SandboxTests
     [Fact]
     public void ProtectedRootAssignmentFailsInsidePcallWithoutChangingRootValue()
     {
-        using var root = LuauState.Create();
+        using var root = TestBudgets.CreateRoot();
         root.OpenBaseLibrary();
         root["hostAnswer"] = 42;
         root.SandboxRoot();
@@ -99,7 +99,7 @@ public sealed class SandboxTests
     [Fact]
     public void RootApiTablesAreReadOnlyFromSandboxedChildren()
     {
-        using var root = LuauState.Create();
+        using var root = TestBudgets.CreateRoot();
         root.OpenBaseLibrary();
         using var hostApi = root.CreateTable();
         hostApi["answer"] = 42;
@@ -189,7 +189,7 @@ public sealed class SandboxTests
     [Fact]
     public void RequireCacheIsSharedAcrossSandboxedSiblings()
     {
-        using var root = LuauState.Create();
+        using var root = TestBudgets.CreateRoot();
         root.OpenBaseLibrary();
         var requirer = new CountingRequirer();
         root.OpenRequireLibrary(requirer);
@@ -208,7 +208,7 @@ public sealed class SandboxTests
     [Fact]
     public void CachedModuleClosureDoesNotCaptureFirstSandboxedSiblingEnvironment()
     {
-        using var root = LuauState.Create();
+        using var root = TestBudgets.CreateRoot();
         root.OpenBaseLibrary();
         var requirer = new PrivateGlobalClosureRequirer();
         root.OpenRequireLibrary(requirer);
@@ -235,7 +235,7 @@ public sealed class SandboxTests
     [InlineData("return 1, 2")]
     public void RequireRejectsInvalidResultCountsWithoutCachingOrPoisoningTheRoot(string source)
     {
-        using var root = LuauState.Create();
+        using var root = TestBudgets.CreateRoot();
         root.OpenBaseLibrary();
         var requirer = new SourceRequirer(source);
         root.OpenRequireLibrary(requirer);
@@ -256,7 +256,7 @@ public sealed class SandboxTests
     [Fact]
     public void RequireRejectsCircularDependenciesAndCleansTheInProgressEntry()
     {
-        using var root = LuauState.Create();
+        using var root = TestBudgets.CreateRoot();
         root.OpenBaseLibrary();
         var requirer = new CircularRequirer();
         root.OpenRequireLibrary(requirer);
@@ -304,7 +304,7 @@ public sealed class SandboxTests
     [Fact]
     public void PreexistingChildCannotRegisterAnyLibraryFamilyBeforeOrAfterRootSandboxing()
     {
-        using var root = LuauState.Create();
+        using var root = TestBudgets.CreateRoot();
         using var child = root.CreateThread();
         var requirer = new CountingRequirer();
         var customLibrary = new TrackingLibrary();
@@ -355,7 +355,7 @@ public sealed class SandboxTests
 
     static LuauState CreateSandboxedRoot()
     {
-        var root = LuauState.Create();
+        var root = TestBudgets.CreateRoot();
         root.OpenBaseLibrary();
         root.SandboxRoot();
         return root;

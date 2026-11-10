@@ -1,3 +1,5 @@
+using Luau.Tests;
+
 namespace Luau;
 
 public sealed class TableTests
@@ -5,7 +7,7 @@ public sealed class TableTests
     [Fact]
     public void CreateAndDispose()
     {
-        using var state = LuauState.Create();
+        using var state = TestBudgets.CreateRoot();
         var table = state.CreateTable();
         table.Dispose();
     }
@@ -13,7 +15,7 @@ public sealed class TableTests
     [Fact]
     public void IndexerGetSet()
     {
-        using var state = LuauState.Create();
+        using var state = TestBudgets.CreateRoot();
         var table = state.CreateTable();
         table["test"] = 10;
         Assert.Equal(10, table["test"]);
@@ -22,7 +24,7 @@ public sealed class TableTests
     [Fact]
     public void RawGetSet()
     {
-        using var state = LuauState.Create();
+        using var state = TestBudgets.CreateRoot();
         var table = state.CreateTable();
         table.RawSet("test", 10);
         Assert.Equal(10, table.RawGet("test"));
@@ -31,7 +33,7 @@ public sealed class TableTests
     [Fact]
     public void TableConstructionUsesRawLastWriteSemantics()
     {
-        using var state = LuauState.Create();
+        using var state = TestBudgets.CreateRoot();
         KeyValuePair<LuauValue, LuauValue>[] entries =
         [
             new("same", 1),
@@ -50,7 +52,7 @@ public sealed class TableTests
     [Fact]
     public void AddUsesRawDuplicateSemanticsAndRejectsNilValues()
     {
-        using var state = LuauState.Create();
+        using var state = TestBudgets.CreateRoot();
         state.OpenBaseLibrary();
         using var results = state.DoString(
             "return setmetatable({}, { __index = function() return 99 end })");
@@ -67,7 +69,7 @@ public sealed class TableTests
     [Fact]
     public void DictionaryKeysRejectNilNanAndDisposedReferences()
     {
-        using var state = LuauState.Create();
+        using var state = TestBudgets.CreateRoot();
         using var table = state.CreateTable();
         var nil = LuauValue.Nil;
         var nan = LuauValue.FromNumber(double.NaN);
@@ -106,7 +108,7 @@ public sealed class TableTests
     [Fact]
     public void RemoveReportsRawExistenceAndNilAssignmentRemoves()
     {
-        using var state = LuauState.Create();
+        using var state = TestBudgets.CreateRoot();
         using var table = state.CreateTable();
 
         Assert.False(table.Remove("missing"));
@@ -123,7 +125,7 @@ public sealed class TableTests
     [Fact]
     public void RawAndMetamethodAwareOperationsRemainDistinct()
     {
-        using var state = LuauState.Create();
+        using var state = TestBudgets.CreateRoot();
         state.OpenBaseLibrary();
         using var results = state.DoString(
             "local backing = {}; " +
@@ -152,7 +154,7 @@ public sealed class TableTests
     [Fact]
     public void EntryCountCountsAllRawEntriesAndIsIndependentFromLength()
     {
-        using var state = LuauState.Create();
+        using var state = TestBudgets.CreateRoot();
         using var table = state.CreateTable();
         table.Add(1d, "sequence");
         table.Add(100d, "sparse");
@@ -167,7 +169,7 @@ public sealed class TableTests
     [Fact]
     public void MutationDuringEnumerationHasLiveUnspecifiedVisitationButStateRecovers()
     {
-        using var state = LuauState.Create();
+        using var state = TestBudgets.CreateRoot();
         using var table = state.CreateTable();
         table.Add("first", 1);
         table.Add("second", 2);
@@ -188,7 +190,7 @@ public sealed class TableTests
     [Fact]
     public void ContainsKey()
     {
-        using var state = LuauState.Create();
+        using var state = TestBudgets.CreateRoot();
         var table = state.CreateTable();
         Assert.False(table.ContainsKey("test"));
         table["test"] = 10;
@@ -198,7 +200,7 @@ public sealed class TableTests
     [Fact]
     public void LengthUsesRawSequenceSemanticsRatherThanEntryCount()
     {
-        using var state = LuauState.Create();
+        using var state = TestBudgets.CreateRoot();
         using var array = state.CreateTable();
         array[1d] = "first";
         array[2d] = "second";
@@ -222,7 +224,7 @@ public sealed class TableTests
     [Fact]
     public void EmptyEnumeratorRemainsTerminalUntilReset()
     {
-        using var state = LuauState.Create();
+        using var state = TestBudgets.CreateRoot();
         using var table = state.CreateTable();
         var enumerator = table.GetEnumerator();
 
@@ -235,7 +237,7 @@ public sealed class TableTests
     [Fact]
     public void OneEntryEnumeratorCanBeExplicitlyReset()
     {
-        using var state = LuauState.Create();
+        using var state = TestBudgets.CreateRoot();
         using var table = state.CreateTable();
         table["only"] = 42;
         var enumerator = table.GetEnumerator();
@@ -255,7 +257,7 @@ public sealed class TableTests
     [Fact]
     public void MultiEntryEnumeratorIsTerminalAndDisposalFailuresStayContained()
     {
-        using var state = LuauState.Create();
+        using var state = TestBudgets.CreateRoot();
         var table = state.CreateTable();
         table[1] = 10;
         table[2] = 20;
@@ -282,7 +284,7 @@ public sealed class TableTests
     [Fact]
     public void Foreach()
     {
-        using var state = LuauState.Create();
+        using var state = TestBudgets.CreateRoot();
         var table = state.CreateTable();
         table[1] = 10;
         table["key"] = "value";
@@ -295,7 +297,7 @@ public sealed class TableTests
     [Fact]
     public void Clone()
     {
-        using var state = LuauState.Create();
+        using var state = TestBudgets.CreateRoot();
         var table = state.CreateTable();
         table["test"] = 10;
         var clone = table.Clone();
@@ -309,7 +311,7 @@ public sealed class TableTests
     [Fact]
     public void ThrowingMetamethodIsContainedAndRestoresStack()
     {
-        using var state = LuauState.Create();
+        using var state = TestBudgets.CreateRoot();
         state.OpenBaseLibrary();
         using var table = state.DoString(
             "return setmetatable({}, { __index = function() error('protected table failure') end })")[0]
@@ -326,9 +328,9 @@ public sealed class TableTests
     [Fact]
     public void DirectMetamethodGetAndSetUseDefaultExecutionBudget()
     {
-        using var state = LuauState.Create(new LuauStateOptions
+        using var state = LuauState.Create(TestBudgets.StateOptions with
         {
-            DefaultExecutionOptions = new LuauExecutionOptions
+            DefaultExecutionOptions = TestBudgets.Execution with
             {
                 InterruptCountLimit = 10,
             },
@@ -349,7 +351,7 @@ public sealed class TableTests
     [Fact]
     public void DirectMetamethodSurfacesManagedCallbackFailure()
     {
-        using var state = LuauState.Create();
+        using var state = TestBudgets.CreateRoot();
         state.OpenBaseLibrary();
         var cause = new InvalidOperationException("host metamethod callback failed");
         using var callback = state.CreateFunction("explode", _ => throw cause);
@@ -369,7 +371,7 @@ public sealed class TableTests
     [Fact]
     public void InvalidIteratorKeyIsContainedAndStateRecovers()
     {
-        using var state = LuauState.Create();
+        using var state = TestBudgets.CreateRoot();
         using var table = state.CreateTable();
         table[1] = 10;
         var originalTop = state.GetTop();
@@ -384,7 +386,7 @@ public sealed class TableTests
     [Fact]
     public void TableYieldedByChildUsesRootStackAndChildRemainsResumable()
     {
-        using var root = LuauState.Create();
+        using var root = TestBudgets.CreateRoot();
         root.OpenCoroutineLibrary();
         using var child = root.CreateThread();
         using var table = Assert.Single(child.DoString(
@@ -403,7 +405,7 @@ public sealed class TableTests
     [Fact]
     public void SuspendedChildGlobalReadDoesNotResetCoroutine()
     {
-        using var root = LuauState.Create();
+        using var root = TestBudgets.CreateRoot();
         root.OpenCoroutineLibrary();
         using var child = root.CreateThread();
 

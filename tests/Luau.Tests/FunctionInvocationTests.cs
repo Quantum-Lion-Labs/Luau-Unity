@@ -5,7 +5,7 @@ public sealed class FunctionInvocationTests
     [Fact]
     public async Task ScriptClosuresSupportFirstClassSyncAndAsyncInvocation()
     {
-        using var root = LuauState.Create();
+        using var root = TestBudgets.CreateRoot();
         using var function = Assert.Single(root.DoString(
             "return function(first, second) return first + second, first * second end"))
             .Read<LuauFunction>();
@@ -20,13 +20,13 @@ public sealed class FunctionInvocationTests
     [Fact]
     public void FunctionInvocationUsesOperationLimitsAndLeavesVmReusable()
     {
-        using var root = LuauState.Create();
+        using var root = TestBudgets.CreateRoot();
         using var function = Assert.Single(root.DoString(
             "return function() return 1, 2, 3 end"))
             .Read<LuauFunction>();
 
         var exception = Assert.Throws<LuauResultLimitException>(() => function.Invoke(
-            executionOptions: LuauExecutionOptions.Default with { MaxResultCount = 2 }));
+            executionOptions: LuauExecutionOptions.Unbounded with { MaxResultCount = 2 }));
 
         Assert.Equal(3, exception.ActualCount);
         Assert.Equal(2, exception.Limit);
@@ -36,7 +36,7 @@ public sealed class FunctionInvocationTests
     [Fact]
     public void AsyncManagedCallbackReachedBySyncInvokeFailsClearlyAndRecovers()
     {
-        using var root = LuauState.Create();
+        using var root = TestBudgets.CreateRoot();
         root["asyncHost"] = root.CreateAsyncFunction(async context =>
         {
             await Task.Yield();
@@ -57,7 +57,7 @@ public sealed class FunctionInvocationTests
     [Fact]
     public async Task ManagedCallbackCapabilitiesCannotBeInvokedByManagedCallers()
     {
-        using var root = LuauState.Create();
+        using var root = TestBudgets.CreateRoot();
         using var callback = root.CreateFunction(context => context.Return(42));
 
         var syncException = Assert.Throws<InvalidOperationException>(() => callback.Invoke());

@@ -5,7 +5,7 @@ public sealed class FunctionInvocationOutputTests
     [Fact]
     public void InvokeVoidSupportsZeroSingleAndSpanArguments()
     {
-        using var root = LuauState.Create();
+        using var root = TestBudgets.CreateRoot();
         var calls = new List<int[]>();
         using var capture = root.CreateFunction(context =>
         {
@@ -35,7 +35,7 @@ public sealed class FunctionInvocationOutputTests
     [Fact]
     public async Task InvokeVoidRejectsAsyncCallbackSynchronouslyAndSupportsItAsynchronously()
     {
-        using var root = LuauState.Create();
+        using var root = TestBudgets.CreateRoot();
         var observed = 0;
         using var asyncCapture = root.CreateAsyncFunction(async context =>
         {
@@ -59,7 +59,7 @@ public sealed class FunctionInvocationOutputTests
     [Fact]
     public void InvokeVoidDiscardsUnexpectedResultsReportsLabelAndLeavesVmReusable()
     {
-        using var root = LuauState.Create();
+        using var root = TestBudgets.CreateRoot();
         using var functionOwner = root.DoString(
             "return function() return {}, 42 end");
         var function = functionOwner.Read<LuauFunction>(0);
@@ -81,7 +81,7 @@ public sealed class FunctionInvocationOutputTests
     [Fact]
     public void InvokeVoidReportsTheZeroResultContractAboveTheStateDefaultLimit()
     {
-        using var root = LuauState.Create();
+        using var root = TestBudgets.CreateRoot();
         var returnedValues = string.Join(", ", Enumerable.Repeat("1", 65));
         using var functionOwner = root.DoString(
             $"return function() return {returnedValues} end");
@@ -99,7 +99,7 @@ public sealed class FunctionInvocationOutputTests
     [Fact]
     public async Task InvokeIntoSyncAndAsyncTransferResultOwnershipToTheDestination()
     {
-        using var root = LuauState.Create();
+        using var root = TestBudgets.CreateRoot();
         using var synchronousOwner = root.DoString(
             "return function(value) return value + value, { answer = value } end");
         var synchronous = synchronousOwner.Read<LuauFunction>(0);
@@ -139,7 +139,7 @@ public sealed class FunctionInvocationOutputTests
     [Fact]
     public async Task InvokeIntoRejectsShortDestinationsAndCancellationWithoutMutation()
     {
-        using var root = LuauState.Create();
+        using var root = TestBudgets.CreateRoot();
         using var functionOwner = root.DoString(
             "return function() return 1, 2 end");
         var function = functionOwner.Read<LuauFunction>(0);
@@ -172,7 +172,7 @@ public sealed class FunctionInvocationOutputTests
     [Fact]
     public async Task InvokeIntoRollsBackPartiallyWrittenReferenceResults()
     {
-        using var root = LuauState.Create(new LuauStateOptions
+        using var root = LuauState.Create(TestBudgets.StateOptions with
         {
             MaxDecodedStringBytes = 3,
             MaxDecodedBytesPerOperation = 16,
@@ -199,7 +199,7 @@ public sealed class FunctionInvocationOutputTests
     [Fact]
     public async Task InvokeIntoRejectsLiveReferenceSlotsAndPreservesTheirOwners()
     {
-        using var root = LuauState.Create();
+        using var root = TestBudgets.CreateRoot();
         using var existing = root.CreateTable();
         existing["answer"] = 41;
         using var functionOwner = root.DoString(
