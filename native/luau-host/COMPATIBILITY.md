@@ -33,6 +33,18 @@ that returns `LUAU_HOST_CALLBACK_ERROR` may drop its arguments first; the host
 raises the topmost value of the non-empty frame, so a callback whose arguments
 filled its frame can still report a failure.
 
+Interrupt delivery can be throttled per root. After
+`luau_host_interrupt_configure`, the host counts EXECUTION safepoints itself,
+enforces the configured count limit exactly (the poll runs at safepoint
+`limit + 1`), reads its monotonic clock every 1 to 128 counted safepoints
+against the configured deadline, and otherwise calls the poll only when
+`luau_host_interrupt_request` has raised attention. A request is the one host
+call any thread may make concurrently with execution on its root; it is a
+lock-free store and must return before `luau_host_state_close` begins. A
+throttled root never forwards GC notifications. A fresh install still polls at
+every safepoint, so `LUAU_HOST_FEATURE_INTERRUPT_THROTTLE` advertises an
+additive contract.
+
 Host suspension uses Luau's break continuations. `luau_host_suspend` preserves
 arguments on the calling coroutine and stops its waiting `coroutine.resume` or
 `coroutine.wrap` ancestors. `luau_host_resume_target` identifies the borrowed

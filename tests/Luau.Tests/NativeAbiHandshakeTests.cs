@@ -58,6 +58,22 @@ public sealed unsafe class NativeAbiHandshakeTests
     }
 
     [Fact]
+    public void RootCreationRejectsAPluginWithoutTheInterruptThrottle()
+    {
+        // Every operation configures its budget through the throttle entry
+        // points, so a plugin without them must be rejected before any state
+        // exists.
+        var info = CreateMatchingInfo();
+        info.feature_flags &= ~(1U << 14);
+        var verifier = CreateVerifier(info);
+
+        var exception = Assert.Throws<PlatformNotSupportedException>(
+            () => LuauState.Create(LuauStateOptions.Default, verifier));
+
+        Assert.Contains("interrupt throttle", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void RootCreationRejectsHostsWithoutCoroutineSuspension()
     {
         var info = CreateMatchingInfo();

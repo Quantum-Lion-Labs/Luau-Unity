@@ -28,7 +28,9 @@ typedef struct luau_host_state luau_host_state;
 /* Every non-null handle and pointer passed to this ABI must still be valid for
  * the documented call. Handles that share a root VM are externally serialized:
  * no host call may run concurrently with another call on that root, including
- * state_close or interrupt_uninstall versus execution/callback dispatch.
+ * state_close or interrupt_uninstall versus execution/callback dispatch. The
+ * one exception is luau_host_interrupt_request, which any thread may call at
+ * any time before state_close begins on that root.
  * Synchronous stack access from a managed function is permitted;
  * reverse callbacks must not close a root, reset an active thread, or reenter a
  * lifecycle operation. Child/thread handles are borrowed: the corresponding
@@ -136,6 +138,7 @@ enum
     LUAU_HOST_FEATURE_OBSERVATION_ONLY_GC_INTERRUPT = 1U << 11,
     LUAU_HOST_FEATURE_COROUTINE_SUSPENSION = 1U << 12,
     LUAU_HOST_FEATURE_STACK_LIMIT = 1U << 13,
+    LUAU_HOST_FEATURE_INTERRUPT_THROTTLE = 1U << 14,
 };
 
 enum
@@ -670,6 +673,69 @@ LUAU_HOST_API luau_host_status LUAU_HOST_CALL luau_host_interrupt_install(
     luau_host_state* state,
     const luau_host_callback_table* callbacks);
 LUAU_HOST_API void LUAU_HOST_CALL luau_host_interrupt_uninstall(luau_host_state* state);
+
+/* Interrupt throttle. A fresh install polls at every EXECUTION safepoint (each
+ * call, return, and loop back-edge, plus the non-yieldable pattern-matching
+ * steps) and forwards every GC notification. interrupt_configure switches the
+ * root to throttled delivery until uninstall; the next install starts
+ * unthrottled again. In throttled mode the host keeps the root's safepoint
+ * count and budget itself and calls the poll only when there is something to
+ * observe:
+ *
+ * - attention: after interrupt_request, the next EXECUTION safepoint polls
+ *   before it is counted. A poll that returns nonzero keeps attention raised,
+ *   so every later safepoint polls again until a poll returns zero or the root
+ *   is configured again; a hard stop caught by a script pcall is therefore
+ *   repeated at the next safepoint.
+ * - count: every other EXECUTION safepoint increments the count, which
+ *   interrupt_count reports. When count_limit is nonzero, the safepoint that
+ *   makes the count count_limit + 1 polls (counted), and so does every later
+ *   one while the poll keeps returning zero.
+ * - wall clock: when time_limit_ns is nonzero, the deadline is the host's
+ *   monotonic clock at configure plus time_limit_ns (saturating). The host
+ *   reads the clock every 1 to 128 counted safepoints, adapting the stride so
+ *   that consecutive reads stay about 20 microseconds apart. The first
+ *   counted safepoint that reads the clock at or after the deadline polls,
+ *   and so does every read after it while the poll keeps returning zero.
+ *   Detection therefore trails the deadline by at most one stride of
+ *   safepoints: about 20 microseconds while the safepoint rate is steady, and
+ *   at most 128 safepoint gaps, once, after an abrupt slowdown. Time spent
+ *   between two safepoints (inside one C function, or while the thread is
+ *   suspended) is observed only at the next safepoint, as before.
+ *
+ * Throttled mode never forwards GC notifications, and they never count as
+ * safepoints, consume attention, or read the clock. A poll's return value
+ * keeps the meaning documented above: zero continues; nonzero suspends when
+ * yieldable and otherwise raises the sticky CANCELED hard stop.
+ *
+ * interrupt_configure is a no-fail, stack-neutral operation under the root
+ * serialization contract; state may be any handle of the root. It requires an
+ * installed interrupt (otherwise INVALID_ARGUMENT, with nothing changed),
+ * resets the count to zero, clears attention, replaces both limits (zero
+ * disables either), and restarts the clock stride. Configuring again replaces
+ * the budget; configuration persists across executions until the next
+ * configure or uninstall.
+ *
+ * interrupt_request is no-fail, lock-free, allocation-free, and
+ * stack-neutral. It may run on any thread, concurrently with execution,
+ * callbacks, polls, install, uninstall, and configure on the same root, but it
+ * must return before state_close begins. state may be any handle of the root;
+ * because child handles are borrowed, a thread that does not own the root's
+ * execution should pass the root handle. The request is a release store
+ * observed by the next EXECUTION safepoint that reads it after it becomes
+ * visible; a request made synchronously before a callback returns to Luau is
+ * always observed by the next safepoint. It has no effect until the root is
+ * configured.
+ *
+ * interrupt_count is a no-fail, allocation-free, stack-neutral observer of
+ * the count since the last configure (zero when unconfigured). It may be
+ * called from a poll or under the serialization contract. */
+LUAU_HOST_API luau_host_status LUAU_HOST_CALL luau_host_interrupt_configure(
+    luau_host_state* state,
+    uint64_t count_limit,
+    uint64_t time_limit_ns);
+LUAU_HOST_API void LUAU_HOST_CALL luau_host_interrupt_request(luau_host_state* state);
+LUAU_HOST_API uint64_t LUAU_HOST_CALL luau_host_interrupt_count(luau_host_state* state);
 
 #ifdef __cplusplus
 } /* extern "C" */

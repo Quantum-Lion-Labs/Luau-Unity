@@ -99,6 +99,7 @@ namespace Luau.Internal.Interop
         ObservationOnlyGcInterrupt = 1U << 11,
         CoroutineSuspension = 1U << 12,
         StackLimit = 1U << 13,
+        InterruptThrottle = 1U << 14,
     }
 
     [Flags]

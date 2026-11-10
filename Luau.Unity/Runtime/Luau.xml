@@ -157,12 +157,66 @@
             Owns restoration of one synchronous managed/native stack boundary.
             </summary>
         </member>
+        <member name="M:Luau.LuauVmContext.ConfigureInterruptBudget(Luau.ScriptOperation)">
+            <summary>
+            Hands the operation's budget to the native interrupt throttle, which
+            keeps the safepoint count and the clock and polls managed code only
+            when the count passes the limit, the deadline passes, or a request
+            is pending. Configuring also resets the count and clears requests, so
+            it must happen before the operation is published and can be
+            signaled.
+            </summary>
+        </member>
+        <member name="M:Luau.LuauVmContext.RequestInterruptAttention(Luau.ScriptOperation)">
+            <summary>
+            Makes the next interrupt safepoint poll <paramref name="operation"/>
+            from any thread. The request is dropped once the operation is no
+            longer active; holding the lifecycle gate keeps the root open for
+            the native call, since close begins only after the active operation
+            ends or disposal takes this gate.
+            </summary>
+        </member>
+        <member name="M:Luau.LuauVmContext.RequestActiveInterruptAttention">
+            <summary>
+            Makes the next safepoint poll whichever operation is active, for
+            disposal requests that do not know which operation they stop.
+            </summary>
+        </member>
+        <member name="M:Luau.ScriptOperation.RequestInterruptAttentionFromOwner">
+            <summary>
+            Makes the next interrupt safepoint on this root poll managed state.
+            Pending work must reach Luau at the very next safepoint: the pointer
+            check in <see cref="M:Luau.ScriptOperation.RecordFailedCallbackSuspension(System.IntPtr)"/> relies on no
+            instruction that could switch coroutines running in between.
+            </summary>
+        </member>
+        <member name="M:Luau.ScriptOperation.RegisterCallerCancellationSignal">
+            <summary>
+            Registers the cross-thread signal for caller cancellation. Called
+            once the operation is active and outside the context locks: a token
+            that is already canceled runs the request inline, and disposing the
+            registration waits for a concurrent callback that may need those locks.
+            </summary>
+        </member>
+        <member name="P:Luau.ScriptOperation.InterruptCountBudget">
+            <summary>
+            The native interrupt budget for this operation: the count limit and
+            the wall-clock time left, in nanoseconds; zero disables either.
+            </summary>
+        </member>
         <member name="M:Luau.ScriptOperation.RecordFailedCallbackSuspension(System.IntPtr)">
             <summary>
             Records the thread a failed callback suspended on. A pending failure
             can also reach Luau through an interrupt on some other frame, for
             example after a non-yieldable parent rejected this suspension; only
             this thread's suspended frame is the failed callback's own.
+            </summary>
+        </member>
+        <member name="M:Luau.ScriptOperation.DetectHardStop(Luau.Internal.Interop.LuauHostState*)">
+            <summary>
+            Checks the hard stops in precedence order. From an interrupt poll,
+            <paramref name="interruptState"/> is the polling thread, and the
+            native host's safepoint count decides the interrupt budget.
             </summary>
         </member>
         <member name="T:Luau.Utf8BufferScope">

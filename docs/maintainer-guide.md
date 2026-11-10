@@ -260,7 +260,33 @@ The same order applies to top-level, nested require, and direct host modes.
 Structured tests assert exception type, chunk/callback identity, allocator
 diagnostics, original/final stack top, and whether the root remains reusable.
 
-### 6.3 Direct operations cannot suspend
+### 6.3 Interrupt throttle
+
+Every call, return, and loop back-edge is a Luau interrupt safepoint, so a
+reverse call into managed code at each one would cost far more than the Luau
+instructions in between. `BeginOperation` hands the
+operation's count limit and remaining wall-clock time to
+`luau_host_interrupt_configure`; the native trampoline then counts safepoints,
+reads its clock every few safepoints, and calls the managed poll only when the
+count passes the limit, the deadline passes, or attention was requested. The
+managed poll stays the authority for what happens: it applies the failure
+precedence below and reads the native count for the budget exception.
+
+The throttle is correct only if everything that can make the poll act
+requests attention when it happens:
+
+- pending callback work (`RecordCallbackFailure`, `QueueAsyncCallback`)
+  requests from the operation's own thread, which keeps the root open;
+- caller cancellation, the deadline timer, and state or root disposal request
+  from other threads under the lifecycle gate, and only while their operation
+  is active, so the request can never race native close.
+
+A new hard-stop source or kind of pending work must do the same, or it will be
+observed only at the next count or clock event. `InterruptThrottleTests` run
+without any budget that would stop the script in time, so a missing request
+shows up as a script that keeps running until the test's safety net.
+
+### 6.4 Direct operations cannot suspend
 
 A table/global/metamethod operation may run Luau code, so it joins the operation
 engine even when called directly by a host. It may not suspend asynchronously.
@@ -615,6 +641,8 @@ one compatibility unit.
 - Hard stops outrank callback failures; callback failures outrank
   allocator/native failures.
 - Async managed work begins only after native resume has unwound.
+- Anything that can make the interrupt poll act requests native attention
+  when it happens.
 - Generated host APIs are attributed, reflection-free, and IL2CPP-safe.
 - `require()` remains managed, opt-in, sandbox-aware, and on the shared engine.
 - Normal builds do not mutate the Unity package.

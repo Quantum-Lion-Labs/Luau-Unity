@@ -12,6 +12,7 @@
 #include "tracked_allocation.h"
 
 #include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <condition_variable>
@@ -132,7 +133,17 @@ constexpr uint32_t kRequiredFeatures =
     LUAU_HOST_FEATURE_DIRECT_CALLBACK_IDENTITY |
     LUAU_HOST_FEATURE_OBSERVATION_ONLY_GC_INTERRUPT |
     LUAU_HOST_FEATURE_COROUTINE_SUSPENSION |
-    LUAU_HOST_FEATURE_STACK_LIMIT;
+    LUAU_HOST_FEATURE_STACK_LIMIT |
+    LUAU_HOST_FEATURE_INTERRUPT_THROTTLE;
+
+// Throttled interrupts read the monotonic clock every kClockStrideMin to
+// kClockStrideMax counted safepoints. The stride adapts so that consecutive
+// reads stay about kClockTargetSliceNs apart; luau_host.h documents the
+// resulting wall-clock detection latency, so keep the two in step.
+constexpr uint32_t kClockStrideMin = 1;
+constexpr uint32_t kClockStrideInitial = 8;
+constexpr uint32_t kClockStrideMax = 128;
+constexpr int64_t kClockTargetSliceNs = 20000;
 
 constexpr uint64_t fnv1a(const char* text, uint64_t value = UINT64_C(14695981039346656037))
 {
@@ -201,9 +212,31 @@ luau_host_state* host(lua_State* state)
     return reinterpret_cast<luau_host_state*>(state);
 }
 
+// Budget state for a configured (throttled) interrupt. Only the thread that
+// executes or configures the root touches it, under the root-serialization
+// contract, so plain fields suffice; cross-thread requests use the separate
+// attention flag.
+struct InterruptThrottle
+{
+    bool enabled = false;
+    bool hasDeadline = false;
+    uint32_t clockStride = kClockStrideInitial;
+    // EXECUTION safepoints counted since the last configure.
+    uint64_t count = 0;
+    // The count at which the next count-limit or clock event is due.
+    uint64_t nextEvent = UINT64_MAX;
+    uint64_t countLimit = 0;
+    uint64_t nextClockCheck = UINT64_MAX;
+    int64_t deadline = 0;
+    int64_t lastClock = 0;
+};
+
 struct AllocatorContext
 {
     uint64_t magic = kAllocatorMagic;
+    // The interrupt fast path reads these first; keep them together.
+    InterruptThrottle throttle;
+    std::atomic<uint32_t> interruptAttention = {0};
     size_t currentBytes = 0;
     size_t peakBytes = 0;
     size_t limitBytes = 0;
@@ -1024,46 +1057,36 @@ void leaveinterrupt(AllocatorContext* allocator)
     }
 }
 
-void interrupttrampoline(lua_State* state, int gc)
+// Calls the installed poll under the interrupt gate and returns its action.
+// The gate is left before returning, so the caller may yield or throw.
+int callinterruptpoll(lua_State* state, AllocatorContext* allocator, luau_host_interrupt_kind kind)
 {
-    AllocatorContext* allocator = getallocator(state);
     if (!enterinterrupt(allocator))
-        return;
+        return 0;
 
-    InterruptPoll poll = allocator->interruptPoll.load(std::memory_order_acquire);
-    if (!poll)
-    {
-        leaveinterrupt(allocator);
-        return;
-    }
-
-    const bool isGcNotification = gc >= 0;
     int action = 0;
-    try
+    InterruptPoll poll = allocator->interruptPoll.load(std::memory_order_acquire);
+    if (poll)
     {
-        const luau_host_interrupt_kind kind = isGcNotification
-            ? LUAU_HOST_INTERRUPT_GC
-            : LUAU_HOST_INTERRUPT_EXECUTION;
-        action = poll(host(state), kind);
-    }
-    catch (...)
-    {
-        // Reverse callbacks are required to contain exceptions, but the native
-        // ABI remains a no-unwind boundary for a nonconforming caller.
+        try
+        {
+            action = poll(host(state), kind);
+        }
+        catch (...)
+        {
+            // Reverse callbacks are required to contain exceptions, but the
+            // native ABI remains a no-unwind boundary for a nonconforming caller.
+        }
     }
 
-    // Yield/throw may bypass C++ destructors; decrement before changing VM flow.
     leaveinterrupt(allocator);
+    return action;
+}
 
-    // Collector notifications are observation-only. A hostile or buggy poll
-    // cannot use its return value to yield, throw, or mark the VM canceled from
-    // a collector phase.
-    if (isGcNotification)
-        return;
-
-    if (action == 0)
-        return;
-
+// Applies a nonzero EXECUTION poll result: suspend when possible, otherwise
+// raise the sticky CANCELED hard stop.
+void stopexecution(lua_State* state, AllocatorContext* allocator)
+{
     if (lua_isyieldable(state))
     {
         lua_break(state);
@@ -1072,6 +1095,132 @@ void interrupttrampoline(lua_State* state, int gc)
 
     allocator->interrupted = true;
     luaD_throw(state, LUA_ERRMEM);
+}
+
+int64_t monotonicnanoseconds()
+{
+    return int64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count());
+}
+
+void scheduleinterruptevent(InterruptThrottle& throttle)
+{
+    uint64_t next = UINT64_MAX;
+    if (throttle.countLimit != 0)
+    {
+        // Past the limit, a poll that keeps execution going is asked again
+        // at every later safepoint, as an unthrottled poll would be.
+        const uint64_t threshold = throttle.count > throttle.countLimit ? throttle.count : throttle.countLimit;
+        next = threshold == UINT64_MAX ? UINT64_MAX : threshold + 1;
+    }
+    if (throttle.hasDeadline && throttle.nextClockCheck < next)
+        next = throttle.nextClockCheck;
+    throttle.nextEvent = next;
+}
+
+// A counted safepoint reached its next count-limit or clock event.
+LUAU_NOINLINE void throttledinterruptevent(lua_State* state, AllocatorContext* allocator)
+{
+    InterruptThrottle& throttle = allocator->throttle;
+    bool due = throttle.countLimit != 0 && throttle.count > throttle.countLimit;
+
+    if (throttle.hasDeadline && throttle.count >= throttle.nextClockCheck)
+    {
+        const int64_t now = monotonicnanoseconds();
+        const int64_t slice = now - throttle.lastClock;
+        throttle.lastClock = now;
+
+        if (now >= throttle.deadline)
+        {
+            // Keep reading at every safepoint until the poll stops execution.
+            due = true;
+            throttle.clockStride = kClockStrideMin;
+        }
+        else if (slice > kClockTargetSliceNs)
+        {
+            // Safepoints slowed down: shrink the stride in proportion so the
+            // next read lands about one target slice from now.
+            const uint64_t scaled = uint64_t(throttle.clockStride) * uint64_t(kClockTargetSliceNs) / uint64_t(slice);
+            throttle.clockStride = scaled < kClockStrideMin ? kClockStrideMin : uint32_t(scaled);
+        }
+        else if (slice < kClockTargetSliceNs / 2 && throttle.clockStride < kClockStrideMax)
+        {
+            throttle.clockStride *= 2;
+        }
+
+        throttle.nextClockCheck = throttle.count + throttle.clockStride;
+    }
+
+    scheduleinterruptevent(throttle);
+    if (due && callinterruptpoll(state, allocator, LUAU_HOST_INTERRUPT_EXECUTION) != 0)
+    {
+        allocator->interruptAttention.store(1, std::memory_order_relaxed);
+        stopexecution(state, allocator);
+    }
+}
+
+// The safepoint observed a request. Poll before counting it, as an
+// unthrottled poll that delivers pending work does not count either.
+LUAU_NOINLINE void throttledinterruptattention(lua_State* state, AllocatorContext* allocator)
+{
+    // Acquire pairs with the requester's release store, so the poll observes
+    // everything the requester wrote first. A request that arrives during the
+    // poll stays raised for the next safepoint.
+    allocator->interruptAttention.exchange(0, std::memory_order_acquire);
+    if (callinterruptpoll(state, allocator, LUAU_HOST_INTERRUPT_EXECUTION) != 0)
+    {
+        // Keep polling at every safepoint until a poll lets execution go on,
+        // so a hard stop that a script pcall catches is raised again.
+        allocator->interruptAttention.store(1, std::memory_order_relaxed);
+        stopexecution(state, allocator);
+        return;
+    }
+
+    InterruptThrottle& throttle = allocator->throttle;
+    if (++throttle.count >= throttle.nextEvent)
+        throttledinterruptevent(state, allocator);
+}
+
+void unthrottledinterrupt(lua_State* state, AllocatorContext* allocator, int gc)
+{
+    const bool isGcNotification = gc >= 0;
+    const int action = callinterruptpoll(
+        state,
+        allocator,
+        isGcNotification ? LUAU_HOST_INTERRUPT_GC : LUAU_HOST_INTERRUPT_EXECUTION);
+
+    // Collector notifications are observation-only. A hostile or buggy poll
+    // cannot use its return value to yield, throw, or mark the VM canceled from
+    // a collector phase.
+    if (isGcNotification || action == 0)
+        return;
+
+    stopexecution(state, allocator);
+}
+
+void interrupttrampoline(lua_State* state, int gc)
+{
+    // Install accepts only roots created with the host allocator, so the
+    // shared global allocator userdata is this root's context. The common
+    // throttled path touches only that context: no gate, no clock, no poll.
+    AllocatorContext* allocator = static_cast<AllocatorContext*>(state->global->ud);
+    InterruptThrottle& throttle = allocator->throttle;
+    if (LUAU_LIKELY(throttle.enabled))
+    {
+        if (gc >= 0)
+            return;
+        if (LUAU_UNLIKELY(allocator->interruptAttention.load(std::memory_order_relaxed) != 0))
+        {
+            throttledinterruptattention(state, allocator);
+            return;
+        }
+        if (LUAU_LIKELY(++throttle.count < throttle.nextEvent))
+            return;
+        throttledinterruptevent(state, allocator);
+        return;
+    }
+
+    unthrottledinterrupt(state, allocator, gc);
 }
 } // namespace
 
@@ -2026,6 +2175,9 @@ luau_host_status LUAU_HOST_CALL luau_host_interrupt_install(luau_host_state* sta
     if (allocator->interruptGate.load(std::memory_order_acquire) != 0)
         return LUAU_HOST_STATUS_INVALID_ARGUMENT;
 
+    // A fresh install starts unthrottled; configure opts into throttling.
+    allocator->throttle = InterruptThrottle();
+    allocator->interruptAttention.store(0, std::memory_order_relaxed);
     allocator->interruptPoll.store(poll, std::memory_order_release);
     allocator->interruptGate.store(kInterruptGateEnabled, std::memory_order_release);
     nativeCallbacks->interrupt = interrupttrampoline;
@@ -2051,5 +2203,51 @@ void LUAU_HOST_CALL luau_host_interrupt_uninstall(luau_host_state* state)
         });
         allocator->interruptPoll.store(nullptr, std::memory_order_release);
     }
+}
+
+luau_host_status LUAU_HOST_CALL luau_host_interrupt_configure(
+    luau_host_state* state,
+    uint64_t countLimit,
+    uint64_t timeLimitNs)
+{
+    if (!state)
+        return LUAU_HOST_STATUS_INVALID_ARGUMENT;
+
+    AllocatorContext* allocator = getallocator(native(state));
+    if (!allocator || lua_callbacks(native(state))->interrupt != interrupttrampoline)
+        return LUAU_HOST_STATUS_INVALID_ARGUMENT;
+
+    InterruptThrottle throttle;
+    throttle.enabled = true;
+    throttle.countLimit = countLimit;
+    throttle.hasDeadline = timeLimitNs != 0;
+    if (throttle.hasDeadline)
+    {
+        const int64_t now = monotonicnanoseconds();
+        const uint64_t headroom = now >= 0 ? uint64_t(INT64_MAX) - uint64_t(now) : uint64_t(INT64_MAX);
+        throttle.deadline = timeLimitNs >= headroom ? INT64_MAX : now + int64_t(timeLimitNs);
+        throttle.lastClock = now;
+        throttle.nextClockCheck = throttle.clockStride;
+    }
+    scheduleinterruptevent(throttle);
+
+    allocator->throttle = throttle;
+    allocator->interruptAttention.store(0, std::memory_order_relaxed);
+    return LUAU_HOST_STATUS_OK;
+}
+
+void LUAU_HOST_CALL luau_host_interrupt_request(luau_host_state* state)
+{
+    // Only immutable global-state fields are read here, so this is safe
+    // while another thread executes the root.
+    AllocatorContext* allocator = state ? getallocator(native(state)) : nullptr;
+    if (allocator)
+        allocator->interruptAttention.store(1, std::memory_order_release);
+}
+
+uint64_t LUAU_HOST_CALL luau_host_interrupt_count(luau_host_state* state)
+{
+    AllocatorContext* allocator = state ? getallocator(native(state)) : nullptr;
+    return allocator && allocator->throttle.enabled ? allocator->throttle.count : 0;
 }
 } // extern "C"

@@ -357,6 +357,17 @@ public unsafe partial class LuauState : IDisposable, ILuauReference
         RequestLifetimeCancellation();
         try
         {
+            // A running operation on this state observes IsDisposed at its
+            // next interrupt poll; make that poll happen.
+            context.RequestActiveInterruptAttention();
+        }
+        catch
+        {
+            // A missed request cannot be allowed to skip native teardown.
+        }
+
+        try
+        {
             if (isMainThread)
             {
                 context.DisposeRoot(this);

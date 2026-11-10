@@ -10,8 +10,8 @@ internal static class ArtifactManifestCommand
 {
     private const string ApprovedBuildInputSha256 = "053e0c2160b19e5fc320c7549af1abcaaed3a6a931e6ea20b8cb983800be7863";
     private const ulong ApprovedUpstreamRevisionHash = 0x065976b2840123de;
-    private const ulong ApprovedHostBuildFingerprint = 0xa97c576544c22427;
-    private const uint ApprovedFeatureFlags = 0x3fff;
+    private const ulong ApprovedHostBuildFingerprint = 0x1bd92b6ee5b50133;
+    private const uint ApprovedFeatureFlags = 0x7fff;
 
     internal sealed record BinaryIdentity(
         uint RecordSize,

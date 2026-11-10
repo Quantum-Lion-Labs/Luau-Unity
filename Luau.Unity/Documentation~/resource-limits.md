@@ -62,6 +62,27 @@ It still bounds diagnostic decoding, and it still leaves persistent bytecode set
 to `Reject`. Per-operation options can tighten a root's limits but never loosen
 them, and never swap the root's scheduler.
 
+## Execution budgets
+
+`InterruptCountLimit` counts interrupt safepoints: every call, every return,
+every loop iteration, and each step of a Lua pattern match. A limit of N lets
+exactly N safepoints run and stops the script at safepoint N + 1, reported as
+`LuauExecutionBudgetException` with `ObservedInterruptCount == N + 1`. Modules
+loaded by `require()` count toward the operation that required them.
+
+The native host keeps that count and checks the wall clock without calling
+back into managed code, so budgets cost a few nanoseconds per safepoint. The
+clock is read every few safepoints, adapting so reads stay about
+20 microseconds apart: a `WallClockLimit` is detected within about
+20 microseconds of the deadline while the script's pace is steady. If the
+script abruptly slows down, for example from a tight loop into calls of an
+expensive host function, detection can trail by up to 128 of the new, slower
+safepoint gaps once, and never later than the operation's deadline timer
+fires (typically about 1 ms, and up to about 16 ms with Windows' default timer
+resolution). Cancellation, disposal, and managed callback failures are
+observed at the very next safepoint. Time spent inside a single host or
+library call is observed only when that call returns, as before.
+
 ## Module and bundle limits
 
 `LuauModuleLimits.Default` separately caps how many modules a map or bundle may

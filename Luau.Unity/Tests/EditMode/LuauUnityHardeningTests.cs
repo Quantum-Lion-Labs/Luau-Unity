@@ -511,6 +511,78 @@ namespace Luau.Unity.Tests
             Assert.That(unboundedResults[0].Read<int>(), Is.EqualTo(42));
         }
 
+        [Test]
+        public void ExecutionBudgetsStopTightLoopsAtTheirExactLimits()
+        {
+            using var root = LuauUnity.CreateState(new LuauUnityOptions
+            {
+                StateOptions = LuauStateOptions.Default with
+                {
+                    DefaultExecutionOptions = LuauExecutionOptions.Default with
+                    {
+                        WallClockLimit = TimeSpan.FromMilliseconds(2),
+                        InterruptCountLimit = null,
+                    },
+                },
+                Log = _ => { },
+            });
+            using var script = root.CreateSandboxedThread();
+
+            // One loop back-edge per iteration plus the final return.
+            var count = Assert.Throws<LuauExecutionBudgetException>(() => script.DoString(
+                "for i = 1, 1000 do end",
+                "@budgets/count.luau",
+                executionOptions: new LuauExecutionOptions { InterruptCountLimit = 100 }));
+            Assert.That(count.BudgetKind, Is.EqualTo(LuauExecutionBudgetKind.InterruptCount));
+            Assert.That(count.ObservedInterruptCount, Is.EqualTo(101));
+
+            var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+            var wallClock = Assert.Throws<LuauExecutionBudgetException>(() =>
+                script.DoString("local function f() end while true do f() end", "@budgets/wall-clock.luau"));
+            Assert.That(wallClock.BudgetKind, Is.EqualTo(LuauExecutionBudgetKind.WallClock));
+            Assert.That(wallClock.Elapsed, Is.GreaterThanOrEqualTo(TimeSpan.FromMilliseconds(2)));
+            Assert.That(stopwatch.Elapsed, Is.LessThan(TimeSpan.FromSeconds(10)));
+
+            using var results = script.DoString("return 42");
+            Assert.That(results[0].Read<int>(), Is.EqualTo(42));
+        }
+
+        [Test]
+        public void DisposalFromTheMainThreadStopsAnUnboundedLoopOnAWorker()
+        {
+            // No budget can stop this loop: only the disposal request can.
+            var root = LuauUnity.CreateState(new LuauUnityOptions
+            {
+                StateOptions = LuauStateOptions.UnboundedResources,
+                CaptureUnitySynchronizationContext = false,
+                SandboxRoot = false,
+                Log = _ => { },
+            });
+            using var started = new ManualResetEventSlim();
+            root["started"] = root.CreateFunction("started", _ => started.Set());
+            Exception observed = null;
+            var worker = new Thread(() =>
+            {
+                try
+                {
+                    root.DoString("started() while true do end").Dispose();
+                }
+                catch (Exception exception)
+                {
+                    observed = exception;
+                }
+            });
+            worker.Start();
+            Assert.That(started.Wait(TimeSpan.FromSeconds(30)), Is.True);
+
+            var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+            root.Dispose();
+
+            Assert.That(worker.Join(TimeSpan.FromSeconds(30)), Is.True);
+            Assert.That(stopwatch.Elapsed, Is.LessThan(TimeSpan.FromSeconds(10)));
+            Assert.That(observed, Is.InstanceOf<ObjectDisposedException>());
+        }
+
         sealed class AcceptArtifactValidator : ILuauBytecodeValidator
         {
             public static AcceptArtifactValidator Instance { get; } = new();
