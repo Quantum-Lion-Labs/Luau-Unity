@@ -159,6 +159,7 @@ API or ABI breaks.
   now links the C and C++ runtimes statically and imports only `KERNEL32.dll`,
   so it needs no redistributable. The package's validation rejects a Windows
   plugin that imports, delay-loads, or forwards an export to any other DLL.
+  The Windows plugin is about 600 KB larger.
 - The Android plugins no longer depend on `libc++_shared.so`. A Unity Android
   player contains that library only when something else ships it, in practice
   the GameActivity application entry point, so a project that used the classic
