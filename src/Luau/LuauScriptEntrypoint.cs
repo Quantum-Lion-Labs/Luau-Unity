@@ -198,35 +198,61 @@ public sealed class LuauScriptEntrypoint
             cancellationToken,
             executionOptions);
 
-    /// <summary>Invokes the export synchronously and requires zero results.</summary>
+    /// <summary>Invokes the export synchronously and discards any values it returns.</summary>
     /// <param name="executionOptions">Optional per-invocation execution limits.</param>
+    /// <remarks>
+    /// Values the export returns are discarded and the call succeeds.
+    /// <see cref="LuauExecutionOptions.MaxResultCount"/> does not apply, because
+    /// no value reaches the host. Returning more values than one Luau stack
+    /// frame holds still fails with <see cref="LuauStackLimitException"/>.
+    /// </remarks>
     public void InvokeVoid(LuauExecutionOptions? executionOptions = null) =>
         GetFunction().InvokeVoidLabeled(OperationLabel, executionOptions);
 
     /// <summary>
-    /// Invokes the export synchronously with one argument and requires zero results.
+    /// Invokes the export synchronously with one argument and discards any
+    /// values it returns.
     /// </summary>
     /// <param name="argument">The borrowed argument value.</param>
     /// <param name="executionOptions">Optional per-invocation execution limits.</param>
+    /// <remarks>
+    /// Values the export returns are discarded and the call succeeds.
+    /// <see cref="LuauExecutionOptions.MaxResultCount"/> does not apply, because
+    /// no value reaches the host. Returning more values than one Luau stack
+    /// frame holds still fails with <see cref="LuauStackLimitException"/>.
+    /// </remarks>
     public void InvokeVoid(
         LuauValue argument,
         LuauExecutionOptions? executionOptions = null) =>
         GetFunction().InvokeVoidLabeled(argument, OperationLabel, executionOptions);
 
     /// <summary>
-    /// Invokes the export synchronously with borrowed arguments and requires zero results.
+    /// Invokes the export synchronously with borrowed arguments and discards any
+    /// values it returns.
     /// </summary>
     /// <param name="arguments">The borrowed argument values.</param>
     /// <param name="executionOptions">Optional per-invocation execution limits.</param>
+    /// <remarks>
+    /// Values the export returns are discarded and the call succeeds.
+    /// <see cref="LuauExecutionOptions.MaxResultCount"/> does not apply, because
+    /// no value reaches the host. Returning more values than one Luau stack
+    /// frame holds still fails with <see cref="LuauStackLimitException"/>.
+    /// </remarks>
     public void InvokeVoid(
         ReadOnlySpan<LuauValue> arguments,
         LuauExecutionOptions? executionOptions = null) =>
         GetFunction().InvokeVoidLabeled(arguments, OperationLabel, executionOptions);
 
-    /// <summary>Invokes the export asynchronously and requires zero results.</summary>
+    /// <summary>Invokes the export asynchronously and discards any values it returns.</summary>
     /// <param name="cancellationToken">Cancellation requested by the caller.</param>
     /// <param name="executionOptions">Optional per-invocation execution limits.</param>
     /// <returns>An awaitable invocation.</returns>
+    /// <remarks>
+    /// Values the export returns are discarded and the call succeeds.
+    /// <see cref="LuauExecutionOptions.MaxResultCount"/> does not apply, because
+    /// no value reaches the host. Returning more values than one Luau stack
+    /// frame holds still fails with <see cref="LuauStackLimitException"/>.
+    /// </remarks>
     public ValueTask InvokeVoidAsync(
         CancellationToken cancellationToken = default,
         LuauExecutionOptions? executionOptions = null) =>
@@ -236,12 +262,19 @@ public sealed class LuauScriptEntrypoint
             executionOptions);
 
     /// <summary>
-    /// Invokes the export asynchronously with one argument and requires zero results.
+    /// Invokes the export asynchronously with one argument and discards any
+    /// values it returns.
     /// </summary>
     /// <param name="argument">The borrowed argument value.</param>
     /// <param name="cancellationToken">Cancellation requested by the caller.</param>
     /// <param name="executionOptions">Optional per-invocation execution limits.</param>
     /// <returns>An awaitable invocation.</returns>
+    /// <remarks>
+    /// Values the export returns are discarded and the call succeeds.
+    /// <see cref="LuauExecutionOptions.MaxResultCount"/> does not apply, because
+    /// no value reaches the host. Returning more values than one Luau stack
+    /// frame holds still fails with <see cref="LuauStackLimitException"/>.
+    /// </remarks>
     public ValueTask InvokeVoidAsync(
         LuauValue argument,
         CancellationToken cancellationToken = default,
@@ -253,12 +286,19 @@ public sealed class LuauScriptEntrypoint
             executionOptions);
 
     /// <summary>
-    /// Invokes the export asynchronously with borrowed arguments and requires zero results.
+    /// Invokes the export asynchronously with borrowed arguments and discards
+    /// any values it returns.
     /// </summary>
     /// <param name="arguments">The borrowed argument values.</param>
     /// <param name="cancellationToken">Cancellation requested by the caller.</param>
     /// <param name="executionOptions">Optional per-invocation execution limits.</param>
     /// <returns>An awaitable invocation.</returns>
+    /// <remarks>
+    /// Values the export returns are discarded and the call succeeds.
+    /// <see cref="LuauExecutionOptions.MaxResultCount"/> does not apply, because
+    /// no value reaches the host. Returning more values than one Luau stack
+    /// frame holds still fails with <see cref="LuauStackLimitException"/>.
+    /// </remarks>
     public ValueTask InvokeVoidAsync(
         ReadOnlyMemory<LuauValue> arguments,
         CancellationToken cancellationToken = default,

@@ -247,14 +247,14 @@
             this life, in which case they are left alone as before.
             </summary>
         </member>
-        <member name="M:Luau.LuauVmContext.ResolveOperationOptions(Luau.LuauExecutionOptions,System.Boolean)">
+        <member name="M:Luau.LuauVmContext.ResolveOperationOptions(Luau.LuauExecutionOptions)">
             <summary>
-            Merges per-operation options into the state defaults. Options records
-            are immutable, so a merge is reused for the same instance:
-            <see cref="M:Luau.LuauFunction.InvokeVoid(Luau.LuauExecutionOptions)"/> merges
-            even without options, and the Unity scheduler passes one instance per
-            phase on every call. A few entries per kind cover several phases on
-            one root; a miss only costs the merge it replaces.
+            Merges per-operation options into the state defaults. Without options
+            an operation uses the defaults themselves. Options records are
+            immutable, so a merge is reused for the same instance: the Unity
+            scheduler passes one instance per phase on every call. A few entries
+            cover several phases on one root; a miss only costs the merge it
+            replaces.
             </summary>
         </member>
         <member name="M:Luau.LuauVmContext.ConfigureInterruptBudget(Luau.ScriptOperation)">
@@ -307,7 +307,7 @@
         </member>
         <member name="M:Luau.ScriptOperation.Activate(System.Int64,Luau.LuauState,System.String,Luau.LuauExecutionOptions,System.Threading.CancellationToken,System.Threading.CancellationToken,System.Threading.CancellationToken,System.Boolean,Luau.ScriptOperationMode)">
             <summary>
-            Starts a new life. Called by <see cref="M:Luau.LuauVmContext.BeginOperation(Luau.LuauState,System.String,Luau.LuauExecutionOptions,System.Threading.CancellationToken,System.Boolean,Luau.ScriptOperationMode,System.Boolean,System.Boolean)"/>
+            Starts a new life. Called by <see cref="M:Luau.LuauVmContext.BeginOperation(Luau.LuauState,System.String,Luau.LuauExecutionOptions,System.Threading.CancellationToken,System.Boolean,Luau.ScriptOperationMode,System.Boolean)"/>
             under the root gates, before the operation is published, so nothing
             else can observe the fields while they change.
             </summary>
@@ -421,6 +421,35 @@
             A callback's handle on its operation's cancellation token. The token is
             created only when a callback reads it, so an operation whose callbacks
             never ask for one allocates no cancellation machinery.
+            </summary>
+        </member>
+        <member name="M:Luau.ScriptRunner.RunVoid(Luau.ScriptOperation,System.Int32,System.Boolean)">
+            <summary>
+            Runs a call whose caller wants no values back. Whatever the function
+            returns is discarded where the result count is taken, so the call
+            succeeds and leaves the stack at its base; see
+            <see cref="M:Luau.ScriptRunner.DiscardReturnedValues(Luau.ScriptOperation,System.IntPtr,System.Int32,System.Int32)"/>.
+            </summary>
+        </member>
+        <member name="M:Luau.ScriptRunner.RunVoidAsync(Luau.ScriptOperation,System.Int32,System.Boolean)">
+            <summary>The asynchronous form of <see cref="M:Luau.ScriptRunner.RunVoid(Luau.ScriptOperation,System.Int32,System.Boolean)"/>.</summary>
+        </member>
+        <member name="M:Luau.ScriptRunner.GetResultCount(Luau.ScriptOperation,System.IntPtr,System.Int32,System.Int32,System.Boolean)">
+            <summary>
+            Counts the values above <paramref name="baseTop"/> and checks them
+            against the result limits. With <paramref name="discardResults"/>, the
+            caller wants none of them: they are dropped and the count is zero.
+            </summary>
+        </member>
+        <member name="M:Luau.ScriptRunner.DiscardReturnedValues(Luau.ScriptOperation,System.IntPtr,System.Int32,System.Int32)">
+            <summary>
+            Drops the values a call returned to a caller that wants none of them.
+            No value reaches the host, so <see cref="P:Luau.LuauExecutionOptions.MaxResultCount"/>
+            does not apply, and nothing is decoded or allocated. The frame ceiling
+            still does, as for every other call: a frame with no free slot fails
+            with <see cref="T:Luau.LuauStackLimitException"/>. Either way the stack ends
+            at <paramref name="baseTop"/>. A call that returned nothing costs no
+            native access here; otherwise one access checks the frame and trims it.
             </summary>
         </member>
         <member name="M:Luau.ScriptRunner.ReadResults(Luau.ScriptOperation,Luau.LuauState,System.Span{Luau.LuauValue},System.Int32,System.Int32@)">
@@ -1020,10 +1049,24 @@
         </member>
         <member name="P:Luau.LuauExecutionOptions.MaxResultCount">
             <summary>
-            Gets the maximum number of values an operation may return, or
+            Gets the maximum number of values an operation may hand to the host, or
             <see langword="null"/> when result count is unlimited. This bounds both
             the Luau stack output and managed arrays created by convenience APIs.
             </summary>
+            <remarks>
+            The limit applies to every call that delivers results: execution such
+            as <c>DoString</c>, <c>Invoke</c>, <c>InvokeInto</c>, <c>Resume</c>,
+            and the module that <c>require</c> loads, including one loaded during
+            a call that discards its own results. It does not apply to the values
+            a function returns to <c>InvokeVoid</c> or <c>InvokeVoidAsync</c> on
+            <see cref="T:Luau.LuauFunction"/> and <see cref="T:Luau.LuauScriptEntrypoint"/>:
+            those calls discard them and succeed under any limit, including zero.
+            To reject a function that returns values, call <c>InvokeInto</c> with
+            an empty destination, or <c>Invoke</c> with a limit of zero. Removing
+            the limit does not remove the VM's own ceiling: one Luau stack frame
+            holds at most 8000 values, and any call that returns more, including
+            <c>InvokeVoid</c>, fails with <see cref="T:Luau.LuauStackLimitException"/>.
+            </remarks>
             <exception cref="T:System.ArgumentOutOfRangeException">
             The assigned count is negative.
             </exception>
@@ -1031,11 +1074,6 @@
         <member name="P:Luau.LuauExecutionOptions.HasBudget">
             <summary>
             Gets whether at least one execution budget is configured.
-            </summary>
-        </member>
-        <member name="M:Luau.LuauExecutionOptions.RequireZeroResults(Luau.LuauExecutionOptions)">
-            <summary>
-            Returns options that also require an operation to return no values.
             </summary>
         </member>
         <member name="T:Luau.LuauFunction">
@@ -1129,37 +1167,73 @@
         </member>
         <member name="M:Luau.LuauFunction.InvokeVoid(Luau.LuauExecutionOptions)">
             <summary>
-            Invokes a script closure synchronously and requires it to return no values.
+            Invokes a script closure synchronously and discards any values it returns.
             </summary>
+            <remarks>
+            Values the closure returns are discarded and the call succeeds.
+            <see cref="P:Luau.LuauExecutionOptions.MaxResultCount"/> does not apply, because
+            no value reaches the host. Returning more values than one Luau stack
+            frame holds still fails with <see cref="T:Luau.LuauStackLimitException"/>.
+            </remarks>
         </member>
         <member name="M:Luau.LuauFunction.InvokeVoid(Luau.LuauValue,Luau.LuauExecutionOptions)">
             <summary>
-            Invokes a script closure synchronously with one argument and requires it
-            to return no values.
+            Invokes a script closure synchronously with one argument and discards
+            any values it returns.
             </summary>
+            <remarks>
+            Values the closure returns are discarded and the call succeeds.
+            <see cref="P:Luau.LuauExecutionOptions.MaxResultCount"/> does not apply, because
+            no value reaches the host. Returning more values than one Luau stack
+            frame holds still fails with <see cref="T:Luau.LuauStackLimitException"/>.
+            </remarks>
         </member>
         <member name="M:Luau.LuauFunction.InvokeVoid(System.ReadOnlySpan{Luau.LuauValue},Luau.LuauExecutionOptions)">
             <summary>
-            Invokes a script closure synchronously with arguments and requires it to
-            return no values.
+            Invokes a script closure synchronously with arguments and discards any
+            values it returns.
             </summary>
+            <remarks>
+            Values the closure returns are discarded and the call succeeds.
+            <see cref="P:Luau.LuauExecutionOptions.MaxResultCount"/> does not apply, because
+            no value reaches the host. Returning more values than one Luau stack
+            frame holds still fails with <see cref="T:Luau.LuauStackLimitException"/>.
+            </remarks>
         </member>
         <member name="M:Luau.LuauFunction.InvokeVoidAsync(System.Threading.CancellationToken,Luau.LuauExecutionOptions)">
             <summary>
-            Invokes a script closure asynchronously and requires it to return no values.
+            Invokes a script closure asynchronously and discards any values it returns.
             </summary>
+            <remarks>
+            Values the closure returns are discarded and the call succeeds.
+            <see cref="P:Luau.LuauExecutionOptions.MaxResultCount"/> does not apply, because
+            no value reaches the host. Returning more values than one Luau stack
+            frame holds still fails with <see cref="T:Luau.LuauStackLimitException"/>.
+            </remarks>
         </member>
         <member name="M:Luau.LuauFunction.InvokeVoidAsync(Luau.LuauValue,System.Threading.CancellationToken,Luau.LuauExecutionOptions)">
             <summary>
-            Invokes a script closure asynchronously with one argument and requires it
-            to return no values.
+            Invokes a script closure asynchronously with one argument and discards
+            any values it returns.
             </summary>
+            <remarks>
+            Values the closure returns are discarded and the call succeeds.
+            <see cref="P:Luau.LuauExecutionOptions.MaxResultCount"/> does not apply, because
+            no value reaches the host. Returning more values than one Luau stack
+            frame holds still fails with <see cref="T:Luau.LuauStackLimitException"/>.
+            </remarks>
         </member>
         <member name="M:Luau.LuauFunction.InvokeVoidAsync(System.ReadOnlyMemory{Luau.LuauValue},System.Threading.CancellationToken,Luau.LuauExecutionOptions)">
             <summary>
-            Invokes a script closure asynchronously with arguments and requires it to
-            return no values.
+            Invokes a script closure asynchronously with arguments and discards any
+            values it returns.
             </summary>
+            <remarks>
+            Values the closure returns are discarded and the call succeeds.
+            <see cref="P:Luau.LuauExecutionOptions.MaxResultCount"/> does not apply, because
+            no value reaches the host. Returning more values than one Luau stack
+            frame holds still fails with <see cref="T:Luau.LuauStackLimitException"/>.
+            </remarks>
         </member>
         <member name="M:Luau.LuauFunction.ResolvePublicState(Luau.LuauState)">
             <summary>
@@ -1876,46 +1950,86 @@
             <returns>The number of values written.</returns>
         </member>
         <member name="M:Luau.LuauScriptEntrypoint.InvokeVoid(Luau.LuauExecutionOptions)">
-            <summary>Invokes the export synchronously and requires zero results.</summary>
+            <summary>Invokes the export synchronously and discards any values it returns.</summary>
             <param name="executionOptions">Optional per-invocation execution limits.</param>
+            <remarks>
+            Values the export returns are discarded and the call succeeds.
+            <see cref="P:Luau.LuauExecutionOptions.MaxResultCount"/> does not apply, because
+            no value reaches the host. Returning more values than one Luau stack
+            frame holds still fails with <see cref="T:Luau.LuauStackLimitException"/>.
+            </remarks>
         </member>
         <member name="M:Luau.LuauScriptEntrypoint.InvokeVoid(Luau.LuauValue,Luau.LuauExecutionOptions)">
             <summary>
-            Invokes the export synchronously with one argument and requires zero results.
+            Invokes the export synchronously with one argument and discards any
+            values it returns.
             </summary>
             <param name="argument">The borrowed argument value.</param>
             <param name="executionOptions">Optional per-invocation execution limits.</param>
+            <remarks>
+            Values the export returns are discarded and the call succeeds.
+            <see cref="P:Luau.LuauExecutionOptions.MaxResultCount"/> does not apply, because
+            no value reaches the host. Returning more values than one Luau stack
+            frame holds still fails with <see cref="T:Luau.LuauStackLimitException"/>.
+            </remarks>
         </member>
         <member name="M:Luau.LuauScriptEntrypoint.InvokeVoid(System.ReadOnlySpan{Luau.LuauValue},Luau.LuauExecutionOptions)">
             <summary>
-            Invokes the export synchronously with borrowed arguments and requires zero results.
+            Invokes the export synchronously with borrowed arguments and discards any
+            values it returns.
             </summary>
             <param name="arguments">The borrowed argument values.</param>
             <param name="executionOptions">Optional per-invocation execution limits.</param>
+            <remarks>
+            Values the export returns are discarded and the call succeeds.
+            <see cref="P:Luau.LuauExecutionOptions.MaxResultCount"/> does not apply, because
+            no value reaches the host. Returning more values than one Luau stack
+            frame holds still fails with <see cref="T:Luau.LuauStackLimitException"/>.
+            </remarks>
         </member>
         <member name="M:Luau.LuauScriptEntrypoint.InvokeVoidAsync(System.Threading.CancellationToken,Luau.LuauExecutionOptions)">
-            <summary>Invokes the export asynchronously and requires zero results.</summary>
+            <summary>Invokes the export asynchronously and discards any values it returns.</summary>
             <param name="cancellationToken">Cancellation requested by the caller.</param>
             <param name="executionOptions">Optional per-invocation execution limits.</param>
             <returns>An awaitable invocation.</returns>
+            <remarks>
+            Values the export returns are discarded and the call succeeds.
+            <see cref="P:Luau.LuauExecutionOptions.MaxResultCount"/> does not apply, because
+            no value reaches the host. Returning more values than one Luau stack
+            frame holds still fails with <see cref="T:Luau.LuauStackLimitException"/>.
+            </remarks>
         </member>
         <member name="M:Luau.LuauScriptEntrypoint.InvokeVoidAsync(Luau.LuauValue,System.Threading.CancellationToken,Luau.LuauExecutionOptions)">
             <summary>
-            Invokes the export asynchronously with one argument and requires zero results.
+            Invokes the export asynchronously with one argument and discards any
+            values it returns.
             </summary>
             <param name="argument">The borrowed argument value.</param>
             <param name="cancellationToken">Cancellation requested by the caller.</param>
             <param name="executionOptions">Optional per-invocation execution limits.</param>
             <returns>An awaitable invocation.</returns>
+            <remarks>
+            Values the export returns are discarded and the call succeeds.
+            <see cref="P:Luau.LuauExecutionOptions.MaxResultCount"/> does not apply, because
+            no value reaches the host. Returning more values than one Luau stack
+            frame holds still fails with <see cref="T:Luau.LuauStackLimitException"/>.
+            </remarks>
         </member>
         <member name="M:Luau.LuauScriptEntrypoint.InvokeVoidAsync(System.ReadOnlyMemory{Luau.LuauValue},System.Threading.CancellationToken,Luau.LuauExecutionOptions)">
             <summary>
-            Invokes the export asynchronously with borrowed arguments and requires zero results.
+            Invokes the export asynchronously with borrowed arguments and discards
+            any values it returns.
             </summary>
             <param name="arguments">The borrowed argument values.</param>
             <param name="cancellationToken">Cancellation requested by the caller.</param>
             <param name="executionOptions">Optional per-invocation execution limits.</param>
             <returns>An awaitable invocation.</returns>
+            <remarks>
+            Values the export returns are discarded and the call succeeds.
+            <see cref="P:Luau.LuauExecutionOptions.MaxResultCount"/> does not apply, because
+            no value reaches the host. Returning more values than one Luau stack
+            frame holds still fails with <see cref="T:Luau.LuauStackLimitException"/>.
+            </remarks>
         </member>
         <member name="T:Luau.LuauScriptInstance">
             <summary>

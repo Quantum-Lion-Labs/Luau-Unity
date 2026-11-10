@@ -104,12 +104,12 @@ Luau can optimize a direct global access such as `shared.phase` into an import.
 That optimization is appropriate for immutable library globals, but it can
 cache a nested value that cooperating behaviours intend to mutate.
 
-Each per-frame lifecycle or physics hook has a 2 ms wall-clock limit, a
-10,000-interrupt limit, and may return no results. Each phase has a 4 ms
-aggregate admission budget. One-time host-library, script, and `start`
+Each per-frame lifecycle or physics hook has a 2 ms wall-clock limit and a
+10,000-interrupt limit; anything a hook returns is ignored. Each phase has a
+4 ms aggregate admission budget. One-time host-library, script, and `start`
 initialization uses a separate bounded 50 ms / 100,000-interrupt lane; the
-script chunk accepts only its single export table and `start` accepts no
-results. A failing hook disables only its owning `LuauBehaviour`.
+script chunk accepts only its single export table, and anything `start`
+returns is ignored. A failing hook disables only its owning `LuauBehaviour`.
 
 The first-party-bytecode runtime option is off by default. Enable it only for
 bytecode produced and admitted by the package's generated first-party

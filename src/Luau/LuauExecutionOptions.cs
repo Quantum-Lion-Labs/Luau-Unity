@@ -114,10 +114,24 @@ public sealed record LuauExecutionOptions
     public ILuauContinuationScheduler? ContinuationScheduler { get; init; }
 
     /// <summary>
-    /// Gets the maximum number of values an operation may return, or
+    /// Gets the maximum number of values an operation may hand to the host, or
     /// <see langword="null"/> when result count is unlimited. This bounds both
     /// the Luau stack output and managed arrays created by convenience APIs.
     /// </summary>
+    /// <remarks>
+    /// The limit applies to every call that delivers results: execution such
+    /// as <c>DoString</c>, <c>Invoke</c>, <c>InvokeInto</c>, <c>Resume</c>,
+    /// and the module that <c>require</c> loads, including one loaded during
+    /// a call that discards its own results. It does not apply to the values
+    /// a function returns to <c>InvokeVoid</c> or <c>InvokeVoidAsync</c> on
+    /// <see cref="LuauFunction"/> and <see cref="LuauScriptEntrypoint"/>:
+    /// those calls discard them and succeed under any limit, including zero.
+    /// To reject a function that returns values, call <c>InvokeInto</c> with
+    /// an empty destination, or <c>Invoke</c> with a limit of zero. Removing
+    /// the limit does not remove the VM's own ceiling: one Luau stack frame
+    /// holds at most 8000 values, and any call that returns more, including
+    /// <c>InvokeVoid</c>, fails with <see cref="LuauStackLimitException"/>.
+    /// </remarks>
     /// <exception cref="ArgumentOutOfRangeException">
     /// The assigned count is negative.
     /// </exception>
@@ -139,26 +153,6 @@ public sealed record LuauExecutionOptions
     /// Gets whether at least one execution budget is configured.
     /// </summary>
     public bool HasBudget => wallClockLimit.HasValue || interruptCountLimit.HasValue || maxResultCount.HasValue;
-
-    static readonly LuauExecutionOptions ZeroResultExecutionOptions = Unbounded with
-    {
-        MaxResultCount = 0,
-    };
-
-    /// <summary>
-    /// Returns options that also require an operation to return no values.
-    /// </summary>
-    internal static LuauExecutionOptions RequireZeroResults(LuauExecutionOptions? executionOptions)
-    {
-        if (executionOptions == null)
-        {
-            return ZeroResultExecutionOptions;
-        }
-
-        return executionOptions.MaxResultCount == 0
-            ? executionOptions
-            : executionOptions with { MaxResultCount = 0 };
-    }
 
     internal static LuauExecutionOptions ResolveForOperation(
         LuauExecutionOptions stateDefaults,

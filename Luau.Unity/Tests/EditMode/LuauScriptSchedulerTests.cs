@@ -102,6 +102,129 @@ namespace Luau.Unity.Tests
         }
 
         [Test]
+        public void HooksThatReturnValuesSucceedAndStayEnabledOnEveryDispatchPath()
+        {
+            // A hook's returned values are discarded, as a Luau caller that
+            // wants no results ignores them, even under hook options that
+            // allow none (MaxResultCount = 0, as the samples use).
+            var calls = new List<string>();
+            var failures = new List<Exception>();
+            using var root = CreateRoot(context =>
+                calls.Add(context.Read<string>(0) + ":" + (context.ArgumentCount - 1)));
+            using var habit = CreateInstance(
+                root,
+                "habit",
+                "return { update = function(...) record('habit', ...) return true end }");
+            using var tail = CreateInstance(
+                root,
+                "tail",
+                "local controller = {} " +
+                "function controller:step(...) return select('#', ...), self end " +
+                "return { update = function(...) record('tail', ...) return controller:step(...) end }");
+            using var many = CreateInstance(
+                root,
+                "many",
+                "local values = table.create(100, 'v') values[1] = {} " +
+                "return { update = function(...) record('many', ...) return table.unpack(values) end }");
+            using var scheduler = new LuauScriptScheduler(root);
+            var phase = scheduler.CreatePhase(
+                "returning",
+                CreatePhaseOptions(failureCallback: (_, exception) => failures.Add(exception)));
+            using var habitRegistration = phase.Register(habit.GetRequiredEntrypoint("update"));
+            using var tailRegistration = phase.Register(tail.GetRequiredEntrypoint("update"));
+            using var manyRegistration = phase.Register(many.GetRequiredEntrypoint("update"));
+            var arguments = new LuauValue[] { 1, 2, 3 };
+
+            for (var round = 0; round < 3; round++)
+            {
+                calls.Clear();
+                AssertAllSucceeded(phase.Dispatch(), 3);
+                AssertAllSucceeded(phase.Dispatch((LuauValue)0.5), 3);
+                AssertAllSucceeded(phase.Dispatch(arguments.AsSpan()), 3);
+
+                Assert.That(failures, Is.Empty);
+                Assert.That(habitRegistration.IsEnabled, Is.True);
+                Assert.That(tailRegistration.IsEnabled, Is.True);
+                Assert.That(manyRegistration.IsEnabled, Is.True);
+                Assert.That(calls, Is.EqualTo(new[]
+                {
+                    "habit:0", "tail:0", "many:0",
+                    "habit:1", "tail:1", "many:1",
+                    "habit:3", "tail:3", "many:3",
+                }));
+            }
+
+            using var results = root.DoString("return 40 + 2");
+            Assert.That(results[0].Read<int>(), Is.EqualTo(42));
+        }
+
+        [Test]
+        public void StopAndThrowPhaseRunsHooksThatReturnValues()
+        {
+            var calls = new List<int>();
+            var failureCallbacks = 0;
+            using var root = CreateRoot(context => calls.Add(context.Read<int>(0)));
+            using var first = CreateInstance(
+                root,
+                "first",
+                "return { update = function() record(1) return 'ignored' end }");
+            using var second = CreateInstance(root, "second", ExportingUpdate(2));
+            using var scheduler = new LuauScriptScheduler(root);
+            var phase = scheduler.CreatePhase(
+                "fail-fast",
+                CreatePhaseOptions(
+                    LuauScriptPhaseFailureMode.StopAndThrow,
+                    (_, __) => failureCallbacks++));
+            using var firstRegistration = phase.Register(first.GetRequiredEntrypoint("update"));
+            using var secondRegistration = phase.Register(second.GetRequiredEntrypoint("update"));
+
+            AssertAllSucceeded(phase.Dispatch(), 2);
+            AssertAllSucceeded(phase.Dispatch(), 2);
+
+            Assert.That(calls, Is.EqualTo(new[] { 1, 2, 1, 2 }));
+            Assert.That(failureCallbacks, Is.Zero);
+        }
+
+        [Test]
+        public void SteadyStateDispatchOfAHookThatReturnsValuesAllocatesNoManagedMemory()
+        {
+            using var root = CreateRoot(_ => { });
+            using var instance = CreateInstance(
+                root,
+                "steady-returning",
+                "local function step(dt) return dt > 0, dt end " +
+                "return { update = function(dt) return step(dt) end }");
+            using var scheduler = new LuauScriptScheduler(root);
+            var phase = scheduler.CreatePhase("steady-returning", CreatePhaseOptions());
+            using var registration = phase.Register(instance.GetRequiredEntrypoint("update"));
+            var argument = LuauValue.FromNumber(1d / 72);
+            for (var i = 0; i < 500; i++)
+            {
+                phase.Dispatch(argument);
+            }
+
+            Assert.That(
+                () =>
+                {
+                    for (var i = 0; i < 200; i++)
+                    {
+                        phase.Dispatch(argument);
+                    }
+                },
+                UnityEngine.TestTools.Constraints.ConstraintExtensions.AllocatingGCMemory(Is.Not));
+            AssertAllSucceeded(phase.Dispatch(argument), 1);
+            Assert.That(registration.IsEnabled, Is.True);
+        }
+
+        static void AssertAllSucceeded(LuauScriptDispatchResult result, int expected)
+        {
+            Assert.That(result.AttemptedCount, Is.EqualTo(expected));
+            Assert.That(result.SucceededCount, Is.EqualTo(expected));
+            Assert.That(result.FailedCount, Is.Zero);
+            Assert.That(result.SkippedCount, Is.Zero);
+        }
+
+        [Test]
         public void DispatchPassesBorrowedArgumentSpan()
         {
             var calls = new List<string>();

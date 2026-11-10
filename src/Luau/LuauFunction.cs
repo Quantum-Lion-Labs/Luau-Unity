@@ -200,17 +200,29 @@ public abstract class LuauFunction : IDisposable, ILuauCallbackBorrowedReference
     }
 
     /// <summary>
-    /// Invokes a script closure synchronously and requires it to return no values.
+    /// Invokes a script closure synchronously and discards any values it returns.
     /// </summary>
+    /// <remarks>
+    /// Values the closure returns are discarded and the call succeeds.
+    /// <see cref="LuauExecutionOptions.MaxResultCount"/> does not apply, because
+    /// no value reaches the host. Returning more values than one Luau stack
+    /// frame holds still fails with <see cref="LuauStackLimitException"/>.
+    /// </remarks>
     public void InvokeVoid(LuauExecutionOptions? executionOptions = null)
     {
         GetScriptFunctionForInvocation().InvokeVoidWithArguments(default, executionOptions);
     }
 
     /// <summary>
-    /// Invokes a script closure synchronously with one argument and requires it
-    /// to return no values.
+    /// Invokes a script closure synchronously with one argument and discards
+    /// any values it returns.
     /// </summary>
+    /// <remarks>
+    /// Values the closure returns are discarded and the call succeeds.
+    /// <see cref="LuauExecutionOptions.MaxResultCount"/> does not apply, because
+    /// no value reaches the host. Returning more values than one Luau stack
+    /// frame holds still fails with <see cref="LuauStackLimitException"/>.
+    /// </remarks>
     public void InvokeVoid(
         LuauValue argument,
         LuauExecutionOptions? executionOptions = null)
@@ -219,9 +231,15 @@ public abstract class LuauFunction : IDisposable, ILuauCallbackBorrowedReference
     }
 
     /// <summary>
-    /// Invokes a script closure synchronously with arguments and requires it to
-    /// return no values.
+    /// Invokes a script closure synchronously with arguments and discards any
+    /// values it returns.
     /// </summary>
+    /// <remarks>
+    /// Values the closure returns are discarded and the call succeeds.
+    /// <see cref="LuauExecutionOptions.MaxResultCount"/> does not apply, because
+    /// no value reaches the host. Returning more values than one Luau stack
+    /// frame holds still fails with <see cref="LuauStackLimitException"/>.
+    /// </remarks>
     public void InvokeVoid(
         ReadOnlySpan<LuauValue> arguments,
         LuauExecutionOptions? executionOptions = null)
@@ -230,8 +248,14 @@ public abstract class LuauFunction : IDisposable, ILuauCallbackBorrowedReference
     }
 
     /// <summary>
-    /// Invokes a script closure asynchronously and requires it to return no values.
+    /// Invokes a script closure asynchronously and discards any values it returns.
     /// </summary>
+    /// <remarks>
+    /// Values the closure returns are discarded and the call succeeds.
+    /// <see cref="LuauExecutionOptions.MaxResultCount"/> does not apply, because
+    /// no value reaches the host. Returning more values than one Luau stack
+    /// frame holds still fails with <see cref="LuauStackLimitException"/>.
+    /// </remarks>
     public ValueTask InvokeVoidAsync(
         CancellationToken cancellationToken = default,
         LuauExecutionOptions? executionOptions = null)
@@ -243,9 +267,15 @@ public abstract class LuauFunction : IDisposable, ILuauCallbackBorrowedReference
     }
 
     /// <summary>
-    /// Invokes a script closure asynchronously with one argument and requires it
-    /// to return no values.
+    /// Invokes a script closure asynchronously with one argument and discards
+    /// any values it returns.
     /// </summary>
+    /// <remarks>
+    /// Values the closure returns are discarded and the call succeeds.
+    /// <see cref="LuauExecutionOptions.MaxResultCount"/> does not apply, because
+    /// no value reaches the host. Returning more values than one Luau stack
+    /// frame holds still fails with <see cref="LuauStackLimitException"/>.
+    /// </remarks>
     public ValueTask InvokeVoidAsync(
         LuauValue argument,
         CancellationToken cancellationToken = default,
@@ -258,9 +288,15 @@ public abstract class LuauFunction : IDisposable, ILuauCallbackBorrowedReference
     }
 
     /// <summary>
-    /// Invokes a script closure asynchronously with arguments and requires it to
-    /// return no values.
+    /// Invokes a script closure asynchronously with arguments and discards any
+    /// values it returns.
     /// </summary>
+    /// <remarks>
+    /// Values the closure returns are discarded and the call succeeds.
+    /// <see cref="LuauExecutionOptions.MaxResultCount"/> does not apply, because
+    /// no value reaches the host. Returning more values than one Luau stack
+    /// frame holds still fails with <see cref="LuauStackLimitException"/>.
+    /// </remarks>
     public ValueTask InvokeVoidAsync(
         ReadOnlyMemory<LuauValue> arguments,
         CancellationToken cancellationToken = default,

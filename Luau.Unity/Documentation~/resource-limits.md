@@ -55,7 +55,8 @@ arguments, or a callback that returns that many fails with
 `LuauStackLimitException`. Under the default `MaxResultCount` of 64, an
 oversized return fails earlier with `LuauResultLimitException`. Either way, the
 values are dropped and the root stays usable. Removing the result limit does not
-remove this ceiling.
+remove this ceiling, and neither does calling with `InvokeVoid`, which discards
+what a function returns.
 
 `LuauStateOptions.UnboundedResources` deliberately removes the optional ceilings.
 It still bounds diagnostic decoding, and it still leaves persistent bytecode set
@@ -72,6 +73,12 @@ every operation:
 | `WallClockLimit` | 250 ms | `LuauExecutionBudgetException`, `BudgetKind == WallClock` |
 | `InterruptCountLimit` | 10,000,000 safepoints | `LuauExecutionBudgetException`, `BudgetKind == InterruptCount` |
 | `MaxResultCount` | 64 values | `LuauResultLimitException` |
+
+`MaxResultCount` bounds the values a call hands to the host. `InvokeVoid` and
+`InvokeVoidAsync` hand none: they discard whatever the function returns, so a
+hook may return values under any result limit, including 0. The limit still
+applies to the results that work inside such a call delivers to the host, such
+as the module a `require` loads.
 
 Whichever limit an operation reaches first stops it, so handle both kinds of
 `LuauExecutionBudgetException` wherever you report a script that ran too long.

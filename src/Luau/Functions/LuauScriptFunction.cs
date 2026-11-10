@@ -96,8 +96,7 @@ internal sealed class LuauScriptFunction(
             chunkName: operationLabel,
             options: executionOptions,
             cancellationToken: default,
-            isAsync: false,
-            requireZeroResults: true);
+            isAsync: false);
 
         PushInvocation(operation, state, arguments);
 
@@ -114,8 +113,7 @@ internal sealed class LuauScriptFunction(
             chunkName: operationLabel,
             options: executionOptions,
             cancellationToken: default,
-            isAsync: false,
-            requireZeroResults: true);
+            isAsync: false);
 
         PushInvocation(operation, state, argument);
 
@@ -226,8 +224,7 @@ internal sealed class LuauScriptFunction(
             chunkName: operationLabel,
             options: executionOptions,
             cancellationToken,
-            isAsync: true,
-            requireZeroResults: true);
+            isAsync: true);
 
         PushInvocation(operation, state, arguments.Span);
 
@@ -245,8 +242,7 @@ internal sealed class LuauScriptFunction(
             chunkName: operationLabel,
             options: executionOptions,
             cancellationToken,
-            isAsync: true,
-            requireZeroResults: true);
+            isAsync: true);
 
         PushInvocation(operation, state, argument);
 

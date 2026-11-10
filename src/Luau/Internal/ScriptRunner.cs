@@ -54,19 +54,18 @@ internal static class ScriptRunner
         return new LuauResultScope(results);
     }
 
+    /// <summary>
+    /// Runs a call whose caller wants no values back. Whatever the function
+    /// returns is discarded where the result count is taken, so the call
+    /// succeeds and leaves the stack at its base; see
+    /// <see cref="DiscardReturnedValues"/>.
+    /// </summary>
     internal static void RunVoid(
         ScriptOperation operation,
         int argumentCount,
         bool hasFunction = true)
     {
-        var resultCount = RunCore(operation, argumentCount, hasFunction);
-        if (resultCount == 0)
-        {
-            return;
-        }
-
-        DiscardResults(operation, operation.ThreadPointer, resultCount);
-        throw new LuauResultLimitException(operation.ChunkName, resultCount, limit: 0);
+        RunCore(operation, argumentCount, hasFunction, discardResults: true);
     }
 
     internal static async ValueTask<int> RunAsync(
@@ -137,21 +136,13 @@ internal static class ScriptRunner
         return new LuauResultScope(results);
     }
 
+    /// <summary>The asynchronous form of <see cref="RunVoid"/>.</summary>
     internal static async ValueTask RunVoidAsync(
         ScriptOperation operation,
         int argumentCount,
         bool hasFunction = true)
     {
-        var resultCount = await RunAsyncCore(operation, argumentCount, hasFunction).ConfigureAwait(false);
-        if (resultCount == 0)
-        {
-            return;
-        }
-
-        await LuauContinuationDispatcher.InvokeAsync(
-            operation.Options.ContinuationScheduler,
-            () => DiscardResults(operation, operation.ThreadPointer, resultCount)).ConfigureAwait(false);
-        throw new LuauResultLimitException(operation.ChunkName, resultCount, limit: 0);
+        await RunAsyncCore(operation, argumentCount, hasFunction, discardResults: true).ConfigureAwait(false);
     }
 
     internal static ValueTask<int> RunCountAsync(
@@ -170,7 +161,11 @@ internal static class ScriptRunner
         return RunCore(operation, argumentCount, hasFunction);
     }
 
-    static int RunCore(ScriptOperation operation, int argumentCount, bool hasFunction)
+    static int RunCore(
+        ScriptOperation operation,
+        int argumentCount,
+        bool hasFunction,
+        bool discardResults = false)
     {
         var state = operation.ThreadPointer;
         var from = operation.FromPointer;
@@ -217,7 +212,7 @@ internal static class ScriptRunner
                 operation.ClearInjectedCallbackFailure();
                 ThrowIfHardStopped(operation, state);
                 ThrowIfUninjectedCallbackFailure(operation, state);
-                return GetResultCount(operation, state, baseTop, topAfterResume);
+                return GetResultCount(operation, state, baseTop, topAfterResume, discardResults);
             }
 
             if (status != LuauHostStatus.Yielded && status != LuauHostStatus.Break)
@@ -233,7 +228,7 @@ internal static class ScriptRunner
                 case ScriptYieldReason.None:
                     ThrowIfUninjectedCallbackFailure(operation, state);
                     RejectRootYield(operation, state);
-                    var yieldedResultCount = GetResultCount(operation, state, baseTop, topAfterResume);
+                    var yieldedResultCount = GetResultCount(operation, state, baseTop, topAfterResume, discardResults);
                     operation.CompleteCoroutineSuspended();
                     return yieldedResultCount;
                 case ScriptYieldReason.CallbackFailure:
@@ -260,7 +255,8 @@ internal static class ScriptRunner
     static async ValueTask<int> RunAsyncCore(
         ScriptOperation operation,
         int argumentCount,
-        bool hasFunction)
+        bool hasFunction,
+        bool discardResults = false)
     {
         var state = operation.ThreadPointer;
         var from = operation.FromPointer;
@@ -308,7 +304,7 @@ internal static class ScriptRunner
                     {
                         ThrowIfHardStopped(operation, state);
                         ThrowIfUninjectedCallbackFailure(operation, state);
-                        return GetResultCount(operation, state, baseTop);
+                        return GetResultCount(operation, state, baseTop, discardResults: discardResults);
                     }).ConfigureAwait(false);
             }
 
@@ -334,7 +330,7 @@ internal static class ScriptRunner
                         {
                             ThrowIfUninjectedCallbackFailure(operation, state);
                             RejectRootYield(operation, state);
-                            return GetResultCount(operation, state, baseTop);
+                            return GetResultCount(operation, state, baseTop, discardResults: discardResults);
                         }).ConfigureAwait(false);
                     operation.CompleteCoroutineSuspended();
                     return yieldedResultCount;
@@ -460,13 +456,29 @@ internal static class ScriptRunner
             operation.ChunkName);
     }
 
-    static int GetResultCount(ScriptOperation operation, IntPtr state, int baseTop, int knownTop = -1)
+    /// <summary>
+    /// Counts the values above <paramref name="baseTop"/> and checks them
+    /// against the result limits. With <paramref name="discardResults"/>, the
+    /// caller wants none of them: they are dropped and the count is zero.
+    /// </summary>
+    static int GetResultCount(
+        ScriptOperation operation,
+        IntPtr state,
+        int baseTop,
+        int knownTop = -1,
+        bool discardResults = false)
     {
         var resultCount = (knownTop >= 0 ? knownTop : GetTop(operation, state)) - baseTop;
         if (resultCount < 0)
         {
             Abort(operation, state);
             throw new LuauException("The Luau stack was corrupted while calculating results.");
+        }
+
+        if (discardResults)
+        {
+            DiscardReturnedValues(operation, state, baseTop, resultCount);
+            return 0;
         }
 
         if (operation.Options.MaxResultCount is { } limit && resultCount > limit)
@@ -485,6 +497,55 @@ internal static class ScriptRunner
         }
 
         return resultCount;
+    }
+
+    /// <summary>
+    /// Drops the values a call returned to a caller that wants none of them.
+    /// No value reaches the host, so <see cref="LuauExecutionOptions.MaxResultCount"/>
+    /// does not apply, and nothing is decoded or allocated. The frame ceiling
+    /// still does, as for every other call: a frame with no free slot fails
+    /// with <see cref="LuauStackLimitException"/>. Either way the stack ends
+    /// at <paramref name="baseTop"/>. A call that returned nothing costs no
+    /// native access here; otherwise one access checks the frame and trims it.
+    /// </summary>
+    static unsafe void DiscardReturnedValues(
+        ScriptOperation operation,
+        IntPtr state,
+        int baseTop,
+        int resultCount)
+    {
+        if (resultCount == 0)
+        {
+            return;
+        }
+
+        var full = false;
+        var trimmed = LuauHostStatus.Ok;
+        using (var access = operation.Context.EnterOperationNativeAccess(operation))
+        {
+            var pointer = (LuauHostState*)state;
+            try
+            {
+                full = operation.Context.IsFrameFullUnderNativeAccess(pointer);
+            }
+            finally
+            {
+                trimmed = luau_host_stack_set_top(pointer, baseTop);
+            }
+        }
+
+        // Shrinking the stack cannot fail natively. If it ever does, reset the
+        // thread rather than leave the values behind.
+        if (trimmed != LuauHostStatus.Ok)
+        {
+            Abort(operation, state);
+            RequireStackSetTopSuccess(trimmed);
+        }
+
+        if (full)
+        {
+            throw new LuauStackLimitException(operation.ChunkName, "return its results");
+        }
     }
 
     static unsafe bool IsFrameFull(ScriptOperation operation, IntPtr state)

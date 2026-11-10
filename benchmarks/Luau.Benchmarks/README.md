@@ -25,15 +25,15 @@ budget profile:
 dotnet run --project benchmarks/Luau.Benchmarks -c Release -- --filter interrupt- --warmup 20 --iterations 500
 ```
 
-The `entry-` cases measure the fixed cost of entering and leaving the VM for
-the calls a per-frame script hook makes: `InvokeVoid` under each execution
-budget profile, invocation with results, coroutine resume, execution of
-cached compiler output, a script entrypoint called with reused options as a
-Unity script phase does, and direct table and global access outside an
-operation, on the root and on a script's sandboxed thread, running or waiting
-in a yield. Each sample makes 64 calls and reports nanoseconds and managed
-bytes per call. Use a long warm-up so tiered compilation has settled before the
-first case:
+The `entry-` cases measure the fixed cost of entering and leaving the VM for the
+calls a per-frame script hook makes: `InvokeVoid` under each execution budget
+profile and of a hook whose returned values it discards, invocation with
+results, coroutine resume, execution of cached compiler output, a script
+entrypoint called with reused options as a Unity script phase does, and direct
+table and global access outside an operation, on the root and on a script's
+sandboxed thread, running or waiting in a yield. Each sample makes 64 calls and
+reports nanoseconds and managed bytes per call. Use a long warm-up so tiered
+compilation has settled before the first case:
 
 ```bash
 dotnet run --project benchmarks/Luau.Benchmarks -c Release -- --filter entry- --warmup 3000 --iterations 5000
