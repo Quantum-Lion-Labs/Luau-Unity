@@ -195,19 +195,30 @@ API or ABI breaks.
   4 million numbers took half a second, and of strings that share a long
   prefix as long as minutes; `table.concat` of a million numbers and
   `utf8.len` of a 60 MB string took 110 to 180 ms. The native host now replaces
-  these functions with versions that reach a safepoint every few
-  microseconds of work, so the wall-clock and count limits, cancellation, and
-  disposal stop them inside the call, on any thread, inside `pcall`, and in a
-  module or metamethod a host callback runs. The plain-text search is now
-  linear in the length of the string searched: the search above takes under
-  a millisecond. Results, errors, and the order of sort comparisons are
-  exactly upstream's, and ordinary calls take the same time as before. The safepoints
-  count toward `InterruptCountLimit` like pattern-matching steps, about one
-  per 16 KB searched or thousand comparisons. See
+  these functions with versions that reach a safepoint whenever their work
+  since the last one adds up to a fixed budget (16 KB examined byte by byte,
+  256 KB scanned or copied in bulk, or 1,024 comparisons, values, or pieces),
+  so between two safepoints they do at most twice that budget plus one
+  indivisible operation of the VM, such as creating one string or comparing
+  two. The wall-clock and count limits, cancellation, and disposal therefore
+  stop them inside the call, on any thread, inside `pcall`, and in a module or
+  metamethod a host callback runs. The plain-text search is now linear in the
+  length of the string searched: the search above takes under a millisecond.
+  `string.find` also checks a long pattern for special characters with
+  safepoints, once, and only after it has checked `init`. Results, errors, and
+  the order of sort comparisons are exactly upstream's, and ordinary calls
+  take the same time as before. The safepoints count toward
+  `InterruptCountLimit` like pattern-matching steps: one per budget of work,
+  and one after each call of a built-in or C# sort comparison function or of
+  a `__lt` metamethod that is not a Luau function, as a Luau comparison
+  function's return always counted one. Opening the string, table, or UTF-8
+  library after scripts have run throws `LuauException`, and changes nothing,
+  when registering it could run a script's `__newindex` metamethod, which
+  would otherwise be handed the original functions. See
   [Resource limits](Documentation~/resource-limits.md#long-library-calls) for
-  the longest single calls that remain (up to 80 ms for one pattern-matching
-  step over a 20 MB literal run on desktop) and what a long C# callback must
-  do.
+  the exact budget, the longest single calls that remain (up to 80 ms for one
+  pattern-matching step over a 20 MB literal run on desktop), and what a long
+  C# callback must do.
 - Disposing a root from another thread just as a host operation began (for
   example a global or table access) could strand that operation, so the
   native VM was never closed and one callback registration leaked. The

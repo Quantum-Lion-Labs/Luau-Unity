@@ -123,7 +123,9 @@ count limit, cancellation, and disposal stop them inside the call:
   pattern without special characters) and `string.split`. Their time grows
   with the length of the string searched, not with the product of the two
   lengths: a search that compared a 200,000-byte needle at every position of a
-  400,000-byte string took a second, and now takes under a millisecond;
+  400,000-byte string took a second, and now takes under a millisecond.
+  `string.find` also reaches safepoints while it checks a long pattern for
+  special characters, which it does once, after it has checked `init`;
 - `table.sort` with the default comparison or a built-in or C# comparison
   function. Sorting strings that share a long prefix compares that prefix
   every time, which made one call run for minutes;
@@ -135,11 +137,38 @@ Pattern matching (`string.find` with a pattern, `string.match`,
 as it always has. A comparison function, `__lt` metamethod, or replacement
 function written in Luau reaches safepoints of its own.
 
+Each of these functions reaches a safepoint whenever its work since the last
+one adds up to a fixed budget: 16,384 bytes examined one at a time (a
+pattern checked for special characters, UTF-8 decoded, a needle compared),
+262,144 bytes scanned, compared, or copied in bulk, or 1,024 steps (a search
+candidate, a sort comparison, a concatenated value or separator, a split
+piece), in any mix. Between two safepoints it does at most about twice that
+budget, plus at most one operation of the VM's own that it cannot divide:
+comparing two strings in a sort, creating one string (a piece of
+`string.split` or the result of `table.concat`), one insertion that grows the
+table `string.split` returns, or one append to `table.concat`'s buffer,
+including the buffer's growth. A sort comparison that calls a built-in or C#
+comparison function, or a `__lt` metamethod that is not a Luau function, is
+followed by a safepoint of its own, because the sort cannot tell how long the
+function ran.
+
 These safepoints count toward `InterruptCountLimit` like pattern-matching
-steps do, one for each fixed amount of work: about 16 KB of a string searched
-or decoded, or about a thousand sort comparisons, concatenated values, or
-split pieces. A long call therefore uses only a few thousand of the default
-10,000,000, and a limit you set for a phase still stops it.
+steps do: one for each budget of work, and one after each call of a built-in
+or C# comparison function or of a `__lt` that is not a Luau function, just as
+a Luau comparison function's return counts one. A long call therefore uses
+only a few thousand of the default 10,000,000, and a limit you set for a
+phase still stops it; a sort with a comparison function uses at least one per
+comparison, as it always did with a Luau comparison function.
+
+Libraries are usually opened before any script runs. Opening the string,
+table, or UTF-8 library after scripts have run throws `LuauException`, and changes nothing, when
+registering its functions could run a script's `__newindex` metamethod: when
+the library table has a metatable with `__newindex`, or when a new key would
+be stored in a globals table whose metatable has `__newindex` (the library
+table itself, if a script removed it, or the global `unpack` that the table
+library also sets). Such a metamethod would otherwise be handed the library's
+original functions, which reach no safepoints. A metatable without
+`__newindex` does not prevent the open.
 
 Any other call is observed only when it returns. The longest single calls left,
 measured on a desktop x64 machine with inputs that fit the default 64 MB
@@ -156,15 +185,21 @@ memory limit, are:
 | `string.lower` or `string.upper` of a 30 MB string | 34 ms |
 | `table.create(4000000, v)`, `buffer.create` of 60 MB | 26 ms |
 | `tonumber` of a 30 MB string | 22 ms |
-| `table.concat` appending one 15 MB string, inside an otherwise interrupted call | 19 ms |
+| `string.split` creating one 30 MB piece | 18 ms |
 | `buffer.tostring` of a 30 MB buffer | 18 ms |
 | `table.find` across 4 million entries | 15 ms |
 | `table.clone` of 2 million entries | 14 ms |
+| `string.split` growing its result to 2 million pieces | 13 ms |
+| `table.concat` appending one 15 MB string, or creating a 15 MB result | 9 ms |
+| `string.find` with a 60 MB pattern whose only special character is its last: Luau checks the pattern again itself before it matches | 6 ms |
 
-Every other library call takes under 10 ms. Expect several times these
+Every other library call takes under 10 ms. A string comparison in a sort
+takes about 1 ms per 12 MB the two strings share. Expect several times these
 figures on a standalone VR headset or a phone, and less with a lower
 `MemoryLimitBytes`, since every one of them grows with the size of its
-inputs.
+inputs. Any allocation can also run a step of the garbage collector or grow
+the VM's table of strings, whether a library call or Luau code makes it; in a
+Luau loop that created a million strings, one such step took 26 ms.
 
 The VM cannot stop your own C# functions while they run, and the count limit
 does not count the work they do. A callback that can run long must stop

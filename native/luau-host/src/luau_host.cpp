@@ -27,6 +27,7 @@
 #include <new>
 #include <string>
 #include <unordered_map>
+#include <utility>
 
 #ifndef LUAU_HOST_UPSTREAM_REVISION
 #define LUAU_HOST_UPSTREAM_REVISION "2a3d8937c19c8fd9f7b72b6ec9068c62760e6588"
@@ -1031,25 +1032,52 @@ void opresume(lua_State* state, void* userdata)
 // linear or n log n, but one call can still run for hundreds of milliseconds.
 //
 // When it opens a library, the host replaces those entries of the library
-// table with the versions below, before a sandbox can freeze the table. The
-// string metatable's __index is the same table, so method calls, saved
-// references, and calls through the table all reach them. Each version does
-// exactly what upstream (as built here, with every fast flag at its default)
-// does for every input, including argument coercion, errors, and the order of
-// comparisons and table writes; luau_host_library_conformance compares them
-// with upstream over a generated corpus. Where only one path of a function can
-// run long, the host version handles that path and calls upstream's function
-// for everything else, in the same frame, so argument errors still name the
-// function. The version is a C closure in place of upstream's; upstream's
-// function pointer, the same for every state, is kept when the library opens.
+// table with the versions below, before a sandbox can freeze the table, and
+// before any script code can run (see "Opening a library" below). The string
+// metatable's __index is the same table, so method calls, saved references,
+// and calls through the table all reach them. Each version does exactly what
+// upstream (as built here, with every fast flag at its default) does for every
+// input, including argument coercion, errors, and the order of comparisons and
+// table writes; luau_host_library_conformance compares them with upstream over
+// a generated corpus. Where only one path of a function can run long, the host
+// version handles that path and calls upstream's function for everything else,
+// in the same frame, so argument errors still name the function. The version
+// is a C closure in place of upstream's; upstream's function pointer, the same
+// for every state, is kept when the library opens.
 //
-// Each version reaches the interrupt callback after every kLibraryPollUnits of
-// work, as a non-yieldable EXECUTION safepoint like a pattern-matching step:
-// it counts toward the interrupt-count limit, and a stop raises the sticky
-// CANCELED hard stop. A unit is about one byte compared, sixteen bytes scanned
-// or copied, one UTF-8 byte decoded, or a sixteenth of a comparison, of a
-// concatenated field, or of a split piece, so polls stay about 10 to 100
-// microseconds apart on a desktop.
+// Work between safepoints. Each version counts its work in units, and spend()
+// reaches the interrupt callback, as a non-yieldable EXECUTION safepoint like
+// a pattern-matching step, each time the units since the last one reach
+// kLibraryPollUnits: it counts toward the interrupt-count limit, and a stop
+// raises the sticky CANCELED hard stop. A unit is
+//
+// - one byte that a loop of the host's own compares or examines: a needle
+//   byte in matchforward or matchbackward, a step of the critical
+//   factorization, a pattern byte classified, or a UTF-8 position decoded;
+// - sixteen bytes that memchr scans or memcmp compares, that a string buffer
+//   copies, or that a new string hashes and copies;
+// - a sixteenth of kLibraryStepUnits, which is charged for one candidate of
+//   the short-needle search, one sort comparison, one concatenated field or
+//   separator, one split piece, and one table slot that an insertion's rehash
+//   moves.
+//
+// Every step of the work is charged when it ends. A step is at most
+// kLibraryPollUnits + kLibraryStepUnits units of the host's own work, or is
+// one VM operation that the host cannot divide: one comparison of two
+// strings, the creation of one string, one table insertion with the rehash it
+// causes, one append to a string buffer with the buffer's growth, or one sort
+// comparison that calls a C comparison function, or a __lt metamethod that
+// reaches no safepoint itself. Such an operation is charged for all of its
+// size (the last two for a full kLibraryPollUnits), so when it is large the
+// safepoint follows it at once.
+// Between two safepoints, then, a version does fewer than
+// 2 * kLibraryPollUnits + kLibraryStepUnits units of work, and at most one
+// step of it is such an operation, of whatever size. The work before a
+// version's first safepoint (argument checks, and a table length) is constant
+// or logarithmic, and so is what follows its last one, apart from one final
+// operation: the result string of table.concat. A comparison that calls a
+// Luau function, as the comparison function or as __lt, is charged at most a
+// step: that function reaches a safepoint of its own when it returns.
 //
 // Nothing here may own a resource with a destructor: the VM raises errors and
 // hard stops with longjmp.
@@ -1059,20 +1087,23 @@ constexpr size_t kLibraryPollUnits = 16384;
 // Memory scans and copies run about sixteen times as fast as byte loops.
 constexpr size_t kLibraryBytesPerUnit = 16;
 constexpr size_t kLibraryScanChunk = kLibraryPollUnits * kLibraryBytesPerUnit;
-// One table.sort comparison, one table.concat field, or one string.split
-// piece, beyond the bytes it touches.
+// One step: a short-needle candidate, a sort comparison, a concatenated field
+// or separator, a split piece, or a table slot a rehash moves, beyond the
+// bytes it touches.
 constexpr size_t kLibraryStepUnits = 16;
-// Subjects up to this many bytes go to upstream's string.find and string.split
-// directly, which keeps the common short call as fast as it was. Upstream's
-// search at this size compares at most about four million bytes (a needle of
-// half the subject that matches up to its last byte at every position), well
-// under a millisecond.
+// Calls with a subject and a needle (or pattern) of at most this many bytes
+// each go to upstream's string.find, and calls with a subject of at most this
+// many bytes to upstream's string.split, which keeps the common short call as
+// fast as it was. Upstream's work is then bounded by the subject: it compares
+// at most about four million bytes (a needle of half the subject that matches
+// up to its last byte at every position), well under a millisecond, and
+// examines at most this many pattern bytes. string.split compares nothing
+// when the needle is longer than the subject.
 constexpr size_t kPlainSearchDirectBytes = 4096;
 // Needles up to this many bytes are searched with upstream's loop only. Longer
 // needles are searched the same way while the bytes compared stay within one
 // per position plus kNaiveSearchSlack, and with the two-way algorithm after.
 constexpr size_t kShortNeedleBytes = 32;
-constexpr size_t kShortNeedleCandidates = 1024;
 constexpr size_t kNaiveSearchSlack = 4096;
 // How many scans in a row may advance fewer than four positions before the
 // two-way search stops scanning for the needle's first byte.
@@ -1080,6 +1111,32 @@ constexpr int kShortScanLimit = 64;
 
 std::atomic<lua_CFunction> upstreamStringFind = {nullptr};
 std::atomic<lua_CFunction> upstreamStringSplit = {nullptr};
+
+#if defined(LUAU_HOST_LIBRARY_COVERAGE)
+// Counts of the rarely taken paths below. Only luau_host_library_coverage, a
+// build of the library conformance test that compiles this file into itself,
+// defines LUAU_HOST_LIBRARY_COVERAGE: it reads them to show that its corpus
+// reaches every one. No shipped build has them.
+struct LibraryCoverage
+{
+    std::atomic<uint64_t> twoWayPeriodic = {0};
+    std::atomic<uint64_t> twoWayNonPeriodic = {0};
+    std::atomic<uint64_t> twoWayCriticalSkip = {0};
+    std::atomic<uint64_t> twoWayResumed = {0};
+    std::atomic<uint64_t> heapSort = {0};
+    std::atomic<uint64_t> findHandedToUpstream = {0};
+    std::atomic<uint64_t> concatBufferGrowth = {0};
+    std::atomic<uint64_t> splitRehash = {0};
+    std::atomic<uint64_t> openRefused = {0};
+    std::atomic<uint64_t> openRepairedAfterError = {0};
+};
+
+LibraryCoverage libraryCoverage;
+
+#define LIBRARY_COVERAGE(point) (void(libraryCoverage.point.fetch_add(1, std::memory_order_relaxed)))
+#else
+#define LIBRARY_COVERAGE(point) (void(0))
+#endif
 
 // The remaining work before the next safepoint.
 struct LibraryWork
@@ -1183,12 +1240,13 @@ bool equalbytes(LibraryWork& work, const uint8_t* a, const uint8_t* b, size_t si
     while (size != 0)
     {
         const size_t chunk = smaller(size, kLibraryScanChunk);
-        if (std::memcmp(a, b, chunk) != 0)
+        const bool equal = std::memcmp(a, b, chunk) == 0;
+        spend(work, chunk / kLibraryBytesPerUnit + 1);
+        if (!equal)
             return false;
         a += chunk;
         b += chunk;
         size -= chunk;
-        spend(work, chunk / kLibraryBytesPerUnit + 1);
     }
     return true;
 }
@@ -1293,7 +1351,10 @@ void prepareneedle(LibraryWork& work, PlainNeedle& needle, const uint8_t* x, siz
     {
         const size_t right = size - needle.critical;
         needle.period = (needle.critical > right ? needle.critical : right) + 1;
+        LIBRARY_COVERAGE(twoWayNonPeriodic);
     }
+    else
+        LIBRARY_COVERAGE(twoWayPeriodic);
 }
 
 // The plain search behind string.find and string.split. It searches as
@@ -1354,7 +1415,10 @@ const uint8_t* findtwoway(LibraryWork& work, const PlainSearcher& searcher, cons
             {
                 shortScans = at - j < 4 ? shortScans + 1 : 0;
                 if (shortScans == kShortScanLimit)
+                {
                     skip = critical;
+                    LIBRARY_COVERAGE(twoWayCriticalSkip);
+                }
             }
             j = at;
         }
@@ -1392,14 +1456,12 @@ const uint8_t* findplain(LibraryWork& work, PlainSearcher& searcher, const uint8
     if (m <= kShortNeedleBytes)
     {
         // lmemfind's loop. It compares at most kShortNeedleBytes bytes at each
-        // position, so it stays linear. To keep the loop as tight as
-        // upstream's, it counts candidates rather than bytes: a safepoint
-        // after every kShortNeedleCandidates of them, and after each
-        // kLibraryScanChunk bytes that memchr scans without a candidate.
+        // candidate, so it stays linear. Each candidate is charged as a step,
+        // with the bytes memchr scanned to reach it; a scan that finds none
+        // is charged for the bytes it scanned.
         const uint8_t first = x[0];
         const uint8_t* candidate = subject;
         const uint8_t* const end = subject + last + 1;
-        size_t countdown = kShortNeedleCandidates;
         for (;;)
         {
             const size_t span = smaller(size_t(end - candidate), kLibraryScanChunk);
@@ -1407,19 +1469,15 @@ const uint8_t* findplain(LibraryWork& work, PlainSearcher& searcher, const uint8
             if (!hit)
             {
                 candidate += span;
+                spend(work, span / kLibraryBytesPerUnit + 1);
                 if (candidate == end)
                     return nullptr;
-                spend(work, kLibraryPollUnits);
                 continue;
             }
             if (std::memcmp(hit + 1, x + 1, m - 1) == 0)
                 return hit;
+            spend(work, size_t(hit - candidate) / kLibraryBytesPerUnit + kLibraryStepUnits);
             candidate = hit + 1;
-            if (--countdown == 0)
-            {
-                countdown = kShortNeedleCandidates;
-                spend(work, kLibraryPollUnits);
-            }
         }
     }
 
@@ -1427,7 +1485,7 @@ const uint8_t* findplain(LibraryWork& work, PlainSearcher& searcher, const uint8
     {
         const uint8_t first = x[0];
         // The verification compares at most this many bytes inline; a longer
-        // match continues in matchforward, which reaches safepoints.
+        // match continues in matchforward, which charges its own bytes.
         const size_t inlineEnd = m < kLibraryPollUnits ? m : kLibraryPollUnits;
         for (;;)
         {
@@ -1443,10 +1501,12 @@ const uint8_t* findplain(LibraryWork& work, PlainSearcher& searcher, const uint8
             }
 
             const size_t at = size_t(static_cast<const uint8_t*>(hit) - subject);
+            spend(work, (at - j) / kLibraryBytesPerUnit + 1);
             const uint8_t* y = subject + at;
             size_t i = 1;
             while (i < inlineEnd && x[i] == y[i])
                 ++i;
+            spend(work, i);
             if (i == inlineEnd && i < m)
                 i = matchforward(work, x, y, i, m);
             if (i == m)
@@ -1454,7 +1514,6 @@ const uint8_t* findplain(LibraryWork& work, PlainSearcher& searcher, const uint8
 
             searcher.positions += at - j + 1;
             searcher.compared += i;
-            spend(work, (at - j) / kLibraryBytesPerUnit + i);
             j = at + 1;
             if (j > last)
                 return nullptr;
@@ -1464,6 +1523,8 @@ const uint8_t* findplain(LibraryWork& work, PlainSearcher& searcher, const uint8
         searcher.twoway = true;
         prepareneedle(work, searcher.needle, x, m);
     }
+    else
+        LIBRARY_COVERAGE(twoWayResumed);
     return findtwoway(work, searcher, subject + j, size - j);
 }
 
@@ -1495,29 +1556,38 @@ int stringposrelat(int pos, size_t len)
     return pos >= 0 ? pos : 0;
 }
 
-// lstrlib.cpp's nospecials: whether a pattern has none of the characters in
-// "^$*+?.([%-". Upstream looks for them with strpbrk in each zero-terminated
-// segment, which checks every byte of the pattern, as this does.
-bool nospecials(const char* p, size_t l)
+// The bytes lstrlib.cpp's nospecials looks for: "^$*+?.([%-".
+struct PatternSpecials
 {
-    for (size_t i = 0; i < l; i++)
+    uint8_t special[256] = {};
+
+    constexpr PatternSpecials()
     {
-        switch (p[i])
-        {
-        case '^':
-        case '$':
-        case '*':
-        case '+':
-        case '?':
-        case '.':
-        case '(':
-        case '[':
-        case '%':
-        case '-':
+        for (const char* c = "^$*+?.([%-"; *c; ++c)
+            special[uint8_t(*c)] = 1;
+    }
+};
+
+constexpr PatternSpecials kPatternSpecials;
+
+// Whether a pattern has none of the special characters, as lstrlib.cpp's
+// nospecials decides it: upstream looks for them with strpbrk in each
+// zero-terminated segment, which examines every byte up to the first special
+// one. This examines blocks of up to kLibraryPollUnits bytes, without a branch
+// per byte, and is charged a unit per byte.
+bool patternnospecials(LibraryWork& work, const char* p, size_t l)
+{
+    const uint8_t* bytes = reinterpret_cast<const uint8_t*>(p);
+    for (size_t from = 0; from < l;)
+    {
+        const size_t block = smaller(l - from, kLibraryPollUnits);
+        uint8_t found = 0;
+        for (size_t i = from; i < from + block; ++i)
+            found |= kPatternSpecials.special[bytes[i]];
+        spend(work, block);
+        if (found)
             return false;
-        default:
-            break;
-        }
+        from += block;
     }
     return true;
 }
@@ -1530,16 +1600,15 @@ inline bool shortstringargument(lua_State* L, int n, size_t limit)
     return argument < L->top && ttisstring(argument) && tsvalue(argument)->len <= limit;
 }
 
-// string.find. Only the plain search (a true fourth argument, or a pattern
-// without special characters) is replaced: pattern matching already reaches a
-// safepoint at each step, and subjects of kPlainSearchDirectBytes or fewer go
-// to upstream directly. The checks before a call to upstream read their
-// arguments without converting them, so upstream sees the call unchanged.
-// Each step is its own function, so that the common calls that go straight to
-// upstream do not pay for the frame of the search.
-LUAU_NOINLINE int hoststringfindplain(lua_State* L)
+// string.find. The host searches plain text itself (a true fourth argument,
+// or a pattern without special characters), and hands a pattern search to
+// upstream's function, whose pattern matcher reaches a safepoint at each step.
+// It follows upstream's str_find_aux: the arguments and init first, then the
+// classification of the pattern, once, with safepoints. Upstream's function
+// then classifies the pattern again itself, examining it up to its first
+// special character, in one scan without a safepoint.
+LUAU_NOINLINE int hoststringfindlong(lua_State* L)
 {
-    // The rest of upstream's str_find_aux, in its order.
     size_t ls = 0;
     size_t lp = 0;
     const char* s = luaL_checklstring(L, 1, &ls);
@@ -1552,10 +1621,16 @@ LUAU_NOINLINE int hoststringfindplain(lua_State* L)
         lua_pushnil(L);
         return 1;
     }
-    if (!(lua_toboolean(L, 4) || nospecials(p, lp)))
-        return upstreamStringFind.load(std::memory_order_relaxed)(L);
 
     LibraryWork work(L);
+    if (!(lua_toboolean(L, 4) || patternnospecials(work, p, lp)))
+    {
+        // The checks above converted a number argument to a string, as
+        // upstream's do, so upstream sees the same arguments again.
+        LIBRARY_COVERAGE(findHandedToUpstream);
+        return upstreamStringFind.load(std::memory_order_relaxed)(L);
+    }
+
     const char* found = plainsearch(work, s + init - 1, ls - size_t(init) + 1, p, lp);
     if (found)
     {
@@ -1567,31 +1642,50 @@ LUAU_NOINLINE int hoststringfindplain(lua_State* L)
     return 1;
 }
 
-LUAU_NOINLINE int hoststringfindlong(lua_State* L)
-{
-    const TValue* base = L->base;
-    const int arguments = int(L->top - base);
-    const bool plain = arguments >= 4 && !l_isfalse(base + 3);
-    if (!plain && arguments >= 2 && ttisstring(base + 1))
-    {
-        const TString* pattern = tsvalue(base + 1);
-        if (!nospecials(getstr(pattern), pattern->len))
-            return upstreamStringFind.load(std::memory_order_relaxed)(L);
-    }
-    return hoststringfindplain(L);
-}
-
+// Calls whose subject and pattern are both short go to upstream directly. The
+// check reads the arguments without converting them, so upstream sees the call
+// unchanged. The search is its own function, so that these calls do not pay
+// for its frame.
 int hoststringfind(lua_State* L)
 {
-    if (shortstringargument(L, 1, kPlainSearchDirectBytes))
+    if (shortstringargument(L, 1, kPlainSearchDirectBytes) && shortstringargument(L, 2, kPlainSearchDirectBytes))
         return upstreamStringFind.load(std::memory_order_relaxed)(L);
     return hoststringfindlong(L);
+}
+
+// Stores piece number `index` in t, the table at the top, as upstream's
+// str_split does, with lua_settable, and charges the string's creation and,
+// when the insertion rehashed the table, the slots it moved. A string of a
+// scan chunk or more is a step of its own, so that one step never holds both
+// a large string and a large rehash.
+inline void splitpiece(lua_State* L, LibraryWork& work, LuaTable* t, int index, const char* piece, size_t length)
+{
+    lua_pushinteger(L, index);
+    lua_pushlstring(L, piece, length);
+    size_t units = kLibraryStepUnits + length / kLibraryBytesPerUnit;
+    if (LUAU_UNLIKELY(length >= kLibraryScanChunk))
+    {
+        spend(work, units);
+        units = kLibraryStepUnits;
+    }
+
+    const int sizearray = t->sizearray;
+    const LuaNode* node = t->node;
+    lua_settable(L, -3);
+    if (LUAU_UNLIKELY(t->sizearray != sizearray || t->node != node))
+    {
+        LIBRARY_COVERAGE(splitRehash);
+        units += kLibraryStepUnits * (size_t(t->sizearray) + size_t(sizenode(t)));
+    }
+    spend(work, units);
 }
 
 // string.split, as upstream's str_split does it with LuauOptimizeStringSplit
 // off: the same pieces, inserted with the same table operations, so the table
 // it returns has the same layout. Only the search differs. Subjects of
-// kPlainSearchDirectBytes or fewer go to upstream directly.
+// kPlainSearchDirectBytes or fewer go to upstream directly: upstream compares
+// nothing when the needle is longer than the subject, so a long needle does
+// not make that call long.
 LUAU_NOINLINE int hoststringsplitlong(lua_State* L)
 {
     size_t haystackLen = 0;
@@ -1605,6 +1699,7 @@ LUAU_NOINLINE int hoststringsplitlong(lua_State* L)
     LibraryWork work(L);
 
     lua_createtable(L, 0, 0);
+    LuaTable* pieces = hvalue(L->top - 1);
 
     if (needleLen == 0)
     {
@@ -1612,11 +1707,8 @@ LUAU_NOINLINE int hoststringsplitlong(lua_State* L)
         // piece follows the last.
         for (const char* iter = haystack + 1; iter <= end; iter++)
         {
-            lua_pushinteger(L, ++numMatches);
-            lua_pushlstring(L, spanStart, size_t(iter - spanStart));
-            lua_settable(L, -3);
+            splitpiece(L, work, pieces, ++numMatches, spanStart, size_t(iter - spanStart));
             spanStart = iter;
-            spend(work, kLibraryStepUnits);
         }
         return 1;
     }
@@ -1640,19 +1732,13 @@ LUAU_NOINLINE int hoststringsplitlong(lua_State* L)
             if (!found)
                 break;
 
-            lua_pushinteger(L, ++numMatches);
-            lua_pushlstring(L, spanStart, size_t(found - spanStart));
-            lua_settable(L, -3);
-            spend(work, kLibraryStepUnits + size_t(found - spanStart) / kLibraryBytesPerUnit);
-
+            splitpiece(L, work, pieces, ++numMatches, spanStart, size_t(found - spanStart));
             spanStart = found + needleLen;
             iter = spanStart;
         }
     }
 
-    lua_pushinteger(L, ++numMatches);
-    lua_pushlstring(L, spanStart, size_t(end - spanStart));
-    lua_settable(L, -3);
+    splitpiece(L, work, pieces, ++numMatches, spanStart, size_t(end - spanStart));
     return 1;
 }
 
@@ -1663,23 +1749,64 @@ int hoststringsplit(lua_State* L)
     return hoststringsplitlong(L);
 }
 
-// table.concat, as upstream's tconcat and addfield do it, with a safepoint
-// after every few fields. Concatenating numbers converts each one to an
-// interned string, which makes a long table take a fifth of a second.
-size_t tableconcatfield(lua_State* L, luaL_Strbuf* b, int i, LuaTable* t)
+// table.concat, as upstream's tconcat and addfield do it. Each append is
+// charged for the bytes it copies: the bytes added and, when the buffer grew,
+// the bytes it held, which the growth copied. Concatenating numbers converts
+// each one to an interned string, which makes a long table take a fifth of a
+// second.
+inline size_t bufferlength(const luaL_Strbuf* b)
 {
-    if (t && unsigned(i - 1) < unsigned(t->sizearray) && ttisstring(&t->array[i - 1]))
+    return size_t(b->p - (b->storage ? b->storage->data : b->buffer));
+}
+
+// Charges an append after which the buffer ends at `end` again, or, when it
+// grew, also the copy of the `held` bytes it held before.
+inline void spendappend(LibraryWork& work, const luaL_Strbuf* b, const char* end, size_t held, size_t added)
+{
+    if (LUAU_UNLIKELY(b->end != end))
     {
-        TString* ts = tsvalue(&t->array[i - 1]);
-        luaL_addlstring(b, getstr(ts), ts->len);
-        return kLibraryStepUnits + ts->len / kLibraryBytesPerUnit;
+        LIBRARY_COVERAGE(concatBufferGrowth);
+        added += held;
+    }
+    spend(work, kLibraryStepUnits + added / kLibraryBytesPerUnit);
+}
+
+// luaL_addlstring, with the copy into room the buffer already has inline.
+inline void concatappend(LibraryWork& work, luaL_Strbuf* b, const char* s, size_t len)
+{
+    if (LUAU_LIKELY(size_t(b->end - b->p) >= len))
+    {
+        std::memcpy(b->p, s, len);
+        b->p += len;
+        spend(work, kLibraryStepUnits + len / kLibraryBytesPerUnit);
+        return;
+    }
+    const char* end = b->end;
+    const size_t held = bufferlength(b);
+    luaL_addlstring(b, s, len);
+    spendappend(work, b, end, held, len);
+}
+
+// Upstream computes i - 1 in int, which overflows for the most negative int;
+// unsigned arithmetic gives the same index where that wraps, without the
+// undefined behavior.
+void tableconcatfield(lua_State* L, LibraryWork& work, luaL_Strbuf* b, int i, LuaTable* t)
+{
+    const unsigned index = unsigned(i) - 1u;
+    if (t && index < unsigned(t->sizearray) && ttisstring(&t->array[index]))
+    {
+        TString* ts = tsvalue(&t->array[index]);
+        concatappend(work, b, getstr(ts), ts->len);
+        return;
     }
 
     const int tt = lua_rawgeti(L, 1, i);
     if (tt != LUA_TSTRING && tt != LUA_TNUMBER)
         luaL_errorL(L, "invalid value (%s) at index %d in table for 'concat'", luaL_typename(L, -1), i);
+    const char* end = b->end;
+    const size_t held = bufferlength(b);
     luaL_addvalue(b);
-    return kLibraryStepUnits;
+    spendappend(work, b, end, held, bufferlength(b) - held);
 }
 
 int hosttableconcat(lua_State* L)
@@ -1697,26 +1824,23 @@ int hosttableconcat(lua_State* L)
     luaL_buffinit(L, &b);
     for (; i < last; i++)
     {
-        size_t units = tableconcatfield(L, &b, i, t);
+        tableconcatfield(L, work, &b, i, t);
         if (lsep != 0)
-        {
-            luaL_addlstring(&b, sep, lsep);
-            units += lsep / kLibraryBytesPerUnit;
-        }
-        spend(work, units);
+            concatappend(work, &b, sep, lsep);
     }
     if (i == last)
-        tableconcatfield(L, &b, i, t);
+        tableconcatfield(L, work, &b, i, t);
     luaL_pushresult(&b);
     return 1;
 }
 
 // table.sort, as upstream's tsort does it: the same introsort, so that every
 // comparison happens in the same order and an inconsistent comparison
-// function produces the same permutation or error. The default comparison and
-// a C comparison function compare without reaching a safepoint, so the sort
-// reaches one itself; a Luau comparison function reaches one at each return
-// already, and the sort adds none.
+// function produces the same permutation or error. The default comparison of
+// two numbers or two strings, and a call of a C comparison function or of a
+// __lt metamethod that is not a Luau function, reach no safepoint, so the sort
+// charges them; a Luau comparison function reaches one when it returns, and
+// the sort charges nothing for it.
 enum class SortComparison
 {
     Default,
@@ -1758,8 +1882,20 @@ inline void sortaftersafepoint(lua_State* L, LuaTable* t, int n)
         luaL_errorL(L, "table modified during sorting");
 }
 
+// The safepoints the interrupt throttle has counted: it counts each one while
+// it is enabled, and the count moves at nothing else.
+inline uint64_t safepointcount(lua_State* L)
+{
+    return static_cast<const AllocatorContext*>(L->global->ud)->throttle.count;
+}
+
 // The default comparison when it is not two numbers or two strings, or when a
-// safepoint is due: luaV_lessthan, which may run a __lt metamethod.
+// safepoint is due: luaV_lessthan. Values of any other type compare through a
+// __lt metamethod. One that reached a safepoint itself (a Luau function, which
+// reaches one when it returns) is charged a step; any other, such as the C
+// function of the integer type, is charged a full kLibraryPollUnits, so that a
+// safepoint follows it. Without an enabled throttle, the count never moves,
+// and every such comparison is followed by a safepoint.
 LUAU_NOINLINE int sortlessslow(lua_State* L, LuaTable* t, LibraryWork& work, int i, int j)
 {
     const int n = t->sizearray;
@@ -1769,16 +1905,20 @@ LUAU_NOINLINE int sortlessslow(lua_State* L, LuaTable* t, LibraryWork& work, int
     const TValue* l = &t->array[i];
     const TValue* r = &t->array[j];
     size_t units = kLibraryStepUnits;
+    const bool metamethod = !(ttisnumber(l) && ttisnumber(r)) && !(ttisstring(l) && ttisstring(r));
     if (ttisstring(l) && ttisstring(r))
         units += smaller(tsvalue(l)->len, tsvalue(r)->len) / kLibraryBytesPerUnit;
-    if (spend(work, units))
-        sortaftersafepoint(L, t, n);
-    const int res = luaV_lessthan(L, &t->array[i], &t->array[j]);
+    const uint64_t counted = metamethod ? safepointcount(L) : 0;
+    const int res = luaV_lessthan(L, l, r);
 
     // predicate call may resize the table, which is invalid
     if (t->sizearray != n)
         luaL_errorL(L, "table modified during sorting");
 
+    if (metamethod && safepointcount(L) == counted)
+        units = kLibraryPollUnits;
+    if (spend(work, units))
+        sortaftersafepoint(L, t, n);
     return res;
 }
 
@@ -1814,14 +1954,16 @@ LUAU_FORCEINLINE int sortless(lua_State* L, LuaTable* t, LibraryWork& work, int 
         // As upstream's sort_less with sort_func.
         const int n = t->sizearray;
         LUAU_ASSERT(unsigned(i) < unsigned(n) && unsigned(j) < unsigned(n));
-        if constexpr (Comparison == SortComparison::CFunction)
-        {
-            if (spend(work, kLibraryStepUnits))
-                sortaftersafepoint(L, t, n);
-        }
         const int res = sortfunction(L, &t->array[i], &t->array[j]);
         if (t->sizearray != n)
             luaL_errorL(L, "table modified during sorting");
+        if constexpr (Comparison == SortComparison::CFunction)
+        {
+            // The C function's work is unknown, so a safepoint follows each
+            // call.
+            spend(work, kLibraryPollUnits);
+            sortaftersafepoint(L, t, n);
+        }
         return res;
     }
 }
@@ -1859,6 +2001,7 @@ void sortheap(lua_State* L, LuaTable* t, LibraryWork& work, int l, int u)
 {
     LUAU_ASSERT(l <= u);
     const int count = u - l + 1;
+    LIBRARY_COVERAGE(heapSort);
 
     for (int i = count / 2 - 1; i >= 0; --i)
         sortsiftheap<Comparison>(L, t, work, l, u, i);
@@ -1971,7 +2114,7 @@ int hosttablesort(lua_State* L)
 }
 
 // utf8.len, as upstream's utflen and utf8_decode do it, with a safepoint
-// after every block of bytes decoded.
+// after every block of positions decoded.
 const char* utf8decode(const char* o, int* val)
 {
     static const unsigned int limits[] = {0xFF, 0x7F, 0x7FF, 0xFFFF};
@@ -2027,8 +2170,10 @@ int hostutf8len(lua_State* L)
     LibraryWork work(L);
     while (posi <= posj)
     {
-        // Each character takes at least one byte, so a block of bytes bounds
-        // the work between safepoints without a count in the inner loop.
+        // Each character takes at least one byte, so a block of positions
+        // bounds the work between safepoints without a count in the inner
+        // loop: at most kLibraryPollUnits + 1 characters, each of at most
+        // seven bytes read.
         const int block = int(kLibraryPollUnits);
         const int stop = posj - posi > block ? posi + block : posj;
         while (posi <= stop)
@@ -2049,21 +2194,249 @@ int hostutf8len(lua_State* L)
     return 1;
 }
 
-// Replaces one function of the library table at the top of the stack. The
-// debug name must be a string literal: the closure keeps the pointer.
-void replacelibraryfunction(lua_State* L, const char* name, lua_CFunction function, std::atomic<lua_CFunction>* upstream)
+// Opening a library
+//
+// Upstream's luaL_register stores each function with lua_setfield, which runs
+// a __newindex metamethod when the key is absent, and a new library table is
+// stored in the globals table with lua_settable, which does the same. If the
+// host replaced its functions only after luaopen_* returned, script code that
+// ran during the open (a __newindex the script set on a library table opened
+// before, or on the globals table) would be handed upstream's functions, which
+// run without safepoints. An error during the open (memory runs out, or the
+// globals table is read-only when luaopen_table stores unpack) would leave
+// them in the table too. So for a library with replaced functions:
+//
+// 1. The open is refused, before anything is registered, when registration
+//    could reach a metamethod. Every operation that luaopen_string,
+//    luaopen_table, and luaopen_utf8 perform on a table a script can reach is
+//    a lua_setfield or lua_settable of a string key into the table
+//    luaL_register registers into, or into the globals table: the library
+//    functions themselves, utf8.charpattern, a new library table, and
+//    luaopen_table's global unpack. Such a store runs a metamethod only when
+//    the key is absent and the table's metatable has __newindex (luaV_settable),
+//    so the open is refused if the target table's metatable has __newindex, or
+//    if a store of an absent key into the globals table would happen and its
+//    metatable has __newindex. Every other operation is raw (lua_rawget in
+//    luaL_findtable), touches only the registry and its _LOADED table, which
+//    scripts cannot reach and which never have a metatable, or touches a table
+//    or metatable the open itself just created (createmetatable in
+//    luaopen_string), and lua_setmetatable on a string runs nothing. The
+//    collector runs no Luau code: Luau has no __gc metamethod, and userdata
+//    destructors are host C functions. Nothing else that the open does can
+//    run a function.
+// 2. Everything the replacement needs is created first: each host closure,
+//    the keys, and the value the table holds under each name before the open.
+//    luaopen_* then runs in a nested protected call, and afterwards, whether
+//    it succeeded or failed, each name whose value changed, which only
+//    upstream's registration does, gets the host's closure. That needs only
+//    raw reads and a raw store to a key that is present, which allocate
+//    nothing and cannot fail. A failure is then raised again unchanged.
+//
+// So no script code runs while upstream's function is in a library table, and
+// none ever sees one there.
+
+// A library function the host replaces.
+struct ReplacedFunction
 {
-    lua_rawgetfield(L, -1, name);
-    lua_CFunction original = lua_tocfunction(L, -1);
+    // Also the closure's debug name, which the closure keeps: a string
+    // literal.
+    const char* name;
+    lua_CFunction host;
+    // Where upstream's version is kept, for a host version that calls it.
+    std::atomic<lua_CFunction>* upstream;
+};
+
+struct ReplacingLibrary
+{
+    // The name luaL_register registers the library under.
+    const char* name;
+    lua_CFunction open;
+    const ReplacedFunction* functions;
+    int count;
+    // luaopen_table stores the global unpack after it registers.
+    bool storesUnpack;
+};
+
+const ReplacedFunction kStringReplacements[] = {
+    {"find", hoststringfind, &upstreamStringFind},
+    {"split", hoststringsplit, &upstreamStringSplit},
+};
+
+const ReplacedFunction kTableReplacements[] = {
+    {"concat", hosttableconcat, nullptr},
+    {"sort", hosttablesort, nullptr},
+};
+
+const ReplacedFunction kUtf8Replacements[] = {
+    {"len", hostutf8len, nullptr},
+};
+
+const ReplacingLibrary kStringLibrary = {LUA_STRLIBNAME, luaopen_string, kStringReplacements, 2, false};
+const ReplacingLibrary kTableLibrary = {LUA_TABLIBNAME, luaopen_table, kTableReplacements, 2, true};
+const ReplacingLibrary kUtf8Library = {LUA_UTF8LIBNAME, luaopen_utf8, kUtf8Replacements, 1, false};
+
+// The most values openreplacinglibrary holds above its entry top besides
+// those luaopen_* uses: the target, two keys, three per replaced function, the
+// results, and four while it replaces.
+constexpr int kLibraryOpenSlots = 16;
+
+// Whether a store of an absent key into t runs a metamethod: the condition
+// luaV_settable checks.
+bool hasnewindex(lua_State* L, LuaTable* t)
+{
+    return t->metatable && fasttm(L, t->metatable, TM_NEWINDEX) != nullptr;
+}
+
+// Pushes the table luaL_register will register the library into: _LOADED's
+// entry when it is a table, and otherwise the global of that name when it is a
+// table. Pushes nil when there is neither, and sets createsTable when
+// luaL_findtable will then create the table and store it in the globals table
+// (the global is nil) rather than raise a name conflict. luaL_register reads
+// _LOADED with lua_getfield, which is raw there: _LOADED has no metatable.
+void pushregistrationtarget(lua_State* L, const char* name, bool* createsTable)
+{
+    *createsTable = false;
+    lua_rawgetfield(L, LUA_REGISTRYINDEX, "_LOADED");
+    if (lua_istable(L, -1))
+    {
+        lua_rawgetfield(L, -1, name);
+        lua_remove(L, -2);
+        if (lua_istable(L, -1))
+            return;
+    }
     lua_pop(L, 1);
-    // Upstream always registers these; the library conformance tests fail if
-    // a replacement is missing.
-    if (!original)
+
+    lua_rawgetfield(L, LUA_GLOBALSINDEX, name);
+    if (lua_istable(L, -1))
         return;
-    if (upstream)
-        upstream->store(original, std::memory_order_relaxed);
-    lua_pushcfunction(L, function, name);
-    lua_rawsetfield(L, -2, name);
+    *createsTable = lua_isnil(L, -1);
+    lua_pop(L, 1);
+    lua_pushnil(L);
+}
+
+// Why registration could run script code, or nullptr when it cannot.
+const char* registrationhazard(lua_State* L, const ReplacingLibrary& library, int target, bool createsTable)
+{
+    const char* globals = "the globals table has a __newindex metamethod";
+    if (lua_istable(L, target))
+    {
+        if (hasnewindex(L, hvalue(L->base + (target - 1))))
+            return "the library table has a __newindex metamethod";
+    }
+    else if (createsTable && hasnewindex(L, L->gt))
+        return globals;
+
+    if (library.storesUnpack && hasnewindex(L, L->gt))
+    {
+        lua_rawgetfield(L, LUA_GLOBALSINDEX, "unpack");
+        const bool absent = lua_isnil(L, -1);
+        lua_pop(L, 1);
+        if (absent)
+            return globals;
+    }
+    return nullptr;
+}
+
+struct LibraryOpenCall
+{
+    lua_CFunction open;
+    int results;
+};
+
+void runlibraryopen(lua_State* L, void* userdata)
+{
+    LibraryOpenCall* call = static_cast<LibraryOpenCall*>(userdata);
+    call->results = call->open(L);
+}
+
+// Opens a library whose functions the host replaces; see above. Returns the
+// number of results luaopen_* returned, which replace everything it pushed.
+int openreplacinglibrary(lua_State* L, const ReplacingLibrary& library)
+{
+    const int base = lua_gettop(L);
+    const int target = base + 1;
+    bool createsTable = false;
+    pushregistrationtarget(L, library.name, &createsTable);
+    if (const char* hazard = registrationhazard(L, library, target, createsTable))
+    {
+        LIBRARY_COVERAGE(openRefused);
+        lua_pushfstringL(L, "cannot open the %s library while %s", library.name, hazard);
+        lua_error(L);
+    }
+
+    // The keys that find the table after a failure, then for each function
+    // its name, the host's closure, and the value the table holds now.
+    const int loadedKey = base + 2;
+    const int nameKey = base + 3;
+    const int firstFunction = base + 4;
+    lua_pushliteral(L, "_LOADED");
+    lua_pushstring(L, library.name);
+    for (int k = 0; k < library.count; ++k)
+    {
+        const ReplacedFunction& function = library.functions[k];
+        lua_pushstring(L, function.name);
+        lua_pushcfunction(L, function.host, function.name);
+        lua_pushvalue(L, -2);
+        if (lua_istable(L, target))
+            lua_rawget(L, target);
+        else
+        {
+            lua_pop(L, 1);
+            lua_pushnil(L);
+        }
+    }
+    const int working = lua_gettop(L);
+
+    LibraryOpenCall call = {library.open, 0};
+    const int status = luaD_pcall(L, runlibraryopen, &call, savestack(L, L->top), 0);
+
+    // luaL_register sets _LOADED's entry before it registers anything, so
+    // the table that holds upstream's functions, if any does, is that entry.
+    lua_pushvalue(L, loadedKey);
+    lua_rawget(L, LUA_REGISTRYINDEX);
+    if (lua_istable(L, -1))
+    {
+        lua_pushvalue(L, nameKey);
+        lua_rawget(L, -2);
+        lua_remove(L, -2);
+    }
+    if (lua_istable(L, -1))
+    {
+        const int table = lua_gettop(L);
+        for (int k = 0; k < library.count; ++k)
+        {
+            const int key = firstFunction + 3 * k;
+            lua_pushvalue(L, key);
+            lua_rawget(L, table);
+            if (!lua_rawequal(L, -1, key + 2))
+            {
+                // Only registration stores this name, so the value is
+                // upstream's function, and the key is present.
+                std::atomic<lua_CFunction>* upstream = library.functions[k].upstream;
+                if (lua_CFunction original = lua_tocfunction(L, -1); upstream && original)
+                    upstream->store(original, std::memory_order_relaxed);
+                lua_pushvalue(L, key);
+                lua_pushvalue(L, key + 1);
+                lua_rawset(L, table);
+                if (status != LUA_OK)
+                    LIBRARY_COVERAGE(openRepairedAfterError);
+            }
+            lua_pop(L, 1);
+        }
+    }
+    lua_pop(L, 1);
+
+    // The error object is at the top again.
+    if (status != LUA_OK)
+        luaD_throw(L, status);
+
+    for (int k = 1; k <= call.results; ++k)
+    {
+        lua_pushvalue(L, working + k);
+        lua_replace(L, base + k);
+    }
+    lua_settop(L, base + call.results);
+    return call.results;
 }
 
 void opopenlibrary(lua_State* state, void* userdata)
@@ -2073,23 +2446,12 @@ void opopenlibrary(lua_State* state, void* userdata)
     {
     case LUAU_HOST_LIBRARY_BASE: context->result = luaopen_base(state); break;
     case LUAU_HOST_LIBRARY_COROUTINE: context->result = luaopen_coroutine(state); break;
-    case LUAU_HOST_LIBRARY_TABLE:
-        context->result = luaopen_table(state);
-        replacelibraryfunction(state, "concat", hosttableconcat, nullptr);
-        replacelibraryfunction(state, "sort", hosttablesort, nullptr);
-        break;
+    case LUAU_HOST_LIBRARY_TABLE: context->result = openreplacinglibrary(state, kTableLibrary); break;
     case LUAU_HOST_LIBRARY_OS: context->result = luaopen_os(state); break;
-    case LUAU_HOST_LIBRARY_STRING:
-        context->result = luaopen_string(state);
-        replacelibraryfunction(state, "find", hoststringfind, &upstreamStringFind);
-        replacelibraryfunction(state, "split", hoststringsplit, &upstreamStringSplit);
-        break;
+    case LUAU_HOST_LIBRARY_STRING: context->result = openreplacinglibrary(state, kStringLibrary); break;
     case LUAU_HOST_LIBRARY_BIT32: context->result = luaopen_bit32(state); break;
     case LUAU_HOST_LIBRARY_BUFFER: context->result = luaopen_buffer(state); break;
-    case LUAU_HOST_LIBRARY_UTF8:
-        context->result = luaopen_utf8(state);
-        replacelibraryfunction(state, "len", hostutf8len, nullptr);
-        break;
+    case LUAU_HOST_LIBRARY_UTF8: context->result = openreplacinglibrary(state, kUtf8Library); break;
     case LUAU_HOST_LIBRARY_MATH: context->result = luaopen_math(state); break;
     case LUAU_HOST_LIBRARY_DEBUG: context->result = luaopen_debug(state); break;
     case LUAU_HOST_LIBRARY_VECTOR: context->result = luaopen_vector(state); break;
@@ -2305,6 +2667,32 @@ void interrupttrampoline(lua_State* state, int gc)
     unthrottledinterrupt(state, allocator, gc);
 }
 } // namespace
+
+#if defined(LUAU_HOST_LIBRARY_COVERAGE)
+// A coverage count of the long library calls, by the name of its
+// LibraryCoverage member, or UINT64_MAX for an unknown name.
+uint64_t luau_host_library_coverage_count(const char* point)
+{
+    const std::pair<const char*, const std::atomic<uint64_t>*> points[] = {
+        {"twoWayPeriodic", &libraryCoverage.twoWayPeriodic},
+        {"twoWayNonPeriodic", &libraryCoverage.twoWayNonPeriodic},
+        {"twoWayCriticalSkip", &libraryCoverage.twoWayCriticalSkip},
+        {"twoWayResumed", &libraryCoverage.twoWayResumed},
+        {"heapSort", &libraryCoverage.heapSort},
+        {"findHandedToUpstream", &libraryCoverage.findHandedToUpstream},
+        {"concatBufferGrowth", &libraryCoverage.concatBufferGrowth},
+        {"splitRehash", &libraryCoverage.splitRehash},
+        {"openRefused", &libraryCoverage.openRefused},
+        {"openRepairedAfterError", &libraryCoverage.openRepairedAfterError},
+    };
+    for (const auto& entry : points)
+    {
+        if (std::strcmp(entry.first, point) == 0)
+            return entry.second->load(std::memory_order_relaxed);
+    }
+    return UINT64_MAX;
+}
+#endif
 
 extern "C"
 {
@@ -3248,7 +3636,10 @@ luau_host_status LUAU_HOST_CALL luau_host_open_library(luau_host_state* state, l
     if (!runnable(native(state)))
         return LUAU_HOST_STATUS_THREAD_NOT_RUNNABLE;
     LibraryContext c = {library, 0};
-    luau_host_status s = protect(native(state), opopenlibrary, &c, 0, LUA_MINSTACK);
+    // The open holds the values that make the replacement of library
+    // functions unable to fail, below what luaopen_* uses (see "Opening a
+    // library").
+    luau_host_status s = protect(native(state), opopenlibrary, &c, 0, LUA_MINSTACK + kLibraryOpenSlots);
     if (s == LUAU_HOST_STATUS_OK && resultCount) *resultCount = c.result;
     return s;
 }

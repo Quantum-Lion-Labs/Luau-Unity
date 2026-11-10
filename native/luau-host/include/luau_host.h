@@ -674,7 +674,12 @@ LUAU_HOST_API luau_host_status LUAU_HOST_CALL luau_host_collect(luau_host_state*
 
 /* Protected library and sandbox operations. open_library accepts only the
  * reviewed enum and appends exactly result_count values (the approved libraries
- * currently return one table). sandbox_root freezes libraries/globals and is top-neutral;
+ * currently return one table). The string, table, and utf8 libraries get host
+ * versions of a few functions (luau_host.cpp, "Long library calls"); opening
+ * one of them fails with LUA_ERROR, registering nothing, when registration
+ * could run a __newindex metamethod: when the library table it registers into
+ * has one, or when it would store a new key into a globals table that has one.
+ * sandbox_root freezes libraries/globals and is top-neutral;
  * sandbox_thread replaces that thread's global table and is top-neutral.
  * Non-argument failure restores entry top then appends exactly one error (+1). */
 LUAU_HOST_API luau_host_status LUAU_HOST_CALL luau_host_open_library(
