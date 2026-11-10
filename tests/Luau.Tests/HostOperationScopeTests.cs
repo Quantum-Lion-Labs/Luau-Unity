@@ -12,9 +12,9 @@ public sealed class HostOperationScopeTests
         // that window deterministically.
         LuauState? root = null;
         var scheduler = new DenyOnceOperationActiveScheduler(() => root is { } r && r.Context.GetActiveOperation() != null);
-        root = LuauState.Create(new LuauStateOptions
+        root = LuauState.Create(TestBudgets.StateOptions with
         {
-            DefaultExecutionOptions = LuauExecutionOptions.Default with { ContinuationScheduler = scheduler },
+            DefaultExecutionOptions = TestBudgets.Execution with { ContinuationScheduler = scheduler },
         });
 
         Assert.Throws<InvalidOperationException>(() =>

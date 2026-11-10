@@ -7,14 +7,14 @@ public class BufferTests
     [Fact]
     public void CreateAndDispose()
     {
-        using var state = LuauState.Create();
+        using var state = TestBudgets.CreateRoot();
         var buffer = state.CreateBuffer(10);
     }
 
     [Fact]
     public void NegativeLengthDiagnosticMatchesTheAcceptedZeroBoundary()
     {
-        using var state = LuauState.Create();
+        using var state = TestBudgets.CreateRoot();
 
         using var empty = state.CreateBuffer(0);
         Assert.Equal(0, empty.Length);
@@ -25,7 +25,7 @@ public class BufferTests
     [Fact]
     public void BoundedReadsAndWrites()
     {
-        using var state = LuauState.Create();
+        using var state = TestBudgets.CreateRoot();
         state.OpenBufferLibrary();
 
         var buffer = state.CreateBuffer(10);

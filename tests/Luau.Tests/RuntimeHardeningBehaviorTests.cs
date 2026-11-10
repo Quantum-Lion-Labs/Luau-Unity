@@ -4,13 +4,29 @@ namespace Luau.Tests;
 
 public sealed class RuntimeHardeningBehaviorTests
 {
-    static readonly TimeSpan TestTimeout = TimeSpan.FromSeconds(10);
+    static readonly TimeSpan TestTimeout = TestBudgets.WaitTimeout;
+
+    // A wall-clock limit that only a hung test reaches, for tests about
+    // cancellation or disposal that still need a deadline to be configured.
+    static readonly LuauStateOptions SafetyNetOnly = LuauStateOptions.UnboundedResources with
+    {
+        DefaultExecutionOptions = LuauExecutionOptions.Unbounded with
+        {
+            WallClockLimit = TestBudgets.WallClockSafetyNet,
+        },
+    };
+
+    // A wall-clock limit for one operation. The state keeps the safety net,
+    // so the recovery operations that follow do not run under a limit of a
+    // few milliseconds.
+    static LuauExecutionOptions WallClockOnly(TimeSpan limit) =>
+        LuauExecutionOptions.Unbounded with { WallClockLimit = limit };
 
     [Fact]
     public async Task IndependentRootsCanAwaitDistinctManagedCallbacksConcurrently()
     {
-        using var firstRoot = LuauState.Create();
-        using var secondRoot = LuauState.Create();
+        using var firstRoot = TestBudgets.CreateRoot();
+        using var secondRoot = TestBudgets.CreateRoot();
         var firstEntered = NewSignal();
         var secondEntered = NewSignal();
         var releaseFirst = NewSignal();
@@ -63,7 +79,7 @@ public sealed class RuntimeHardeningBehaviorTests
     [Fact]
     public void YieldedChildrenCanBeInterleavedWithinOneRoot()
     {
-        using var root = LuauState.Create();
+        using var root = TestBudgets.CreateRoot();
         root.OpenCoroutineLibrary();
         using var first = root.CreateThread();
         using var second = root.CreateThread();
@@ -88,7 +104,7 @@ public sealed class RuntimeHardeningBehaviorTests
     [Fact]
     public async Task ScriptFunctionYieldedByChildInvokesOnRootWithoutResumingChild()
     {
-        using var root = LuauState.Create();
+        using var root = TestBudgets.CreateRoot();
         root.OpenCoroutineLibrary();
         using var child = root.CreateThread();
         using var function = Assert.Single(child.DoString(
@@ -107,7 +123,7 @@ public sealed class RuntimeHardeningBehaviorTests
     [Fact]
     public async Task ManagedCallbackFunctionsCannotBeInvokedDirectly()
     {
-        using var root = LuauState.Create();
+        using var root = TestBudgets.CreateRoot();
         using var callback = root.CreateFunction(context => context.Return(42));
 
         var exception = await Assert.ThrowsAsync<InvalidOperationException>(async () =>
@@ -121,7 +137,7 @@ public sealed class RuntimeHardeningBehaviorTests
     [Fact]
     public void NonYieldableManagedCallbackFailureStopsTheCurrentLuaCallImmediately()
     {
-        using var root = LuauState.Create();
+        using var root = TestBudgets.CreateRoot();
         root.OpenBaseLibrary();
         root.OpenTableLibrary();
         root["marker"] = 0;
@@ -138,7 +154,7 @@ public sealed class RuntimeHardeningBehaviorTests
     [Fact]
     public async Task AsyncCallbackCanReadReferenceArgumentWhileOwnerCoroutineIsSuspended()
     {
-        using var root = LuauState.Create();
+        using var root = TestBudgets.CreateRoot();
         using var child = root.CreateThread();
         child["inspect"] = child.CreateAsyncFunction(
             "inspect",
@@ -160,13 +176,7 @@ public sealed class RuntimeHardeningBehaviorTests
     [Fact]
     public async Task CancellationWaitsForPendingCallbackThenResetsStateSafely()
     {
-        using var state = LuauState.Create(LuauStateOptions.UnboundedResources with
-        {
-            DefaultExecutionOptions = LuauExecutionOptions.Unbounded with
-            {
-                WallClockLimit = TimeSpan.FromSeconds(5),
-            },
-        });
+        using var state = LuauState.Create(SafetyNetOnly);
         using var cancellation = new CancellationTokenSource();
         var callbackEntered = NewSignal();
         var allowLateCompletion = NewSignal();
@@ -209,13 +219,7 @@ public sealed class RuntimeHardeningBehaviorTests
     [Fact]
     public async Task DisposalBeforeWallClockDeadlineWinsAndDefersCloseUntilCallbackReturns()
     {
-        var state = LuauState.Create(LuauStateOptions.UnboundedResources with
-        {
-            DefaultExecutionOptions = LuauExecutionOptions.Unbounded with
-            {
-                WallClockLimit = TimeSpan.FromSeconds(5),
-            },
-        });
+        var state = LuauState.Create(SafetyNetOnly);
         var callbackEntered = NewSignal();
         var allowLateCompletion = NewSignal();
         var lateAccessFailure = new TaskCompletionSource<Exception?>(
@@ -309,7 +313,7 @@ public sealed class RuntimeHardeningBehaviorTests
     [Fact]
     public void SynchronousManagedCallbackFailureIsContainedWithChunkAndInnerException()
     {
-        using var state = LuauState.Create();
+        using var state = TestBudgets.CreateRoot();
         var cause = new InvalidOperationException("sync callback exploded");
         state["explode"] = state.CreateFunction("explode", _ => throw cause);
 
@@ -324,7 +328,7 @@ public sealed class RuntimeHardeningBehaviorTests
     [Fact]
     public async Task AsynchronousManagedCallbackFailureIsContainedWithChunkAndInnerException()
     {
-        using var state = LuauState.Create();
+        using var state = TestBudgets.CreateRoot();
         var cause = new ApplicationException("async callback exploded");
         state["explodeAsync"] = state.CreateAsyncFunction(
             "explodeAsync",
@@ -349,7 +353,7 @@ public sealed class RuntimeHardeningBehaviorTests
     [Fact]
     public void ManagedCallbackFailureCanBeCaughtByLuauPcall()
     {
-        using var state = LuauState.Create();
+        using var state = TestBudgets.CreateRoot();
         state.OpenBaseLibrary();
         state["explode"] = state.CreateFunction("explode", _ => throw new InvalidOperationException("caught"));
 
@@ -364,7 +368,7 @@ public sealed class RuntimeHardeningBehaviorTests
     [Fact]
     public async Task AsynchronousManagedCallbackFailureCanBeCaughtByLuauPcall()
     {
-        using var state = LuauState.Create();
+        using var state = TestBudgets.CreateRoot();
         state.OpenBaseLibrary();
         state["explode"] = state.CreateAsyncFunction(
             "explode",
@@ -385,7 +389,7 @@ public sealed class RuntimeHardeningBehaviorTests
     [Fact]
     public void CaughtCallbackFailureDoesNotMaskLaterScriptError()
     {
-        using var state = LuauState.Create();
+        using var state = TestBudgets.CreateRoot();
         state.OpenBaseLibrary();
         state["explode"] = state.CreateFunction("explode", _ => throw new InvalidOperationException("managed cause"));
 
@@ -401,7 +405,7 @@ public sealed class RuntimeHardeningBehaviorTests
     [Fact]
     public void NonStringScriptErrorIsNotCoercedAndStateRecovers()
     {
-        using var state = LuauState.Create();
+        using var state = TestBudgets.CreateRoot();
         state.OpenBaseLibrary();
         var exception = Assert.Throws<LuauException>(() => state.DoString(
             "error({ code = 42 })",
@@ -417,8 +421,11 @@ public sealed class RuntimeHardeningBehaviorTests
     {
         // Luau before 0.743 copied every index in the range inside one C
         // function with no interrupt, so this one-line script ran for tens of
-        // seconds past any wall-clock limit.
-        using var root = LuauState.Create();
+        // seconds past any wall-clock limit. A sparse move takes milliseconds;
+        // the bound below separates the two. The root's wall-clock limit is
+        // the safety net: a budget the move had to finish within would fail
+        // on a stalled runner.
+        using var root = TestBudgets.CreateRoot();
         root.OpenBaseLibrary();
         root.OpenTableLibrary();
         root.SandboxRoot();
@@ -432,8 +439,7 @@ public sealed class RuntimeHardeningBehaviorTests
             local sparse = table.move(source, 1, 0x7FFFFFFE, 2, {})
             return next(moved) == nil, sparse[2], sparse[1000001]
             """,
-            "@hardening/table-move.luau",
-            executionOptions: new LuauExecutionOptions { WallClockLimit = TimeSpan.FromMilliseconds(250) });
+            "@hardening/table-move.luau");
 
         Assert.True(results[0].Read<bool>());
         Assert.Equal("a", results[1].Read<string>());
@@ -469,13 +475,7 @@ public sealed class RuntimeHardeningBehaviorTests
     public async Task WallClockDeadlineCancelsCooperativeAsyncCallback()
     {
         var limit = TimeSpan.FromMilliseconds(75);
-        using var state = LuauState.Create(LuauStateOptions.UnboundedResources with
-        {
-            DefaultExecutionOptions = LuauExecutionOptions.Unbounded with
-            {
-                WallClockLimit = limit,
-            },
-        });
+        using var state = LuauState.Create(SafetyNetOnly);
         var entered = NewSignal();
         state["waitForever"] = state.CreateAsyncFunction(
             "waitForever",
@@ -488,7 +488,8 @@ public sealed class RuntimeHardeningBehaviorTests
 
         var execution = state.DoStringAsync(
             "return waitForever()",
-            "@budgets/cooperative-deadline.luau").AsTask();
+            "@budgets/cooperative-deadline.luau",
+            executionOptions: WallClockOnly(limit)).AsTask();
         await entered.Task.WaitAsync(TestTimeout);
         var exception = await Assert.ThrowsAsync<LuauExecutionBudgetException>(
             () => execution.WaitAsync(TestTimeout));
@@ -542,13 +543,7 @@ public sealed class RuntimeHardeningBehaviorTests
     public void DeadlineDetectedDuringCallbackArgumentReadKeepsHardStopPrecedence()
     {
         var limit = TimeSpan.FromMilliseconds(25);
-        using var state = LuauState.Create(LuauStateOptions.UnboundedResources with
-        {
-            DefaultExecutionOptions = LuauExecutionOptions.Unbounded with
-            {
-                WallClockLimit = limit,
-            },
-        });
+        using var state = LuauState.Create(SafetyNetOnly);
         state["readAfterDeadline"] = state.CreateFunction(
             "readAfterDeadline",
             context =>
@@ -560,7 +555,8 @@ public sealed class RuntimeHardeningBehaviorTests
         var exception = Assert.Throws<LuauExecutionBudgetException>(() =>
             state.DoString(
                 "return readAfterDeadline('value')",
-                "@budgets/callback-read-after-deadline.luau"));
+                "@budgets/callback-read-after-deadline.luau",
+                executionOptions: WallClockOnly(limit)));
 
         Assert.Equal(LuauExecutionBudgetKind.WallClock, exception.BudgetKind);
         Assert.Equal(limit, exception.WallClockLimit);
@@ -571,13 +567,7 @@ public sealed class RuntimeHardeningBehaviorTests
     [Fact]
     public async Task CallerCancellationBeforeDeadlineKeepsCallerCancellationPrecedence()
     {
-        using var state = LuauState.Create(LuauStateOptions.UnboundedResources with
-        {
-            DefaultExecutionOptions = LuauExecutionOptions.Unbounded with
-            {
-                WallClockLimit = TimeSpan.FromSeconds(5),
-            },
-        });
+        using var state = LuauState.Create(SafetyNetOnly);
         using var cancellation = new CancellationTokenSource();
         var entered = NewSignal();
         state["waitForCancellation"] = state.CreateAsyncFunction(
@@ -605,17 +595,18 @@ public sealed class RuntimeHardeningBehaviorTests
     public async Task CompletedOperationDisposesDeadlineBeforeLaterOperation()
     {
         using var state = LuauState.Create(LuauStateOptions.UnboundedResources);
-        var shortDeadline = LuauExecutionOptions.Unbounded with
-        {
-            WallClockLimit = TimeSpan.FromMilliseconds(50),
-        };
+        // The first operation must finish within its deadline, and the test
+        // then waits until that deadline has passed. Half a second keeps a
+        // stalled runner from failing the first operation; the later one runs
+        // under the safety net, so only a stale deadline can cancel it.
+        var firstLimit = TimeSpan.FromMilliseconds(500);
         Assert.Equal(
             1,
             Assert.Single(state.DoString(
                 "return 1",
-                executionOptions: shortDeadline)).Read<int>());
+                executionOptions: WallClockOnly(firstLimit))).Read<int>());
 
-        await Task.Delay(TimeSpan.FromMilliseconds(125));
+        await Task.Delay(firstLimit + TimeSpan.FromMilliseconds(125));
         state["later"] = state.CreateAsyncFunction(
             "later",
             async context =>
@@ -626,10 +617,7 @@ public sealed class RuntimeHardeningBehaviorTests
         var results = await state.DoStringAsync(
             "return later()",
             "@budgets/later-operation.luau",
-            executionOptions: LuauExecutionOptions.Unbounded with
-            {
-                WallClockLimit = TimeSpan.FromSeconds(1),
-            });
+            executionOptions: WallClockOnly(TestBudgets.WallClockSafetyNet));
 
         Assert.False(Assert.Single(results).Read<bool>());
     }
@@ -652,12 +640,12 @@ public sealed class RuntimeHardeningBehaviorTests
     [Fact]
     public void InterruptBudgetStopsSynchronousInfiniteLoop()
     {
-        using var state = LuauState.Create();
+        using var state = TestBudgets.CreateRoot();
 
         var exception = Assert.Throws<LuauExecutionBudgetException>(() => state.DoString(
             "while true do end",
             "@budgets/interrupts.luau",
-            executionOptions: new LuauExecutionOptions { InterruptCountLimit = 1 }));
+            executionOptions: LuauExecutionOptions.Unbounded with { InterruptCountLimit = 1 }));
 
         Assert.Equal(LuauExecutionBudgetKind.InterruptCount, exception.BudgetKind);
         Assert.Equal("@budgets/interrupts.luau", exception.ChunkName);
@@ -668,12 +656,12 @@ public sealed class RuntimeHardeningBehaviorTests
     [Fact]
     public void InterruptBudgetSurvivesNonYieldableNativeLibrarySentinel()
     {
-        using var state = LuauState.Create();
+        using var state = TestBudgets.CreateRoot();
         state.OpenStringLibrary();
         var exception = Assert.Throws<LuauExecutionBudgetException>(() => state.DoString(
             "return string.match(string.rep('a', 100000), '^.*b$')",
             "@budgets/native-pattern.luau",
-            executionOptions: new LuauExecutionOptions { InterruptCountLimit = 1 }));
+            executionOptions: LuauExecutionOptions.Unbounded with { InterruptCountLimit = 1 }));
 
         Assert.Equal(LuauExecutionBudgetKind.InterruptCount, exception.BudgetKind);
         Assert.Equal("@budgets/native-pattern.luau", exception.ChunkName);
@@ -684,11 +672,11 @@ public sealed class RuntimeHardeningBehaviorTests
     [Fact]
     public void ResultLimitRejectsAndRemovesUntrustedResults()
     {
-        using var state = LuauState.Create();
+        using var state = TestBudgets.CreateRoot();
         var exception = Assert.Throws<LuauResultLimitException>(() => state.DoString(
             "return 1, 2, 3",
             "@results/limited.luau",
-            executionOptions: new LuauExecutionOptions { MaxResultCount = 2 }));
+            executionOptions: LuauExecutionOptions.Unbounded with { MaxResultCount = 2 }));
 
         Assert.Equal("@results/limited.luau", exception.ChunkName);
         Assert.Equal(3, exception.ActualCount);
@@ -699,7 +687,7 @@ public sealed class RuntimeHardeningBehaviorTests
     [Fact]
     public void ShortDestinationRemovesRejectedResults()
     {
-        using var state = LuauState.Create();
+        using var state = TestBudgets.CreateRoot();
         var destination = new LuauValue[1];
 
         Assert.Throws<ArgumentException>(() => state.DoStringInto(
@@ -713,7 +701,7 @@ public sealed class RuntimeHardeningBehaviorTests
     [Fact]
     public async Task PerCallRunnerReuseRemainsCleanAcrossManyAsyncExecutions()
     {
-        using var state = LuauState.Create();
+        using var state = TestBudgets.CreateRoot();
         state["tick"] = state.CreateAsyncFunction(
             "tick",
             async _ =>
@@ -734,7 +722,7 @@ public sealed class RuntimeHardeningBehaviorTests
     [Fact]
     public void DisposingManagedCallbackWrappersKeepsNativeClosuresAliveUntilLuauGc()
     {
-        using var state = LuauState.Create();
+        using var state = TestBudgets.CreateRoot();
 
         for (var i = 0; i < 1_000; i++)
         {
@@ -757,7 +745,7 @@ public sealed class RuntimeHardeningBehaviorTests
     [Fact]
     public void NativeGcReleasesUnreachableManagedCallbackRegistrations()
     {
-        using var state = LuauState.Create();
+        using var state = TestBudgets.CreateRoot();
 
         PushTransientCallbacks(state, 500);
 
@@ -772,7 +760,7 @@ public sealed class RuntimeHardeningBehaviorTests
     [Fact]
     public void CollectingOneOfTwoNativeClosuresKeepsSharedCallbackAlive()
     {
-        using var state = LuauState.Create();
+        using var state = TestBudgets.CreateRoot();
         var wrapper = PushCallbackIntoTwoGlobals(state);
 
         state["first"] = LuauValue.Nil;
@@ -791,9 +779,8 @@ public sealed class RuntimeHardeningBehaviorTests
     [Fact]
     public void NeverPushedCallbackIsReleasedByManagedFinalization()
     {
-        using var state = LuauState.Create();
+        using var state = TestBudgets.CreateRoot();
         var wrapper = CreateAbandonedCallback(state);
-        Assert.Equal(1, state.Context.ManagedCallbackCount);
 
         ForceManagedFinalizers();
 
@@ -804,7 +791,7 @@ public sealed class RuntimeHardeningBehaviorTests
     [Fact]
     public async Task AsyncCallbackCanUseStateImmediatelyAfterNativeYieldCompletes()
     {
-        using var state = LuauState.Create();
+        using var state = TestBudgets.CreateRoot();
         state["immediate"] = state.CreateAsyncFunction(
             "immediate",
             context =>
@@ -825,7 +812,7 @@ public sealed class RuntimeHardeningBehaviorTests
     [Fact]
     public async Task DisposingActiveChildCancelsItsPendingCallbackAndPreservesRoot()
     {
-        using var root = LuauState.Create();
+        using var root = TestBudgets.CreateRoot();
         var child = root.CreateThread();
         var entered = NewSignal();
         child["wait"] = child.CreateAsyncFunction(
@@ -847,7 +834,7 @@ public sealed class RuntimeHardeningBehaviorTests
     [Fact]
     public async Task ConcurrentExecutionOnSameRootIsRejectedWhileCallbackIsPending()
     {
-        using var state = LuauState.Create();
+        using var state = TestBudgets.CreateRoot();
         var callbackEntered = NewSignal();
         var releaseCallback = NewSignal();
         state["pending"] = state.CreateAsyncFunction(
@@ -883,7 +870,7 @@ public sealed class RuntimeHardeningBehaviorTests
     [Fact]
     public void ReentrantExecutionOnSameRootIsRejectedThroughCallbackBoundary()
     {
-        using var state = LuauState.Create();
+        using var state = TestBudgets.CreateRoot();
         state["reenter"] = state.CreateFunction(
             "reenter",
             context =>
@@ -920,7 +907,12 @@ public sealed class RuntimeHardeningBehaviorTests
     [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
     static WeakReference CreateAbandonedCallback(LuauState state)
     {
-        return new WeakReference(state.CreateFunction("abandoned", _ => { }));
+        // Count the registration while the wrapper is still reachable: once
+        // this returns, a collection forced by a parallel test can finalize it
+        // before the caller looks.
+        var callback = state.CreateFunction("abandoned", _ => { });
+        Assert.Equal(1, state.Context.ManagedCallbackCount);
+        return new WeakReference(callback);
     }
 
     [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]

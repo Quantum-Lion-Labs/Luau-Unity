@@ -5,7 +5,7 @@ public sealed class InterruptTrampolineLifetimeTests
     [Fact]
     public async Task RootInstallsInterruptTrampolineOnceAcrossRepeatedOperations()
     {
-        using var root = LuauState.Create();
+        using var root = TestBudgets.CreateRoot();
         Assert.Equal(1, root.Context.InterruptInstallCount);
 
         Assert.Equal(1, Assert.Single(root.DoString("return 1")).Read<int>());
@@ -21,8 +21,8 @@ public sealed class InterruptTrampolineLifetimeTests
     [Fact]
     public void InterruptTrampolinesAreIndependentAndNativeCloseDrainsEachRoot()
     {
-        var first = LuauState.Create();
-        var second = LuauState.Create();
+        var first = TestBudgets.CreateRoot();
+        var second = TestBudgets.CreateRoot();
         var firstContext = first.Context;
         var secondContext = second.Context;
 

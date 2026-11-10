@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Runtime.CompilerServices;
 
 namespace Luau.Tests;
 
@@ -85,15 +86,7 @@ public sealed class ContinuationSchedulerTests
                 scheduler,
                 () =>
                 {
-                    var created = LuauState.Create(new LuauStateOptions
-                    {
-                        DefaultExecutionOptions = new LuauExecutionOptions
-                        {
-                            ContinuationScheduler = scheduler,
-                            // Thread affinity is independent of runner load.
-                            WallClockLimit = TimeSpan.FromSeconds(10),
-                        },
-                    });
+                    var created = CreateRoot(scheduler);
                     try
                     {
                         created["hostAsyncValue"] = created.CreateAsyncFunction(
@@ -126,7 +119,7 @@ public sealed class ContinuationSchedulerTests
                 () => state.DoStringAsync(
                     "local value = hostAsyncValue(); return value + 1, hostAfterAsync()",
                     "@scheduler/affinity.luau"));
-            var results = await execution.AsTask().WaitAsync(TimeSpan.FromSeconds(10));
+            var results = await execution.AsTask().WaitAsync(TestBudgets.WaitTimeout);
 
             Assert.Equal(2, results.Length);
             Assert.Equal(42, results[0].Read<int>());
@@ -158,18 +151,15 @@ public sealed class ContinuationSchedulerTests
                 scheduler,
                 () =>
                 {
-                    var created = LuauState.Create(new LuauStateOptions
-                    {
-                        DefaultExecutionOptions = new LuauExecutionOptions
-                        {
-                            ContinuationScheduler = scheduler,
-                        },
-                    });
+                    var created = CreateRoot(scheduler);
                     created["leaveOwner"] = created.CreateAsyncFunction(
                         "leaveOwner",
                         async context =>
                         {
-                            await Task.Delay(1, context.CancellationToken).ConfigureAwait(false);
+                            // A 1 ms delay that has already elapsed when it is
+                            // awaited resumes inline, still on the owner, and
+                            // the access then succeeds; this hop never does.
+                            await new ThreadPoolHop();
                             context.Return(1);
                         });
                     return created;
@@ -179,7 +169,7 @@ public sealed class ContinuationSchedulerTests
                 scheduler,
                 () => state.DoStringAsync("return leaveOwner()", "@scheduler/off-owner.luau"));
             var exception = await Assert.ThrowsAsync<LuauManagedCallbackException>(
-                () => execution.AsTask().WaitAsync(TimeSpan.FromSeconds(10)));
+                () => execution.AsTask().WaitAsync(TestBudgets.WaitTimeout));
 
             Assert.IsType<InvalidOperationException>(exception.InnerException);
 
@@ -207,14 +197,7 @@ public sealed class ContinuationSchedulerTests
         {
             state = await LuauContinuationDispatcher.InvokeAsync(scheduler, () =>
             {
-                var created = LuauState.Create(new LuauStateOptions
-                {
-                    DefaultExecutionOptions = new LuauExecutionOptions
-                    {
-                        ContinuationScheduler = scheduler,
-                        WallClockLimit = TimeSpan.FromSeconds(10),
-                    },
-                });
+                var created = CreateRoot(scheduler);
                 created.OpenCoroutineLibrary();
                 created["pause"] = created.CreateAsyncFunction(async _ => await Task.Yield());
                 return created;
@@ -223,7 +206,7 @@ public sealed class ContinuationSchedulerTests
             var execution = await LuauContinuationDispatcher.InvokeAsync(scheduler,
                 () => state.DoStringAsync("pause(); coroutine.yield(7); return 9", "@scheduler/yield.luau"));
             var exception = await Assert.ThrowsAsync<LuauException>(
-                () => execution.AsTask().WaitAsync(TimeSpan.FromSeconds(10)));
+                () => execution.AsTask().WaitAsync(TestBudgets.WaitTimeout));
             Assert.Contains("cannot yield", exception.Message);
             Assert.Equal("@scheduler/yield.luau", exception.ChunkName);
 
@@ -238,6 +221,35 @@ public sealed class ContinuationSchedulerTests
         {
             if (state != null)
                 await LuauContinuationDispatcher.InvokeAsync(scheduler, state.Dispose);
+        }
+    }
+
+    static LuauState CreateRoot(ILuauContinuationScheduler scheduler)
+    {
+        // Thread affinity is independent of runner load, and the callbacks
+        // await, which the default wall-clock budget counts.
+        return LuauState.Create(TestBudgets.StateOptions with
+        {
+            DefaultExecutionOptions = TestBudgets.Execution with
+            {
+                ContinuationScheduler = scheduler,
+            },
+        });
+    }
+
+    // Resumes the awaiting method on a thread-pool thread, always: unlike an
+    // awaited task, it is never complete when awaited.
+    readonly struct ThreadPoolHop : INotifyCompletion
+    {
+        public ThreadPoolHop GetAwaiter() => this;
+
+        public bool IsCompleted => false;
+
+        public void OnCompleted(Action continuation) =>
+            ThreadPool.QueueUserWorkItem(static continuation => continuation(), continuation, preferLocal: false);
+
+        public void GetResult()
+        {
         }
     }
 

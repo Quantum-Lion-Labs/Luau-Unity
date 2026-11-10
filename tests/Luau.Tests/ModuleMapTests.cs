@@ -7,7 +7,7 @@ public sealed class ModuleMapTests
     [Fact]
     public void IdenticalPathsInDifferentMapsHaveIndependentCacheNamespaces()
     {
-        using var root = LuauState.Create();
+        using var root = TestBudgets.CreateRoot();
         root.OpenBaseLibrary();
         var first = Map(("shared", "return 11"));
         var second = Map(("shared", "return 22"));
@@ -32,7 +32,7 @@ public sealed class ModuleMapTests
     [Fact]
     public void SandboxedSiblingsDeliberatelyShareOneRootModuleInstance()
     {
-        using var root = LuauState.Create();
+        using var root = TestBudgets.CreateRoot();
         root.OpenBaseLibrary();
         root.OpenRequireLibrary(Map(("shared", "return { value = 1 }")));
         root.SandboxRoot();
@@ -56,7 +56,7 @@ public sealed class ModuleMapTests
         var source = Encoding.UTF8.GetBytes("return 7");
         var map = new LuauModuleMap(new Dictionary<string, byte[]> { ["module"] = source });
         source.AsSpan().Fill((byte)'!');
-        using var root = LuauState.Create();
+        using var root = TestBudgets.CreateRoot();
         root.OpenBaseLibrary();
         root.OpenRequireLibrary(map);
         using (var result = root.DoString("return require('module')"))
@@ -166,7 +166,7 @@ public sealed class ModuleMapTests
 
         Assert.Equal(2, bundle.Count);
         Assert.True(bundle.TotalBytecodeBytes > 0);
-        using var root = LuauState.Create();
+        using var root = TestBudgets.CreateRoot();
         root.OpenBaseLibrary();
         root.OpenRequireLibrary(bundle);
         using var result = root.DoString("return require('second')");
@@ -186,7 +186,7 @@ public sealed class ModuleMapTests
         Assert.Equal(1, service.CallCount);
 
         // A failed bundle has not installed or poisoned the source resolver.
-        using var root = LuauState.Create();
+        using var root = TestBudgets.CreateRoot();
         root.OpenBaseLibrary();
         root.OpenRequireLibrary(map);
         using var result = root.DoString("return require('a-first')");
@@ -198,12 +198,19 @@ public sealed class ModuleMapTests
     {
         var map = Map(("first", "return 1"), ("second", "return 2"));
         await using var service = new CancelingService();
-        using var cancellation = new CancellationTokenSource(TimeSpan.FromMilliseconds(20));
+        using var cancellation = new CancellationTokenSource();
 
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () =>
-            await map.CompileModuleBundleAsync(
-                service,
-                cancellationToken: cancellation.Token));
+        // Cancel once a compilation is in progress. A timer can fire before a
+        // loaded runner reaches the first call, and the bundle is then
+        // canceled before it compiles anything.
+        var compilation = map.CompileModuleBundleAsync(
+            service,
+            cancellationToken: cancellation.Token).AsTask();
+        await service.FirstCallStarted.WaitAsync(TestBudgets.WaitTimeout);
+        cancellation.Cancel();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => compilation.WaitAsync(TestBudgets.WaitTimeout));
 
         Assert.InRange(service.CallCount, 1, 2);
     }
@@ -257,7 +264,7 @@ public sealed class ModuleMapTests
     [Fact]
     public void CircularDependenciesAndDepthQuotaAreTypedAndRecoverable()
     {
-        using var cycleRoot = LuauState.Create();
+        using var cycleRoot = TestBudgets.CreateRoot();
         cycleRoot.OpenBaseLibrary();
         cycleRoot.OpenRequireLibrary(Map(("a", "return require('b')"), ("b", "return require('a')")));
         var cycle = Assert.Throws<LuauManagedCallbackException>(
@@ -265,7 +272,7 @@ public sealed class ModuleMapTests
         Assert.Contains("Circular module dependency", cycle.ToString(), StringComparison.Ordinal);
         Assert.Equal(5, Assert.Single(cycleRoot.DoString("return 5")).Read<int>());
 
-        using var depthRoot = LuauState.Create(new LuauStateOptions
+        using var depthRoot = LuauState.Create(TestBudgets.StateOptions with
         {
             MaxModuleDependencyDepth = 2,
         });
@@ -286,7 +293,7 @@ public sealed class ModuleMapTests
     [Fact]
     public void RootModuleCacheQuotaFailsTypedAndRootCloseInvalidatesCachedReferences()
     {
-        using var root = LuauState.Create(new LuauStateOptions { MaxCachedModuleCount = 1 });
+        using var root = LuauState.Create(TestBudgets.StateOptions with { MaxCachedModuleCount = 1 });
         root.OpenBaseLibrary();
         root.OpenRequireLibrary(Map(("first", "return {}"), ("second", "return {}")));
         using var firstResult = root.DoString("return require('first')");
@@ -307,7 +314,7 @@ public sealed class ModuleMapTests
     [Fact]
     public void ThreadModuleResultsAreRejectedBeforeEnteringTheSharedCache()
     {
-        using var root = LuauState.Create();
+        using var root = TestBudgets.CreateRoot();
         root.OpenBaseLibrary();
         root.OpenCoroutineLibrary();
         root.OpenRequireLibrary(Map((
@@ -375,7 +382,12 @@ public sealed class ModuleMapTests
     sealed class CancelingService : ILuauCompilationService
     {
         int callCount;
+        readonly TaskCompletionSource firstCallStarted =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
         public int CallCount => Volatile.Read(ref callCount);
+
+        public Task FirstCallStarted => firstCallStarted.Task;
 
         public async ValueTask<LuauCompileResult> CompileAsync(
             ReadOnlyMemory<byte> utf8Source,
@@ -383,6 +395,7 @@ public sealed class ModuleMapTests
             CancellationToken cancellationToken = default)
         {
             Interlocked.Increment(ref callCount);
+            firstCallStarted.TrySetResult();
             try
             {
                 await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);

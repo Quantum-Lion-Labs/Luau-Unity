@@ -6,7 +6,13 @@ namespace Luau.Tests;
 
 public sealed class LuauThreadedCompilationServiceTests
 {
-    static readonly TimeSpan TestTimeout = TimeSpan.FromSeconds(10);
+    static readonly TimeSpan TestTimeout = TestBudgets.WaitTimeout;
+
+    // The shutdown timeout of a test that starts disposal while a request is
+    // still blocked and releases it afterwards. Only a hung drain reaches it,
+    // and it is shorter than TestTimeout, so that drain reports its shutdown
+    // exception first.
+    static readonly TimeSpan ShutdownSafetyNet = TimeSpan.FromSeconds(20);
 
     [Fact]
     public void OptionsRejectInvalidOrUnboundedValues()
@@ -681,7 +687,7 @@ public sealed class LuauThreadedCompilationServiceTests
             {
                 WorkerCount = 1,
                 MaxQueuedRequestCount = 2,
-                ShutdownTimeout = TimeSpan.FromSeconds(2),
+                ShutdownTimeout = ShutdownSafetyNet,
             });
         Task? disposal = null;
 
@@ -807,7 +813,7 @@ public sealed class LuauThreadedCompilationServiceTests
                 {
                     WorkerCount = 1,
                     MaxQueuedRequestCount = 2,
-                    ShutdownTimeout = TimeSpan.FromSeconds(2),
+                    ShutdownTimeout = ShutdownSafetyNet,
                 });
 
             var active = service.CompileAsync(new byte[] { 1 }).AsTask();

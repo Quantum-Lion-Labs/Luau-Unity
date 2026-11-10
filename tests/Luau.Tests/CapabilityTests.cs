@@ -75,7 +75,7 @@ public sealed class CapabilityTests
     [Fact]
     public async Task GeneratedCapabilityDispatchesPropertiesAndMethods()
     {
-        using var state = LuauState.Create();
+        using var state = TestBudgets.CreateRoot();
         var target = new GeneratedCapabilityTarget { Value = 4 };
         using var handle = state.CreateHandle(target);
         state["target"] = handle;
@@ -93,7 +93,7 @@ public sealed class CapabilityTests
     [Fact]
     public async Task GeneratedCapabilityDispatchesFromSandboxedChild()
     {
-        using var root = LuauState.Create();
+        using var root = TestBudgets.CreateRoot();
         root.OpenBaseLibrary();
         root.SandboxRoot();
         using var child = root.CreateSandboxedThread();
@@ -115,7 +115,7 @@ public sealed class CapabilityTests
     [Fact]
     public void SameTargetAndDescriptorReuseNativeIdentity()
     {
-        using var state = LuauState.Create();
+        using var state = TestBudgets.CreateRoot();
         var target = new CapabilityTarget();
         using var first = state.CreateHandle(target, FullDescriptor);
         using var second = state.CreateHandle(target, FullDescriptor);
@@ -143,7 +143,7 @@ public sealed class CapabilityTests
             "ConcurrentIdentityCapabilityTarget",
             _ =>
             {
-                if (!callersReady.SignalAndWait(TimeSpan.FromSeconds(5)))
+                if (!callersReady.SignalAndWait(TestBudgets.WaitTimeout))
                 {
                     throw new TimeoutException("Concurrent capability creators did not rendezvous.");
                 }
@@ -162,7 +162,7 @@ public sealed class CapabilityTests
             TaskScheduler.Default);
 
         var handles = await Task.WhenAll(CreateHandle(), CreateHandle())
-            .WaitAsync(TimeSpan.FromSeconds(10));
+            .WaitAsync(TestBudgets.WaitTimeout);
         using var first = handles[0];
         using var second = handles[1];
         Assert.Equal(1, state.Context.ObjectRegistry.Count);
@@ -178,7 +178,7 @@ public sealed class CapabilityTests
         // Target validation is host code and runs before the native gate is
         // entered. A validator that disposes the state must surface as a
         // disposed state, not as a null root.
-        using var root = LuauState.Create();
+        using var root = TestBudgets.CreateRoot();
         var child = root.CreateThread();
         var descriptor = new LuauObjectDescriptor<CapabilityTarget>(
             "DisposingValidatorCapabilityTarget",
@@ -192,8 +192,8 @@ public sealed class CapabilityTests
     [Fact]
     public void HandleCannotCrossIndependentVmsOrDescriptors()
     {
-        using var firstState = LuauState.Create();
-        using var secondState = LuauState.Create();
+        using var firstState = TestBudgets.CreateRoot();
+        using var secondState = TestBudgets.CreateRoot();
         var target = new CapabilityTarget();
         using var full = firstState.CreateHandle(target, FullDescriptor);
         using var narrow = firstState.CreateHandle(target, NarrowDescriptor);
@@ -211,7 +211,7 @@ public sealed class CapabilityTests
     [Fact]
     public void LuauReferenceOutlivesDisposedManagedWrapper()
     {
-        using var state = LuauState.Create();
+        using var state = TestBudgets.CreateRoot();
         var target = new CapabilityTarget { Value = 41 };
         var handle = state.CreateHandle(target, FullDescriptor);
         state["target"] = handle;
@@ -225,7 +225,7 @@ public sealed class CapabilityTests
     [Fact]
     public void CollectedTargetFailsWithoutCallingStaleObject()
     {
-        using var state = LuauState.Create();
+        using var state = TestBudgets.CreateRoot();
         var (handle, target) = CreateWeakTargetHandle(state);
         using (handle)
         {
@@ -263,7 +263,7 @@ public sealed class CapabilityTests
     [Fact]
     public void CapabilityMetatableIsProtected()
     {
-        using var state = LuauState.Create();
+        using var state = TestBudgets.CreateRoot();
         state.OpenBaseLibrary();
         using var handle = state.CreateHandle(new CapabilityTarget(), FullDescriptor);
         state["target"] = handle;
@@ -297,7 +297,7 @@ public sealed class CapabilityTests
     [Fact]
     public void RootCloseInvalidatesWrappersAndDrainsRegistrations()
     {
-        var state = LuauState.Create();
+        var state = TestBudgets.CreateRoot();
         var handle = state.CreateHandle(new CapabilityTarget(), FullDescriptor);
         state.Dispose();
 
@@ -309,7 +309,7 @@ public sealed class CapabilityTests
     [Fact]
     public void RegistryRejectsForgedAndStaleGenerationTokens()
     {
-        using var state = LuauState.Create();
+        using var state = TestBudgets.CreateRoot();
         var registry = state.Context.ObjectRegistry;
         var first = registry.Reserve(new CapabilityTarget(), FullDescriptor);
         registry.CancelReservation(first);
@@ -333,7 +333,7 @@ public sealed class CapabilityTests
     [Fact]
     public void NativeDestructorReleaseDoesNotWaitForRegistryGate()
     {
-        using var state = LuauState.Create();
+        using var state = TestBudgets.CreateRoot();
         var registry = state.Context.ObjectRegistry;
         var token = registry.Reserve(new CapabilityTarget(), FullDescriptor);
         var gate = typeof(LuauObjectRegistry)
@@ -357,15 +357,18 @@ public sealed class CapabilityTests
             }
         });
 
+        // A release that waited for the gate could never complete while the
+        // gate is held, so a long wait still fails that regression; a short
+        // one also fails whenever a loaded runner starts the thread late.
         bool completedWhileGateHeld;
         lock (gate)
         {
             releaseThread.Start();
-            completedWhileGateHeld = completed.Wait(TimeSpan.FromSeconds(2));
+            completedWhileGateHeld = completed.Wait(TestBudgets.WaitTimeout);
         }
 
         Assert.True(completedWhileGateHeld);
-        Assert.True(releaseThread.Join(TimeSpan.FromSeconds(5)));
+        Assert.True(releaseThread.Join(TestBudgets.WaitTimeout));
         Assert.Null(releaseFailure);
         Assert.Equal(0, registry.Count);
 
@@ -380,7 +383,7 @@ public sealed class CapabilityTests
     [Fact]
     public void DispatchFailuresAreTypedAndDoNotBroadenAuthority()
     {
-        using var state = LuauState.Create();
+        using var state = TestBudgets.CreateRoot();
         var target = new CapabilityTarget { Value = 7 };
         using var full = state.CreateHandle(target, FullDescriptor);
         using var failures = state.CreateHandle(target, FailureDescriptor);
@@ -441,7 +444,7 @@ public sealed class CapabilityTests
             });
 
             start.Set();
-            await Task.WhenAll(wrapperDisposal, rootClose).WaitAsync(TimeSpan.FromSeconds(10));
+            await Task.WhenAll(wrapperDisposal, rootClose).WaitAsync(TestBudgets.WaitTimeout);
 
             Assert.All(handles, handle => Assert.True(handle.IsDisposed));
             Assert.Equal(0, state.Context.ObjectRegistry.Count);
@@ -474,7 +477,7 @@ public sealed class CapabilityTests
             });
 
             start.Set();
-            await Task.WhenAll(creation, close).WaitAsync(TimeSpan.FromSeconds(10));
+            await Task.WhenAll(creation, close).WaitAsync(TestBudgets.WaitTimeout);
             var createdHandle = await creation;
             createdHandle?.Dispose();
             state.Dispose();

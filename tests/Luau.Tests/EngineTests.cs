@@ -7,7 +7,7 @@ public sealed class EngineTests
     [Fact]
     public void CompilesAndExecutesSource()
     {
-        using var state = LuauState.Create();
+        using var state = TestBudgets.CreateRoot();
 
         var results = state.DoString("return 1 + 2");
 
@@ -18,7 +18,7 @@ public sealed class EngineTests
     [Fact]
     public async Task LoadsAndExecutesCompilerOutput()
     {
-        using var state = LuauState.Create();
+        using var state = TestBudgets.CreateRoot();
         var output = LuauCompiler.Compile("return 123"u8);
         using var function = state.LoadCompilerOutput(
             output,
@@ -33,7 +33,7 @@ public sealed class EngineTests
     [Fact]
     public void OpensSelectedStandardLibraries()
     {
-        using var state = LuauState.Create();
+        using var state = TestBudgets.CreateRoot();
         state.OpenMathLibrary();
 
         var results = state.DoString("return math.cos(0)");
@@ -45,7 +45,7 @@ public sealed class EngineTests
     [Fact]
     public void InvokesCSharpCallbacksFromLuau()
     {
-        using var state = LuauState.Create();
+        using var state = TestBudgets.CreateRoot();
         state["add"] = state.CreateFunction(context =>
         {
             var lhs = context.Read<double>(0);
@@ -62,7 +62,7 @@ public sealed class EngineTests
     [Fact]
     public async Task InvokesAsyncCSharpCallbacksFromLuau()
     {
-        using var state = LuauState.Create();
+        using var state = TestBudgets.CreateRoot();
         state["wait"] = state.CreateAsyncFunction(async context =>
         {
             await Task.Delay(1, context.CancellationToken);
@@ -77,7 +77,7 @@ public sealed class EngineTests
     [Fact]
     public async Task GeneratedAsyncCallbackReceivesArgumentsAfterNativeYield()
     {
-        using var state = LuauState.Create();
+        using var state = TestBudgets.CreateRoot();
         state.OpenLibrary(new EngineTestLibrary());
 
         var results = await state.DoStringAsync("return engineTest.addLater(19, 23)");
@@ -88,7 +88,7 @@ public sealed class EngineTests
     [Fact]
     public void PropagatesLuauErrors()
     {
-        using var state = LuauState.Create();
+        using var state = TestBudgets.CreateRoot();
         state.OpenBaseLibrary();
 
         var ex = Assert.Throws<LuauException>(() => state.DoString("error('boom')"));
@@ -99,7 +99,7 @@ public sealed class EngineTests
     [Fact]
     public void ThrowsAfterStateDisposal()
     {
-        var state = LuauState.Create();
+        var state = TestBudgets.CreateRoot();
 
         state.Dispose();
 

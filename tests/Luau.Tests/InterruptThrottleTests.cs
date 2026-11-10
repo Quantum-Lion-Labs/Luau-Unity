@@ -14,13 +14,13 @@ public sealed class InterruptThrottleTests
 {
     // Generous: the detections themselves take microseconds, but CI runners
     // can stall a thread for a long time.
-    static readonly TimeSpan TestTimeout = TimeSpan.FromSeconds(30);
+    static readonly TimeSpan TestTimeout = TestBudgets.WaitTimeout;
 
     // A safety net, not a budget under test: a stalled test fails with a
     // wall-clock budget exception, or on StopBound, instead of hanging.
     static readonly LuauExecutionOptions SafetyNet = LuauExecutionOptions.Unbounded with
     {
-        WallClockLimit = TimeSpan.FromSeconds(20),
+        WallClockLimit = TestBudgets.WallClockSafetyNet,
     };
 
     // An interrupt-count budget with no wall-clock limit. A bare
@@ -178,7 +178,10 @@ public sealed class InterruptThrottleTests
     [Fact]
     public void DefaultCountLimitAllowsExactlyOneHundredThousandSafepoints()
     {
-        using var root = LuauState.Create();
+        // The default count limit with the wall clock as a safety net only:
+        // under the default 250 ms, a stalled runner stops the loop by time
+        // before it reaches the count.
+        using var root = TestBudgets.CreateRoot();
 
         // 99,999 back-edges plus the final return.
         root.DoString("for i = 1, 99999 do end").Dispose();
@@ -401,12 +404,16 @@ public sealed class InterruptThrottleTests
     [Fact]
     public void BudgetStopsATightLoopInsideAMetamethod()
     {
-        using var root = CreateRoot(LuauExecutionOptions.Unbounded with { WallClockLimit = TimeSpan.FromMilliseconds(5) });
+        // The 5 ms limit applies to the operation under test only: as the
+        // root's default it would also bound the recovery operation, which a
+        // stalled runner can take longer than 5 ms to compile.
+        using var root = CreateRoot(SafetyNet);
 
         var exception = Assert.Throws<LuauExecutionBudgetException>(() => root.DoString(
             "local proxy = setmetatable({}, {__index = function() while true do end end}) " +
             "local ok = pcall(function() return proxy.value end) " +
-            "while true do end"));
+            "while true do end",
+            executionOptions: LuauExecutionOptions.Unbounded with { WallClockLimit = TimeSpan.FromMilliseconds(5) }));
 
         // The script's pcall caught the first stop inside the metamethod; the
         // hard stop is raised again at the next safepoint.

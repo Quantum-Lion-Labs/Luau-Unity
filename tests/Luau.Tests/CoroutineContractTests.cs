@@ -2,12 +2,12 @@ namespace Luau.Tests;
 
 public sealed class CoroutineContractTests
 {
-    static readonly TimeSpan TestTimeout = TimeSpan.FromSeconds(10);
+    static readonly TimeSpan TestTimeout = TestBudgets.WaitTimeout;
 
     [Fact]
     public async Task ArgumentArraysBindToAllocatingResumeApisAndAreNotOverwritten()
     {
-        using var root = LuauState.Create();
+        using var root = TestBudgets.CreateRoot();
         root.OpenCoroutineLibrary();
         using var syncCoroutine = Assert.Single(root.DoString(
             "return coroutine.create(function(first, second) return first + second, first * second end)"))
@@ -29,7 +29,7 @@ public sealed class CoroutineContractTests
     [Fact]
     public void ChildLifecycleReportsOnlyManagedProvableStates()
     {
-        using var root = LuauState.Create();
+        using var root = TestBudgets.CreateRoot();
         root.OpenBaseLibrary();
         root.OpenCoroutineLibrary();
         var rootException = Assert.Throws<InvalidOperationException>(() => root.GetStatus());

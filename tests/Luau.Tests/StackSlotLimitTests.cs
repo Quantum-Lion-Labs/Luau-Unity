@@ -22,8 +22,8 @@ public sealed class StackSlotLimitTests
     static LuauState CreateRoot(LuauExecutionOptions? execution = null)
     {
         var root = execution == null
-            ? LuauState.Create()
-            : LuauState.Create(new LuauStateOptions { DefaultExecutionOptions = execution });
+            ? TestBudgets.CreateRoot()
+            : LuauState.Create(TestBudgets.StateOptions with { DefaultExecutionOptions = execution });
         root.OpenBaseLibrary();
         root.OpenTableLibrary();
         root.OpenCoroutineLibrary();
@@ -398,10 +398,9 @@ return ok, read()";
         // The pending failure ends the script's loop at its first interrupt.
         // The wall-clock limit only stops the loop if that delivery regresses,
         // so keep it well clear of a busy runner's scheduling delays.
-        using var root = CreateRoot(LuauExecutionOptions.Default with
+        using var root = CreateRoot(TestBudgets.Execution with
         {
             InterruptCountLimit = null,
-            WallClockLimit = TimeSpan.FromSeconds(10),
         });
         root["fail"] = root.CreateFunction("fail", _ => throw new InvalidOperationException("boom"));
         using var thread = root.CreateThread();

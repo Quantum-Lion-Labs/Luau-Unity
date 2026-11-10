@@ -15,8 +15,8 @@ public sealed class ResumePreparationTests
     public async Task InvalidArgumentPreservesStackAndLifecycleAndAllowsRetry(
         string api, bool crossRoot, bool yielded)
     {
-        using var root = LuauState.Create();
-        using var foreign = LuauState.Create();
+        using var root = TestBudgets.CreateRoot();
+        using var foreign = TestBudgets.CreateRoot();
         root.OpenCoroutineLibrary();
         using var owner = root.DoString(yielded
             ? "return coroutine.create(function() local value = coroutine.yield(); return value end)"

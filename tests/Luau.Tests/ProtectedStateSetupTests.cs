@@ -17,7 +17,7 @@ public sealed class ProtectedStateSetupTests
     [InlineData(nameof(LuauState.OpenIntegerLibrary))]
     public void StandardLibraryRegistrationIsStackNeutral(string openMethod)
     {
-        using var state = LuauState.Create();
+        using var state = TestBudgets.CreateRoot();
         state.PushString("stack-sentinel");
         var originalTop = state.GetTop();
 
@@ -31,7 +31,7 @@ public sealed class ProtectedStateSetupTests
     public void OversizedTableCreationReportsQuotaAndRestoresTheState()
     {
         const long memoryLimit = 1_048_576;
-        using var state = LuauState.Create(new LuauStateOptions
+        using var state = LuauState.Create(TestBudgets.StateOptions with
         {
             MemoryLimitBytes = memoryLimit,
             BytecodePolicy = LuauBytecodePolicy.Reject,
@@ -57,7 +57,7 @@ public sealed class ProtectedStateSetupTests
     public void NamedLibraryQuotaFailureRestoresTheStackAndCanBeRetriedAfterCollection()
     {
         const long memoryLimit = 1_048_576;
-        using var state = LuauState.Create(new LuauStateOptions
+        using var state = LuauState.Create(TestBudgets.StateOptions with
         {
             MemoryLimitBytes = memoryLimit,
             BytecodePolicy = LuauBytecodePolicy.Reject,
@@ -85,7 +85,7 @@ public sealed class ProtectedStateSetupTests
     [Fact]
     public void SandboxingAndMetatableSetupRemainStackBalanced()
     {
-        using var root = LuauState.Create(new LuauStateOptions
+        using var root = LuauState.Create(TestBudgets.StateOptions with
         {
             MemoryLimitBytes = 1_048_576,
             BytecodePolicy = LuauBytecodePolicy.Reject,

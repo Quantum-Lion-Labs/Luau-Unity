@@ -16,7 +16,7 @@ public sealed class ModuleCacheBudgetTests
             i => $"m{i:D2}", _ => Encoding.UTF8.GetBytes("loaded(); return string.rep('x', 1024)")));
         await using var service = new LuauThreadedCompilationService();
         LuauRequirer requirer = useBundle ? await map.CompileModuleBundleAsync(service) : map;
-        using var root = LuauState.Create(LuauStateOptions.Default with
+        using var root = LuauState.Create(TestBudgets.StateOptions with
         {
             MemoryLimitBytes = 1024 * 1024,
             MaxCachedModuleBytes = byteLimit,
@@ -49,7 +49,7 @@ public sealed class ModuleCacheBudgetTests
     [Fact]
     public void CacheBudgetCountsUtf16KeysAndResultsAtExactBoundary()
     {
-        using var root = LuauState.Create(LuauStateOptions.Default with { MaxCachedModuleBytes = 8 });
+        using var root = LuauState.Create(TestBudgets.StateOptions with { MaxCachedModuleBytes = 8 });
         // One key char and three value chars (including a surrogate pair).
         root.Context.CacheModule("a", "é🐺");
         var failure = Assert.Throws<LuauModuleLimitException>(() => root.Context.CacheModule("b", 1));
@@ -63,7 +63,7 @@ public sealed class ModuleCacheBudgetTests
     [Fact]
     public void ReplacementsAndRejectedPublicationsPreserveRemainingBudget()
     {
-        using var root = LuauState.Create(LuauStateOptions.Default with { MaxCachedModuleBytes = 12 });
+        using var root = LuauState.Create(TestBudgets.StateOptions with { MaxCachedModuleBytes = 12 });
         root.Context.CacheModule("a", "123"); // Eight bytes.
         Assert.Throws<LuauModuleLimitException>(() => root.Context.CacheModule("a", "123456"));
         Assert.True(root.Context.TryGetCachedModule("a", out var original));
@@ -77,7 +77,7 @@ public sealed class ModuleCacheBudgetTests
     [Fact]
     public void ReferenceResultsKeepTheirPayloadInNativeMemory()
     {
-        using var root = LuauState.Create(LuauStateOptions.Default with { MaxCachedModuleBytes = 100 });
+        using var root = LuauState.Create(TestBudgets.StateOptions with { MaxCachedModuleBytes = 100 });
         root.OpenBaseLibrary();
         root.OpenStringLibrary();
         root.OpenRequireLibrary(new LuauModuleMap(new Dictionary<string, byte[]>

@@ -7,7 +7,7 @@ public sealed class LifecycleTests
     [Fact]
     public void DisposingChildReleasesOnlyTheThreadReference()
     {
-        using var root = LuauState.Create();
+        using var root = TestBudgets.CreateRoot();
         var context = root.Context;
         var child = root.CreateThread();
 
@@ -25,7 +25,7 @@ public sealed class LifecycleTests
     [Fact]
     public void DisposingRootInvalidatesEveryCachedChild()
     {
-        var root = LuauState.Create();
+        var root = TestBudgets.CreateRoot();
         var context = root.Context;
         var child = root.CreateThread();
         var nestedChild = child.CreateThread();
@@ -52,7 +52,7 @@ public sealed class LifecycleTests
     [Fact]
     public void LuaCreatedThreadIsRootedAndOwnedByTheMainState()
     {
-        using var root = LuauState.Create();
+        using var root = TestBudgets.CreateRoot();
         var context = root.Context;
         root.OpenCoroutineLibrary();
 
@@ -75,7 +75,7 @@ public sealed class LifecycleTests
     [Fact]
     public void ManagedCallbackCachesPreviouslyUnseenLuaCoroutineSafely()
     {
-        using var root = LuauState.Create();
+        using var root = TestBudgets.CreateRoot();
         var context = root.Context;
         root.OpenCoroutineLibrary();
         LuauState? callbackState = null;
@@ -103,7 +103,7 @@ public sealed class LifecycleTests
     [Fact]
     public void ReferenceWrappersAreIdempotentAndRejectUseAfterDispose()
     {
-        using var root = LuauState.Create();
+        using var root = TestBudgets.CreateRoot();
         var table = root.CreateTable();
         var buffer = root.CreateBuffer(8);
         var function = root.LoadCompilerOutput(LuauCompiler.Compile("return 1"u8));
@@ -127,7 +127,7 @@ public sealed class LifecycleTests
     [Fact]
     public void RootDisposalInvalidatesReferenceWrappersBeforeTheyAreDisposed()
     {
-        var root = LuauState.Create();
+        var root = TestBudgets.CreateRoot();
         var table = root.CreateTable();
         var buffer = root.CreateBuffer(8);
         var function = root.LoadCompilerOutput(LuauCompiler.Compile("return 1"u8));
@@ -154,7 +154,7 @@ public sealed class LifecycleTests
     public void RootDisposalMakesPublicStateOperationsFailSafely()
     {
         var output = LuauCompiler.Compile("return 1"u8);
-        var root = LuauState.Create();
+        var root = TestBudgets.CreateRoot();
         var child = root.CreateThread();
 
         root.Dispose();
@@ -171,7 +171,7 @@ public sealed class LifecycleTests
     [Fact]
     public void ConcurrentDisposalClosesTheVmExactlyOnce()
     {
-        var root = LuauState.Create();
+        var root = TestBudgets.CreateRoot();
         var context = root.Context;
         var child = root.CreateThread();
         var table = child.CreateTable();
@@ -194,7 +194,13 @@ public sealed class LifecycleTests
     {
         var abandoned = CreateAbandonedState();
 
-        ForceFinalizersUntil(() => abandoned.Context.IsDisposed);
+        // The context reports itself disposed as soon as the finalizer starts
+        // closing it, before the cache is cleared and the VM is closed, so
+        // wait for the counters this test asserts.
+        ForceFinalizersUntil(() =>
+            abandoned.Context.IsDisposed &&
+            abandoned.Context.CachedStateCount == 0 &&
+            abandoned.Context.CloseCount != 0);
 
         Assert.False(abandoned.State.TryGetTarget(out _));
         Assert.True(abandoned.Context.IsDisposed);
@@ -205,12 +211,10 @@ public sealed class LifecycleTests
     [Fact]
     public void AbandonedChildIsRemovedWhileTheRootRemainsAlive()
     {
-        using var root = LuauState.Create();
+        using var root = TestBudgets.CreateRoot();
         var context = root.Context;
         var releasedBefore = context.ReleasedReferenceCount;
         var child = CreateAbandonedChild(root);
-
-        Assert.Equal(2, context.CachedStateCount);
 
         ForceFinalizersUntil(() =>
             !child.TryGetTarget(out _) &&
@@ -228,7 +232,9 @@ public sealed class LifecycleTests
     {
         var abandoned = CreateRootWithRetainedDisposedChild();
 
-        ForceFinalizersUntil(() => abandoned.Context.IsDisposed);
+        ForceFinalizersUntil(() =>
+            abandoned.Context.IsDisposed &&
+            abandoned.Context.CloseCount != 0);
 
         Assert.False(abandoned.Root.TryGetTarget(out _));
         Assert.True(abandoned.Child.IsDisposed);
@@ -239,12 +245,16 @@ public sealed class LifecycleTests
     [Fact]
     public void AbandonedReferenceWrappersReleaseTheirRegistryReferences()
     {
-        using var root = LuauState.Create();
+        using var root = TestBudgets.CreateRoot();
         var context = root.Context;
         var releasedBefore = context.ReleasedReferenceCount;
         var references = CreateAbandonedReferences(root);
 
-        ForceFinalizersUntil(() => references.All(reference => !reference.IsAlive));
+        // A weak reference is cleared when its target is collected, before
+        // the finalizer that releases the registry reference has run.
+        ForceFinalizersUntil(() =>
+            references.All(reference => !reference.IsAlive) &&
+            context.ReleasedReferenceCount >= releasedBefore + references.Length);
 
         Assert.All(references, reference => Assert.False(reference.IsAlive));
         Assert.True(context.ReleasedReferenceCount >= releasedBefore + references.Length);
@@ -264,7 +274,7 @@ public sealed class LifecycleTests
     [Fact]
     public void TableClearKeepsStackBalanced()
     {
-        using var root = LuauState.Create();
+        using var root = TestBudgets.CreateRoot();
         using var table = root.CreateTable();
         for (var i = 0; i < 250; i++)
         {
@@ -279,7 +289,7 @@ public sealed class LifecycleTests
     {
         for (var iteration = 0; iteration < 100; iteration++)
         {
-            var root = LuauState.Create();
+            var root = TestBudgets.CreateRoot();
             var table = root.CreateTable();
             table[1] = iteration;
             var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -300,9 +310,9 @@ public sealed class LifecycleTests
                 }
             });
 
-            await started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            await started.Task.WaitAsync(TestBudgets.WaitTimeout);
             root.Dispose();
-            await reader.WaitAsync(TimeSpan.FromSeconds(5));
+            await reader.WaitAsync(TestBudgets.WaitTimeout);
             table.Dispose();
         }
     }
@@ -312,7 +322,7 @@ public sealed class LifecycleTests
     {
         for (var iteration = 0; iteration < 50; iteration++)
         {
-            using var root = LuauState.Create();
+            using var root = TestBudgets.CreateRoot();
             var table = root.CreateTable();
             table[1d] = 11;
             var buffer = root.CreateBuffer(16);
@@ -331,7 +341,7 @@ public sealed class LifecycleTests
     [MethodImpl(MethodImplOptions.NoInlining)]
     static AbandonedState CreateAbandonedState()
     {
-        var state = LuauState.Create();
+        var state = TestBudgets.CreateRoot();
         var context = state.Context;
         _ = state.CreateThread();
         return new(new WeakReference<LuauState>(state), context);
@@ -355,13 +365,18 @@ public sealed class LifecycleTests
     [MethodImpl(MethodImplOptions.NoInlining)]
     static WeakReference<LuauState> CreateAbandonedChild(LuauState root)
     {
-        return new(root.CreateThread());
+        // Count the child while it is still reachable: once this returns, a
+        // collection forced by a parallel test can finalize it before the
+        // caller looks.
+        var child = root.CreateThread();
+        Assert.Equal(2, root.Context.CachedStateCount);
+        return new(child);
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
     static AbandonedRootWithChild CreateRootWithRetainedDisposedChild()
     {
-        var root = LuauState.Create();
+        var root = TestBudgets.CreateRoot();
         var context = root.Context;
         var child = root.CreateThread();
         child.Dispose();
@@ -371,7 +386,7 @@ public sealed class LifecycleTests
     [MethodImpl(MethodImplOptions.NoInlining)]
     static WeakReference[] CreateAbandonedReferencesAfterRootClose()
     {
-        var root = LuauState.Create();
+        var root = TestBudgets.CreateRoot();
         var table = root.CreateTable();
         var buffer = root.CreateBuffer(8);
         var function = root.LoadCompilerOutput(LuauCompiler.Compile("return 1"u8));
@@ -388,13 +403,22 @@ public sealed class LifecycleTests
         ];
     }
 
+    // Parallel tests force collections too, so the objects can already be
+    // collected, and their finalizers queued or running on the finalizer
+    // thread, before this is called. The condition must therefore name every
+    // counter the test asserts, not only that the objects are unreachable, and
+    // each attempt drains the finalizer queue before checking it.
     static void ForceFinalizersUntil(Func<bool> condition)
     {
-        for (var attempt = 0; attempt < 10 && !condition(); attempt++)
+        for (var attempt = 0; attempt < 10; attempt++)
         {
             GC.Collect(GC.MaxGeneration, GCCollectionMode.Forced, blocking: true, compacting: true);
             GC.WaitForPendingFinalizers();
             GC.Collect(GC.MaxGeneration, GCCollectionMode.Forced, blocking: true, compacting: true);
+            if (condition())
+            {
+                return;
+            }
         }
 
         Assert.True(condition(), "Objects were not finalized within the forced-GC retry budget");
@@ -421,9 +445,9 @@ public sealed class LifecycleTests
             }
         });
 
-        await started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await started.Task.WaitAsync(TestBudgets.WaitTimeout);
         dispose();
-        await reader.WaitAsync(TimeSpan.FromSeconds(5));
+        await reader.WaitAsync(TestBudgets.WaitTimeout);
     }
 
     readonly record struct AbandonedState(WeakReference<LuauState> State, LuauVmContext Context);

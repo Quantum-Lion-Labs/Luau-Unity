@@ -7,7 +7,7 @@ public sealed class CallbackRegressionTests
     [Fact]
     public void SandboxedGeneratedPropertiesAreReadAtExecutionTime()
     {
-        using var root = LuauState.Create();
+        using var root = TestBudgets.CreateRoot();
         root.OpenBaseLibrary();
         var library = new CallbackRegressionLibrary();
         root.OpenLibrary(library);
@@ -38,7 +38,7 @@ public sealed class CallbackRegressionTests
             context.Return(context.Read<int>(0) + 1);
         });
         root["host"] = host;
-        using var result = await root.DoStringAsync(source).AsTask().WaitAsync(TimeSpan.FromSeconds(10));
+        using var result = await root.DoStringAsync(source).AsTask().WaitAsync(TestBudgets.WaitTimeout);
         Assert.Equal(43, Assert.Single(result).Read<int>());
     }
 
@@ -61,7 +61,7 @@ public sealed class CallbackRegressionTests
             assert(ok and coroutine.status(co) == 'suspended')
             local ok2, second = coroutine.resume(co, first)
             return ok2, first, second, coroutine.status(co)
-            """).AsTask().WaitAsync(TimeSpan.FromSeconds(10));
+            """).AsTask().WaitAsync(TestBudgets.WaitTimeout);
         Assert.True(result[0].Read<bool>());
         Assert.Equal(42, result[1].Read<int>());
         Assert.Equal(43, result[2].Read<int>());
@@ -98,7 +98,7 @@ public sealed class CallbackRegressionTests
                 return host(value, 'argument')
             end)()
             return actual == value, empty == nil, number
-            """).AsTask().WaitAsync(TimeSpan.FromSeconds(10));
+            """).AsTask().WaitAsync(TestBudgets.WaitTimeout);
         Assert.True(result[0].Read<bool>());
         Assert.True(result[1].Read<bool>());
         Assert.Equal(43, result[2].Read<int>());
@@ -112,7 +112,7 @@ public sealed class CallbackRegressionTests
         root["host"] = host;
         using var result = await root.DoStringAsync("""
             return select('#', coroutine.wrap(function() return host(42) end)())
-            """).AsTask().WaitAsync(TimeSpan.FromSeconds(10));
+            """).AsTask().WaitAsync(TestBudgets.WaitTimeout);
         Assert.Equal(0, Assert.Single(result).Read<int>());
     }
 
@@ -129,7 +129,7 @@ public sealed class CallbackRegressionTests
             throw new InvalidOperationException("expected callback failure");
         });
         root["host"] = host;
-        using var result = await root.DoStringAsync(source).AsTask().WaitAsync(TimeSpan.FromSeconds(10));
+        using var result = await root.DoStringAsync(source).AsTask().WaitAsync(TestBudgets.WaitTimeout);
         Assert.False(result[0].Read<bool>());
         Assert.Equal(2, result.Length);
         using var recovered = root.DoString("return 17");
@@ -149,7 +149,7 @@ public sealed class CallbackRegressionTests
         root["host"] = host;
         var exception = await Assert.ThrowsAsync<LuauManagedCallbackException>(() => root.DoStringAsync(
             "return coroutine.wrap(function() return coroutine.wrap(function() return host() end)() end)()")
-            .AsTask().WaitAsync(TimeSpan.FromSeconds(10)));
+            .AsTask().WaitAsync(TestBudgets.WaitTimeout));
         Assert.Same(failure, exception.InnerException);
     }
 
@@ -168,7 +168,7 @@ public sealed class CallbackRegressionTests
         await Assert.ThrowsAsync<LuauExecutionCanceledException>(() => root.DoStringAsync("""
             co = coroutine.create(function() return host(42) end)
             return coroutine.wrap(function() return coroutine.resume(co) end)()
-            """, cancellationToken: cancellation.Token).AsTask().WaitAsync(TimeSpan.FromSeconds(10)));
+            """, cancellationToken: cancellation.Token).AsTask().WaitAsync(TestBudgets.WaitTimeout));
         using var result = root.DoString("return coroutine.status(co), 17");
         Assert.Equal("dead", result[0].Read<string>());
         Assert.Equal(17, result[1].Read<int>());
@@ -193,7 +193,7 @@ public sealed class CallbackRegressionTests
     [MethodImpl(MethodImplOptions.NoInlining)]
     static (WeakReference Root, WeakReference Context) AbandonBinding(bool capability)
     {
-        var root = LuauState.Create();
+        var root = TestBudgets.CreateRoot();
         var library = new CallbackRegressionLibrary();
         if (capability)
         {
@@ -214,13 +214,7 @@ public sealed class CallbackRegressionTests
         // Callback routing is independent of runner load. The default 250 ms
         // wall-clock budget includes time spent awaiting an async callback,
         // which a busy runner can exceed.
-        var root = LuauState.Create(new LuauStateOptions
-        {
-            DefaultExecutionOptions = LuauExecutionOptions.Default with
-            {
-                WallClockLimit = TimeSpan.FromSeconds(10),
-            },
-        });
+        var root = TestBudgets.CreateRoot();
         root.OpenBaseLibrary();
         root.OpenCoroutineLibrary();
         return root;

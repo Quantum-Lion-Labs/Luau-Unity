@@ -25,7 +25,7 @@ public sealed class ManagedHostRegressionTests
         Assert.Equal(1, exception.Usage.LimitBytes);
         Assert.True(exception.AttemptedBytes > exception.LimitBytes);
 
-        using var recovered = LuauState.Create();
+        using var recovered = TestBudgets.CreateRoot();
         Assert.Equal(42, Assert.Single(recovered.DoString("return 42")).Read<int>());
     }
 
@@ -39,7 +39,7 @@ public sealed class ManagedHostRegressionTests
             Assert.True(output.BytecodeLength > 0);
         }
 
-        using var state = LuauState.Create();
+        using var state = TestBudgets.CreateRoot();
         var results = state.ExecuteCompilerOutput(
             output!,
             "@luau-host/compiler-buffer.luau");

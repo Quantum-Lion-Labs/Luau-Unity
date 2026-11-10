@@ -127,7 +127,7 @@ public sealed class BytecodeCapabilityTests
             output.BytecodeSha256,
             "tests/wrong-runtime");
         var validator = new CountingValidator(accept: true);
-        using var state = LuauState.Create(new LuauStateOptions
+        using var state = LuauState.Create(TestBudgets.StateOptions with
         {
             BytecodePolicy = LuauBytecodePolicy.RequireValidator,
             BytecodeValidator = validator,
@@ -149,7 +149,7 @@ public sealed class BytecodeCapabilityTests
             "tests/pre-canceled.luau",
             "tests/pre-canceled");
         var validator = new CountingValidator(accept: true);
-        using var state = LuauState.Create(new LuauStateOptions
+        using var state = LuauState.Create(TestBudgets.StateOptions with
         {
             BytecodePolicy = LuauBytecodePolicy.RequireValidator,
             BytecodeValidator = validator,
