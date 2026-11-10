@@ -773,9 +773,29 @@ namespace Luau.Unity.PackageConsumerProbe
                         DescribeErrors());
                 }
 
+                // The behaviour belongs to the runtime it started on. Pointing
+                // its Runtime Host field at a runtime with room to spare does
+                // not move its spawn count there.
+                var idleRuntime = CreateRuntime("Idle probe runtime", created);
+                SetField(extraBehaviour, "runtimeHost", idleRuntime);
+                foreach (var step in ExtraSpawn(runtime, "protected", extraBehaviour))
+                {
+                    yield return step;
+                }
+                SetField(extraBehaviour, "runtimeHost", runtime);
+                if (ReadSharedString(runtime, "extraResult") != "refused")
+                {
+                    throw new InvalidOperationException(
+                        "Editing a running behaviour's Runtime Host let it spawn " +
+                        "against another runtime's limit." + DescribeErrors());
+                }
+
                 // A destroyed object stops counting.
-                Object.Destroy(FindSceneObject(templateName + "(Clone)(Clone)"));
-                foreach (var step in WaitFrames(2))
+                var doomed = FindSceneObject(templateName + "(Clone)(Clone)");
+                Object.Destroy(doomed);
+                foreach (var step in WaitUntil(
+                    () => doomed == null,
+                    "a destroyed clone to leave the scene"))
                 {
                     yield return step;
                 }
@@ -1001,10 +1021,12 @@ namespace Luau.Unity.PackageConsumerProbe
                     "Input key '" + unlistedKey + "' is not enabled for this Luau runtime.";
                 var allowedRead = ReadSharedString(runtime, "allowedRead");
                 var pointerRead = ReadSharedString(runtime, "pointerRead");
+                // An enabled read succeeds with whatever the devices report;
+                // a machine with a key or button held must not fail the check.
                 if (behaviour.enabled ||
                     ReadSharedString(runtime, "unlistedRead") != null ||
-                    allowedRead != "released/released" ||
-                    (checkPointer && pointerRead != "released/released/0") ||
+                    !IsInputReading(allowedRead, withTouchCount: false) ||
+                    (checkPointer && !IsInputReading(pointerRead, withTouchCount: true)) ||
                     !ErrorLogged(expectedError) ||
                     WarningLogged("host-API warmup failed"))
                 {
@@ -1026,6 +1048,34 @@ namespace Luau.Unity.PackageConsumerProbe
             }
 
             yield return null;
+        }
+
+        // What InputProbe.luau records for a read that was allowed:
+        // "pressed" or "released" for the held and the pressed-this-frame
+        // state, then the touch count when the pointer was read as well.
+        static bool IsInputReading(string reading, bool withTouchCount)
+        {
+            if (reading == null)
+            {
+                return false;
+            }
+
+            var parts = reading.Split('/');
+            if (parts.Length != (withTouchCount ? 3 : 2))
+            {
+                return false;
+            }
+
+            for (var index = 0; index < 2; index++)
+            {
+                if (parts[index] != "pressed" && parts[index] != "released")
+                {
+                    return false;
+                }
+            }
+
+            return !withTouchCount ||
+                (int.TryParse(parts[2], out var touches) && touches >= 0);
         }
 
         static IEnumerable<object> ExtraSpawn(Component runtime, string attempt, Behaviour extra)

@@ -146,7 +146,15 @@ the host: it counts every live object spawned by any behaviour on that runtime,
 including behaviours on spawned objects, and a spawn must pass both limits.
 Destroyed objects stop counting. Because a spawned `LuauBehaviourRuntime` would
 start a new root with limits of its own, a behaviour refuses to start with a
-prefab reference that contains one.
+prefab reference that contains one. Both limits count spawned prefab instances,
+not the GameObjects inside each instance, so what a prefab contains is still
+its author's choice.
+
+What a script is granted is fixed when its behaviour starts. The behaviour
+reads **Runtime Host**, **Object References**, and **Prefab References** once;
+editing them on a running behaviour neither grants nor takes back anything, and
+does not move the script to another runtime. To change a running script's
+grants, destroy the behaviour and create it again.
 
 The runtime's **Input Policy** also belongs to the host. It is fixed while the
 runtime runs and applies whenever one of its scripts runs; the kit cannot tell

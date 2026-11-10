@@ -46,6 +46,12 @@ namespace Luau.Unity.Samples.FullLuauScriptingDemo
         [SerializeField]
         LuauBehaviourRuntime runtimeHost;
 
+        // The runtime this behaviour attached to in Awake. The serialized field
+        // is read once: the script, its handles, its hooks, and its spawn count
+        // all belong to this runtime, so editing Runtime Host on a running
+        // behaviour moves none of them.
+        LuauBehaviourRuntime attachedRuntime;
+
         [SerializeField]
         LuauAsset script;
 
@@ -179,7 +185,8 @@ namespace Luau.Unity.Samples.FullLuauScriptingDemo
                 return;
             }
 
-            runtimeHost.Attach(this);
+            attachedRuntime = runtimeHost;
+            attachedRuntime.Attach(this);
         }
 
         internal async ValueTask InitializeAsync(
@@ -192,7 +199,7 @@ namespace Luau.Unity.Samples.FullLuauScriptingDemo
             {
                 return;
             }
-            if (!ReferenceEquals(host, runtimeHost))
+            if (!ReferenceEquals(host, attachedRuntime))
             {
                 throw new InvalidOperationException(
                     "The behaviour was attached to a different Luau runtime.");
@@ -314,7 +321,7 @@ namespace Luau.Unity.Samples.FullLuauScriptingDemo
 
         void ConfigureThread(LuauState thread)
         {
-            var host = runtimeHost;
+            var host = attachedRuntime;
             if (host == null || IsDestroyed || Volatile.Read(ref shutdown) != 0)
             {
                 throw new ObjectDisposedException(nameof(LuauBehaviour));
@@ -521,7 +528,7 @@ namespace Luau.Unity.Samples.FullLuauScriptingDemo
                     "LuauBehaviour '" + name + "' reached its prefab limit of " +
                     maxSpawnedObjects + " live object(s).");
             }
-            runtimeHost.ThrowIfSpawnLimitReached();
+            attachedRuntime.ThrowIfSpawnLimitReached();
 
             var spawned = Instantiate(
                 prefab,
@@ -530,7 +537,7 @@ namespace Luau.Unity.Samples.FullLuauScriptingDemo
             try
             {
                 spawnedObjects.Add(spawned);
-                runtimeHost.AddSpawnedObject(spawned);
+                attachedRuntime.AddSpawnedObject(spawned);
                 using (var handle = context.State.CreateHandle(
                     spawned,
                     LuauUnityCapabilities.GameObjectDescriptor))
@@ -541,7 +548,7 @@ namespace Luau.Unity.Samples.FullLuauScriptingDemo
             catch
             {
                 spawnedObjects.Remove(spawned);
-                runtimeHost.RemoveSpawnedObject(spawned);
+                attachedRuntime.RemoveSpawnedObject(spawned);
                 Destroy(spawned);
                 throw;
             }
@@ -641,8 +648,8 @@ namespace Luau.Unity.Samples.FullLuauScriptingDemo
         {
             if (!IsInitialized ||
                 !isActiveAndEnabled ||
-                runtimeHost == null ||
-                !runtimeHost.IsReady ||
+                attachedRuntime == null ||
+                !attachedRuntime.IsReady ||
                 other == null)
             {
                 return;
@@ -653,7 +660,7 @@ namespace Luau.Unity.Samples.FullLuauScriptingDemo
                 // Touching an object grants nothing: the script gets full
                 // authority only over objects it already has, and a read-only
                 // view of anything else.
-                using (var otherHandle = runtimeHost.Root.CreateHandle(
+                using (var otherHandle = attachedRuntime.Root.CreateHandle(
                     other,
                     HasAuthorityOver(other)
                         ? LuauUnityCapabilities.GameObjectDescriptor
@@ -668,7 +675,7 @@ namespace Luau.Unity.Samples.FullLuauScriptingDemo
 
                     entrypoint.InvokeVoid(
                         arguments,
-                        runtimeHost.InvocationOptions);
+                        attachedRuntime.InvocationOptions);
                 }
             }
             catch (Exception exception)
@@ -724,7 +731,7 @@ namespace Luau.Unity.Samples.FullLuauScriptingDemo
         void OnDestroy()
         {
             Interlocked.Exchange(ref destroyed, 1);
-            runtimeHost?.Detach(this);
+            attachedRuntime?.Detach(this);
             Shutdown(invokeDestroyHook: true);
         }
 
@@ -746,9 +753,9 @@ namespace Luau.Unity.Samples.FullLuauScriptingDemo
                     destroyEntrypoint != null)
                 {
                     destroyEntrypoint.InvokeVoid(
-                        runtimeHost == null
+                        attachedRuntime == null
                             ? null
-                            : runtimeHost.InvocationOptions);
+                            : attachedRuntime.InvocationOptions);
                 }
             }
             catch (Exception exception)
@@ -787,9 +794,9 @@ namespace Luau.Unity.Samples.FullLuauScriptingDemo
                 return;
             }
 
-            if (runtimeHost != null)
+            if (attachedRuntime != null)
             {
-                runtimeHost.Unregister(current);
+                attachedRuntime.Unregister(current);
             }
             else
             {
@@ -804,7 +811,7 @@ namespace Luau.Unity.Samples.FullLuauScriptingDemo
                 var spawned = spawnedObjects[index];
                 // Destroy completes at the end of the frame; stop counting the
                 // object against the runtime now, as this behaviour does.
-                runtimeHost?.RemoveSpawnedObject(spawned);
+                attachedRuntime?.RemoveSpawnedObject(spawned);
                 if (spawned != null)
                 {
                     Destroy(spawned);
