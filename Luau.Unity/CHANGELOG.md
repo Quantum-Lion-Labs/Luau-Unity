@@ -40,9 +40,9 @@ API or ABI breaks.
   without touching the stack when it cannot. Returning, yielding, or passing
   that many values now fails with the new `LuauStackLimitException` (or
   `LuauResultLimitException` under the default `MaxResultCount`), the values are
-  dropped, and the root stays usable. A managed callback whose results fill its
-  frame reports its own failure, which Luau `pcall` can catch when the frame has
-  room for it.
+  dropped, and the root stays usable. A managed callback that fails reports its
+  own failure, which Luau `pcall` can catch even when the callback's arguments
+  or results filled its frame.
 - A script can no longer hold the host thread far past its wall-clock limit
   with `table.move` over a huge, mostly empty range. On 0.729,
   `table.move({}, 1, 0x7FFFFFFE, 2, {})` ran for about 30 seconds under a

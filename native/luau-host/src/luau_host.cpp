@@ -690,14 +690,16 @@ int invalidcallbackreturn(lua_State* state, const char* message)
     luaD_throw(state, LUA_ERRERR);
 }
 
-int validatecallbackreturn(lua_State* state, int result, int entryTop)
+int validatecallbackreturn(lua_State* state, int result)
 {
     const int status = lua_status(state);
     if (result >= 0 && status == LUA_OK && result <= lua_gettop(state))
         return result;
     if (result == LUAU_HOST_CALLBACK_YIELD && (status == LUA_YIELD || status == LUA_BREAK))
         return result;
-    if (result == LUAU_HOST_CALLBACK_ERROR && status == LUA_OK && lua_gettop(state) > entryTop)
+    // A failed callback's arguments are dead, so it may drop them to make room
+    // for its failure value. Only an empty frame has nothing to raise.
+    if (result == LUAU_HOST_CALLBACK_ERROR && status == LUA_OK && lua_gettop(state) > 0)
         lua_error(state);
     return invalidcallbackreturn(state, "managed callback returned an invalid result count");
 }
@@ -708,7 +710,6 @@ int managedcallbacktrampoline(lua_State* state)
     if (!owner || !owner->function)
         return invalidcallbackreturn(state, "managed callback metadata is invalid");
 
-    const int entryTop = lua_gettop(state);
     int result = 0;
     try
     {
@@ -718,7 +719,7 @@ int managedcallbacktrampoline(lua_State* state)
     {
         return invalidcallbackreturn(state, "managed callback crossed the no-unwind boundary");
     }
-    return validatecallbackreturn(state, result, entryTop);
+    return validatecallbackreturn(state, result);
 }
 
 // Upstream passes the collecting state, which is unsafe to use during GC
@@ -1368,8 +1369,11 @@ luau_host_status LUAU_HOST_CALL luau_host_stack_set_top(luau_host_state* state, 
     return protect(native(state), opsettop, &c, 0, target - top);
 }
 
-// Insert, remove, and replace rearrange existing slots without allocating or
-// raising, so they need no free slot and cannot fail once arguments are valid.
+// Insert, remove, and replace neither allocate nor raise, so they cannot fail
+// once arguments are valid, including on a frame above the slot limit. Remove
+// and replace only move existing values. lua_insert also writes one temporary
+// value at the top slot; that slot is always allocated, because the top never
+// passes stack_last and Luau keeps EXTRA_STACK slots beyond it.
 luau_host_status LUAU_HOST_CALL luau_host_stack_insert(luau_host_state* state, int32_t index)
 {
     if (!state || !validordinaryindex(native(state), index))

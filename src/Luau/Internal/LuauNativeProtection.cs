@@ -17,7 +17,7 @@ internal static unsafe class LuauNativeProtection
     internal const uint ExpectedAbiRecordSize = 112;
     internal const uint ExpectedFeatureFlags = 0x3fffU;
     internal const ulong ExpectedUpstreamRevisionHash = 0x065976b2840123deUL;
-    internal const ulong ExpectedHostBuildFingerprint = 0x48457339a8d7e7a0UL;
+    internal const ulong ExpectedHostBuildFingerprint = 0xa97c576544c22427UL;
     internal const int AbiQueryOk = (int)LuauHostStatus.Ok;
     internal const int AbiQueryInvalidArgument = (int)LuauHostStatus.InvalidArgument;
 
@@ -176,6 +176,22 @@ internal static unsafe class LuauNativeProtection
             context.AllocatorFailure == LuauAllocatorFailure.None;
         Prepare(context);
         return full;
+    }
+
+    /// <summary>
+    /// Replaces a failed callback's frame with its failure token. Once a
+    /// callback has failed, its arguments and partial results are dead;
+    /// dropping them leaves room for the token even when they filled the frame.
+    /// </summary>
+    internal static LuauHostStatus ReplaceFrameWithCallbackFailure(LuauHostState* frame, IntPtr token)
+    {
+        if (luau_host_stack_get_top(frame) > 0)
+        {
+            // Shrinking needs no free slot, so the host cannot fail it.
+            _ = luau_host_stack_set_top(frame, 0);
+        }
+
+        return luau_host_push_light_userdata(frame, token.ToPointer(), 0);
     }
 
     static bool IsCallbackFailureToken(LuauHostState* pointer, IntPtr token)

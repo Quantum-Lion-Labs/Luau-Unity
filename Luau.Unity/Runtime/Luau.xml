@@ -137,6 +137,13 @@
             the operation that later needs the slot reports it.
             </summary>
         </member>
+        <member name="M:Luau.LuauNativeProtection.ReplaceFrameWithCallbackFailure(Luau.Internal.Interop.LuauHostState*,System.IntPtr)">
+            <summary>
+            Replaces a failed callback's frame with its failure token. Once a
+            callback has failed, its arguments and partial results are dead;
+            dropping them leaves room for the token even when they filled the frame.
+            </summary>
+        </member>
         <member name="T:Luau.LuauNativeAbiVerifier">
             <summary>
             Performs the process-wide host ABI handshake. The test-visible descriptor

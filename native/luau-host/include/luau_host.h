@@ -146,7 +146,10 @@ enum
 /* Managed functions return a count of topmost stack values
  * in [0, stack_get_top(state)], LUAU_HOST_CALLBACK_YIELD only after calling host
  * yield (or entering the native break state), or LUAU_HOST_CALLBACK_ERROR after
- * appending a callback failure value above the entry arguments. For callback
+ * leaving a callback failure value on top of a non-empty frame. A failed
+ * callback's arguments are no longer needed, so it may drop them first; that
+ * always leaves room for the failure value, even when the arguments filled the
+ * frame. For callback
  * error, the host immediately raises the topmost value as the Luau error. The
  * host converts every other result to a contained generic Lua error before Luau
  * can consume it. Interrupt polls receive
@@ -347,7 +350,8 @@ LUAU_HOST_API int32_t LUAU_HOST_CALL luau_host_is_yieldable(luau_host_state* sta
  * to to (from==to is neutral); check is neutral and writes its boolean result.
  * set_top to a top no higher than the current one, insert, remove, replace,
  * and check need no free slot and cannot fail once their arguments are valid,
- * including on a frame above LUAU_HOST_FRAME_SLOT_LIMIT. check writes 0 when
+ * including on a frame above LUAU_HOST_FRAME_SLOT_LIMIT (insert uses Luau's
+ * reserve beyond the stack end for its one temporary value). check writes 0 when
  * the frame limit or a failed allocation (see allocator telemetry) prevents the
  * reservation. A growing set_top and move are protected: on non-argument
  * failure they restore their entry stacks then append one error to the

@@ -28,7 +28,6 @@ internal sealed unsafe class LuauCSharpFunction : LuauFunction, ILuauManagedCall
     {
         ScriptOperation? operation = null;
         LuauManagedCallbackRegistration? registration = null;
-        var entryTop = luau_host_stack_get_top(l);
 
         try
         {
@@ -71,15 +70,6 @@ internal sealed unsafe class LuauCSharpFunction : LuauFunction, ILuauManagedCall
         catch (Exception ex)
         {
             operation?.RecordCallbackFailure(registration?.Name, ex);
-
-            // A failed callback's partial results are never returned. Dropping
-            // them leaves room to raise its failure even when they filled the
-            // frame. Shrinking the stack cannot fail.
-            if (luau_host_stack_get_top(l) > entryTop)
-            {
-                _ = luau_host_stack_set_top(l, entryTop);
-            }
-
             return YieldFailureIfPossible(l, operation);
         }
     }
@@ -96,16 +86,16 @@ internal sealed unsafe class LuauCSharpFunction : LuauFunction, ILuauManagedCall
             return 0;
         }
 
-        var status = luau_host_push_light_userdata(
+        var status = LuauNativeProtection.ReplaceFrameWithCallbackFailure(
             state,
-            (void*)operation.CallbackFailureToken,
-            0);
+            operation.CallbackFailureToken);
         if (status != LuauHostStatus.Ok)
         {
-            // The token push itself can fail under stack or memory pressure.
-            // Return an invalid negative result so the native trampoline
-            // unwinds immediately; keep the raw managed cause recorded so the
-            // runner can apply managed failure precedence after native return.
+            // Not expected: Luau keeps free slots in every callback frame,
+            // so the emptied frame has room for the token. If the host refuses
+            // anyway, return an invalid negative result so the native
+            // trampoline unwinds immediately; the managed cause stays recorded
+            // so the runner can apply failure precedence after native return.
             return -3;
         }
 

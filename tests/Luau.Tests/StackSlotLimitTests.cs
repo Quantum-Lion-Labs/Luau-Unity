@@ -271,4 +271,95 @@ public sealed class StackSlotLimitTests
         Assert.IsType<LuauStackLimitException>(exception.InnerException);
         AssertRootUsable(root);
     }
+
+    // 7999 and 8000 arguments: the second fills the callback's frame, leaving
+    // no room above the arguments for a failure value.
+    public static IEnumerable<object[]> CaughtFullFrameCallbackFailures() =>
+        from call in new[]
+        {
+            "fail(table.unpack(table.create(7999, 0)))",
+            "fail(0, table.unpack(table.create(7999, 0)))",
+        }
+        from wrapper in new[]
+        {
+            "local ok, e = pcall(function() return {0} end) return ok, type(e)",
+            "local ok, e = xpcall(function() return {0} end, function(e) return e end) return ok, type(e)",
+        }
+        select new object[] { string.Format(wrapper, call) };
+
+    static void AssertCallbackFailureWasCaught(LuauResultScope results)
+    {
+        using (results)
+        {
+            Assert.Equal(2, results.Count);
+            Assert.False(results[0].Read<bool>());
+            Assert.Equal("userdata", results[1].Read<string>());
+        }
+    }
+
+    [Theory]
+    [MemberData(nameof(CaughtFullFrameCallbackFailures))]
+    public void FailedCallbackWithAFullArgumentFrameIsCaughtByTheScript(string source)
+    {
+        using var root = CreateRoot(UnboundedExecution);
+        root["fail"] = root.CreateFunction("fail", _ => throw new InvalidOperationException("boom"));
+        using var thread = root.CreateThread();
+
+        for (var attempt = 0; attempt < Repetitions; attempt++)
+        {
+            AssertCallbackFailureWasCaught(root.DoString(source, "@stack-limit/caught-root.luau"));
+            AssertCallbackFailureWasCaught(thread.DoString(source, "@stack-limit/caught-thread.luau"));
+            AssertRootUsable(root);
+        }
+    }
+
+    [Theory]
+    [MemberData(nameof(CaughtFullFrameCallbackFailures))]
+    public async Task FailedCallbackWithAFullArgumentFrameIsCaughtDuringAsyncExecution(string source)
+    {
+        using var root = CreateRoot(UnboundedExecution);
+        root["fail"] = root.CreateFunction("fail", _ => throw new InvalidOperationException("boom"));
+
+        for (var attempt = 0; attempt < 8; attempt++)
+        {
+            AssertCallbackFailureWasCaught(await root.DoStringAsync(source, "@stack-limit/caught-async.luau"));
+        }
+
+        AssertRootUsable(root);
+    }
+
+    [Theory]
+    [MemberData(nameof(CaughtFullFrameCallbackFailures))]
+    public async Task FailedAsyncCallbackWithAFullArgumentFrameIsCaughtByTheScript(string source)
+    {
+        using var root = CreateRoot(UnboundedExecution);
+        root["fail"] = root.CreateAsyncFunction("fail", async _ =>
+        {
+            await Task.Yield();
+            throw new InvalidOperationException("boom");
+        });
+
+        for (var attempt = 0; attempt < 8; attempt++)
+        {
+            AssertCallbackFailureWasCaught(await root.DoStringAsync(source, "@stack-limit/caught-async-callback.luau"));
+        }
+
+        AssertRootUsable(root);
+    }
+
+    [Fact]
+    public void UncaughtCallbackFailureWithAFullArgumentFrameKeepsItsCause()
+    {
+        using var root = CreateRoot(UnboundedExecution);
+        root["fail"] = root.CreateFunction("fail", _ => throw new InvalidOperationException("boom"));
+
+        for (var attempt = 0; attempt < Repetitions; attempt++)
+        {
+            var exception = Assert.Throws<LuauManagedCallbackException>(
+                () => root.DoString("return fail(0, table.unpack(table.create(7999, 0)))"));
+            Assert.Equal("fail", exception.CallbackName);
+            Assert.Equal("boom", Assert.IsType<InvalidOperationException>(exception.InnerException).Message);
+            AssertRootUsable(root);
+        }
+    }
 }

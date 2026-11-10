@@ -344,19 +344,14 @@ internal static class ScriptRunner
                         continue;
                     }
 
-                    var callbackEntryTop = -1;
                     try
                     {
                         var callback = pending.AsynchronousCallback;
                         var invocation = await LuauContinuationDispatcher.InvokeAsync(
                             scheduler,
-                            () =>
-                            {
-                                callbackEntryTop = GetTop(operation, GetResumeTarget(operation, state));
-                                return callback(
-                                    GetCallbackState(operation),
-                                    operation.CancellationToken);
-                            }).ConfigureAwait(false);
+                            () => callback(
+                                GetCallbackState(operation),
+                                operation.CancellationToken)).ConfigureAwait(false);
                         argumentCount = await invocation.ConfigureAwait(false);
                     }
                     catch (Exception exception)
@@ -386,13 +381,6 @@ internal static class ScriptRunner
                         }
                     }
 
-                    if (resumeWithError)
-                    {
-                        await LuauContinuationDispatcher.InvokeAsync(
-                            scheduler,
-                            () => DiscardCallbackResults(operation, state, callbackEntryTop)).ConfigureAwait(false);
-                    }
-
                     operation.FinishAsyncCallback();
                     continue;
                 default:
@@ -401,23 +389,6 @@ internal static class ScriptRunner
                         () => Abort(operation, state)).ConfigureAwait(false);
                     throw new LuauException("Unknown Luau yield reason.", operation.ChunkName);
             }
-        }
-    }
-
-    // A failed callback's partial results are never returned. Dropping them
-    // leaves room to inject its failure even when they filled the frame.
-    static unsafe void DiscardCallbackResults(ScriptOperation operation, IntPtr state, int entryTop)
-    {
-        if (entryTop < 0)
-        {
-            return;
-        }
-
-        using var access = operation.Context.EnterOperationNativeAccess(operation);
-        var target = luau_host_resume_target((LuauHostState*)state);
-        if (luau_host_stack_get_top(target) > entryTop)
-        {
-            RequireStackSetTopSuccess(luau_host_stack_set_top(target, entryTop));
         }
     }
 
@@ -691,15 +662,15 @@ internal static class ScriptRunner
     {
         using var access = operation.Context.EnterOperationNativeAccess(operation);
         var target = luau_host_resume_target((LuauHostState*)state);
-        // The value itself is allocation-free, but the protected bridge also
-        // reserves its stack slot inside a native error frame. Rich callback
-        // details remain attached to the managed exception; a Luau pcall
-        // receives only this opaque non-nil failure token.
+        // The target's frame belongs to the failed callback, so the token
+        // replaces it: the push has room even when the callback's arguments or
+        // partial results filled the frame. Rich callback details remain
+        // attached to the managed exception; a Luau pcall receives only this
+        // opaque non-nil failure token.
         LuauNativeProtection.Prepare(operation.Context);
-        var pushStatus = luau_host_push_light_userdata(
+        var pushStatus = LuauNativeProtection.ReplaceFrameWithCallbackFailure(
             target,
-            operation.CallbackFailureToken.ToPointer(),
-            0);
+            operation.CallbackFailureToken);
         if (pushStatus == LuauHostStatus.Ok)
         {
             return luau_host_resume_error((LuauHostState*)state, (LuauHostState*)from);
@@ -720,9 +691,10 @@ internal static class ScriptRunner
         }
         catch (Exception pushFailure)
         {
-            // The callback failure never reached Luau, for example because the
-            // callback frame is full. Below a hard stop it still outranks the
-            // failure to inject it.
+            // The callback failure never reached Luau. That is not expected,
+            // because the emptied callback frame has room for the token. Below
+            // a hard stop the callback failure still outranks the failure to
+            // inject it.
             var callbackFailure = operation.GetHardStopException() == null
                 ? operation.TakeInjectedCallbackFailure()
                 : null;

@@ -1574,9 +1574,9 @@ void test_callback_return_validation_and_recovery()
     REQUIRE(!string_at(root.state, -1).empty());
     REQUIRE(luau_host_stack_set_top(root.state, 0) == LUAU_HOST_STATUS_OK);
 
-    // -2 is the explicit immediate-failure sentinel. The callback must append
-    // a value above its entry arguments; that exact top value becomes the Luau
-    // error rather than the host's generic invalid-return token.
+    // -2 is the explicit immediate-failure sentinel. The callback leaves its
+    // failure value on top of a non-empty frame; that exact top value becomes
+    // the Luau error rather than the host's generic invalid-return token.
     callbackPushStatus = LUAU_HOST_STATUS_INVALID_ARGUMENT;
     {
         luau_host_callback_table callbacks = callback_table();
@@ -2156,6 +2156,378 @@ void test_stack_growth_failure_without_an_error_slot()
     REQUIRE(luau_host_stack_get_top(root.state) == 1);
 }
 
+int32_t fullFrameFailureEntryTop = 0;
+luau_host_status fullFrameFailureRefusal = LUAU_HOST_STATUS_OK;
+
+int32_t LUAU_HOST_CALL full_frame_failure_callback(luau_host_state* state)
+{
+    // The arguments fill the frame, so nothing can be appended above them.
+    fullFrameFailureEntryTop = luau_host_stack_get_top(state);
+    fullFrameFailureRefusal = luau_host_push_nil(state);
+
+    // A failed callback's arguments are dead. Dropping them always leaves room
+    // for the failure value.
+    if (luau_host_stack_set_top(state, 0) != LUAU_HOST_STATUS_OK)
+        return 0;
+    constexpr char failure[] = "full frame callback failure";
+    callbackPushStatus = luau_host_push_string(
+        state,
+        bytes(failure),
+        static_cast<uint64_t>(sizeof(failure) - 1));
+    return callbackPushStatus == LUAU_HOST_STATUS_OK ? LUAU_HOST_CALLBACK_ERROR : 0;
+}
+
+// A callback whose arguments fill its frame can still raise a failure that a
+// script pcall or xpcall catches.
+void test_callback_failure_on_a_full_frame()
+{
+    Root root = create_root();
+    int32_t ignored = 0;
+    REQUIRE(luau_host_open_library(root.state, LUAU_HOST_LIBRARY_BASE, &ignored) == LUAU_HOST_STATUS_OK);
+    REQUIRE(luau_host_open_library(root.state, LUAU_HOST_LIBRARY_TABLE, &ignored) == LUAU_HOST_STATUS_OK);
+    REQUIRE(luau_host_stack_set_top(root.state, 0) == LUAU_HOST_STATUS_OK);
+
+    luau_host_callback_table callbacks = callback_table();
+    callbacks.managed_function = full_frame_failure_callback;
+    REQUIRE(luau_host_push_callback(root.state, &callbacks, nullptr, 0, 0, nullptr, nullptr) == LUAU_HOST_STATUS_OK);
+    REQUIRE(luau_host_global_set(root.state, bytes("fail")) == LUAU_HOST_STATUS_OK);
+
+    const char* const caught[] = {
+        "local ok, e = pcall(function() return fail(0, table.unpack(table.create(7999, 0))) end) return ok, e",
+        "local ok, e = xpcall(function() return fail(0, table.unpack(table.create(7999, 0))) end, "
+        "function(e) return e end) return ok, e",
+    };
+    for (const char* source : caught)
+    {
+        for (int attempt = 0; attempt < kRefusalRepetitions; ++attempt)
+        {
+            fullFrameFailureEntryTop = 0;
+            fullFrameFailureRefusal = LUAU_HOST_STATUS_OK;
+            callbackPushStatus = LUAU_HOST_STATUS_INVALID_ARGUMENT;
+            REQUIRE(compile_and_load(root.state, source, "@frame-limit/callback-failure") == LUAU_HOST_STATUS_OK);
+            REQUIRE(luau_host_pcall(root.state, 0, 2, 0) == LUAU_HOST_STATUS_OK);
+            REQUIRE(fullFrameFailureEntryTop == kFrameSlotLimit);
+            REQUIRE(fullFrameFailureRefusal == LUAU_HOST_STATUS_STACK_LIMIT);
+            REQUIRE(callbackPushStatus == LUAU_HOST_STATUS_OK);
+            REQUIRE(luau_host_stack_get_top(root.state) == 2);
+            REQUIRE(luau_host_to_boolean(root.state, -2) == 0);
+            REQUIRE(string_at(root.state, -1) == "full frame callback failure");
+            REQUIRE(luau_host_stack_set_top(root.state, 0) == LUAU_HOST_STATUS_OK);
+        }
+    }
+
+    // Uncaught, the same failure value is the call's error.
+    REQUIRE(
+        compile_and_load(
+            root.state,
+            "return fail(0, table.unpack(table.create(7999, 0)))",
+            "@frame-limit/callback-failure-uncaught") == LUAU_HOST_STATUS_OK);
+    REQUIRE(luau_host_pcall(root.state, 0, LUAU_HOST_MULTIPLE_RESULTS, 0) == LUAU_HOST_STATUS_LUA_ERROR);
+    REQUIRE(luau_host_stack_get_top(root.state) == 1);
+    REQUIRE(string_at(root.state, -1) == "full frame callback failure");
+    REQUIRE(luau_host_stack_set_top(root.state, 0) == LUAU_HOST_STATUS_OK);
+    require_reusable(root.state, "@frame-limit/callback-failure-recovered");
+}
+
+int metamethodInvocations = 0;
+
+int32_t LUAU_HOST_CALL counting_metamethod(luau_host_state* state)
+{
+    ++metamethodInvocations;
+    constexpr char text[] = "metamethod result";
+    return luau_host_push_string(state, bytes(text), static_cast<uint64_t>(sizeof(text) - 1)) == LUAU_HOST_STATUS_OK
+        ? 1
+        : 0;
+}
+
+enum class StackEndOperation
+{
+    TableGet,
+    TableSet,
+    DisplayString,
+};
+
+luau_host_state_options tracked_memory_options(uint64_t limitBytes)
+{
+    luau_host_state_options options = {};
+    options.struct_size = sizeof(options);
+    options.version = LUAU_HOST_STATE_OPTIONS_VERSION;
+    options.flags = LUAU_HOST_STATE_OPTION_TRACK_MEMORY;
+    options.memory_limit_bytes = limitBytes;
+    return options;
+}
+
+uint64_t current_memory(luau_host_state* state)
+{
+    luau_host_memory_info info = {};
+    info.struct_size = sizeof(info);
+    REQUIRE(luau_host_memory_get(state, &info) == LUAU_HOST_STATUS_OK);
+    return info.current_bytes;
+}
+
+// Leaves [1] a child thread and [2] a table whose __index, __newindex, and
+// __tostring are host callbacks, plus a large buffer held only by a reference.
+void prepare_stack_end_root(luau_host_state* root, luau_host_state** child, int32_t* ballastReference)
+{
+    constexpr uint64_t kBallastBytes = UINT64_C(256) * 1024;
+
+    REQUIRE(luau_host_thread_create(root, child) == LUAU_HOST_STATUS_OK);
+
+    void* ballast = nullptr;
+    REQUIRE(luau_host_buffer_create(root, kBallastBytes, &ballast) == LUAU_HOST_STATUS_OK);
+    REQUIRE(luau_host_reference_create(root, 2, ballastReference) == LUAU_HOST_STATUS_OK);
+    REQUIRE(luau_host_stack_set_top(root, 1) == LUAU_HOST_STATUS_OK);
+
+    REQUIRE(luau_host_table_create(root, 0, 0) == LUAU_HOST_STATUS_OK);
+    REQUIRE(luau_host_table_create(root, 0, 0) == LUAU_HOST_STATUS_OK);
+    luau_host_callback_table callbacks = callback_table();
+    callbacks.managed_function = counting_metamethod;
+    for (const char* name : {"__index", "__newindex", "__tostring"})
+    {
+        REQUIRE(luau_host_push_string(root, bytes(name), std::strlen(name)) == LUAU_HOST_STATUS_OK);
+        REQUIRE(luau_host_push_callback(root, &callbacks, nullptr, 0, 0, nullptr, nullptr) == LUAU_HOST_STATUS_OK);
+        REQUIRE(luau_host_table_raw_set(root, 3) == LUAU_HOST_STATUS_OK);
+    }
+    int32_t result = 0;
+    REQUIRE(luau_host_metatable_set(root, 2, &result) == LUAU_HOST_STATUS_OK);
+    REQUIRE(luau_host_stack_get_top(root) == 2);
+}
+
+// Operations that only consume inputs reserve no slot, yet a metamethod call
+// writes its function and arguments just past the top before growing the
+// stack. That is sound only because the top never passes the physical end of
+// the stack and Luau keeps a five-slot reserve beyond it. Drive those calls
+// with the top exactly at the physical end: first while the memory quota stops
+// the stack from growing, then once it can grow again.
+void require_metamethods_at_the_physical_stack_end(StackEndOperation operation)
+{
+    // Measure the setup on an unlimited root, then give the real root that
+    // much memory plus room for a stack of at most a few thousand slots. Luau
+    // allocates small objects in 16 KB pages, so the setup cannot be estimated.
+    uint64_t setupBytes = 0;
+    {
+        const luau_host_state_options unlimited = tracked_memory_options(0);
+        Root probe = create_root(&unlimited);
+        luau_host_state* probeChild = nullptr;
+        int32_t probeReference = 0;
+        prepare_stack_end_root(probe.state, &probeChild, &probeReference);
+        setupBytes = current_memory(probe.state);
+    }
+
+    const luau_host_state_options options = tracked_memory_options(setupBytes + UINT64_C(40) * 1024);
+    Root root = create_root(&options);
+    luau_host_state* child = nullptr;
+    int32_t ballastReference = 0;
+    prepare_stack_end_root(root.state, &child, &ballastReference);
+
+    // Fill the frame until the stack cannot grow. The failed push appends its
+    // error object into the last slot, leaving the top at the physical end.
+    luau_host_status status = LUAU_HOST_STATUS_OK;
+    int32_t pushed = 0;
+    while ((status = luau_host_push_integer(root.state, pushed)) == LUAU_HOST_STATUS_OK)
+        ++pushed;
+    REQUIRE(status == LUAU_HOST_STATUS_MEMORY_QUOTA);
+    REQUIRE(pushed > 8);
+    const int32_t endTop = 2 + pushed + 1;
+    REQUIRE(endTop < kFrameSlotLimit);
+    REQUIRE(luau_host_stack_get_top(root.state) == endTop);
+    REQUIRE(string_at(root.state, -1) == "not enough memory");
+
+    metamethodInvocations = 0;
+    for (int attempt = 0; attempt < kRefusalRepetitions; ++attempt)
+    {
+        // __index: the key is consumed, so the growth failure replaces it.
+        int32_t type = 123;
+        REQUIRE(luau_host_table_get(root.state, 2, &type) == LUAU_HOST_STATUS_MEMORY_QUOTA);
+        REQUIRE(luau_host_stack_get_top(root.state) == endTop);
+        REQUIRE(string_at(root.state, -1) == "not enough memory");
+
+        // __newindex: key and value are consumed and one error replaces them.
+        REQUIRE(luau_host_table_set(root.state, 2) == LUAU_HOST_STATUS_MEMORY_QUOTA);
+        REQUIRE(luau_host_stack_get_top(root.state) == endTop - 1);
+        REQUIRE(string_at(root.state, -1) == "not enough memory");
+
+        // One slot is left, so a failed push still reports its error there and
+        // puts the top back at the physical end.
+        REQUIRE(luau_host_push_nil(root.state) == LUAU_HOST_STATUS_MEMORY_QUOTA);
+        REQUIRE(luau_host_stack_get_top(root.state) == endTop);
+
+        // Operations that need a new slot are refused without touching the stack.
+        const uint8_t* text = nullptr;
+        uint64_t length = 0;
+        require_stack_limit(root.state, luau_host_to_display_string(root.state, 2, &text, &length), endTop);
+        require_stack_limit(root.state, luau_host_global_get(root.state, bytes("print"), &type), endTop);
+    }
+    REQUIRE(metamethodInvocations == 0);
+
+    // Free the ballast through the child, whose frame still has room.
+    REQUIRE(luau_host_reference_release(root.state, ballastReference) == LUAU_HOST_STATUS_OK);
+    REQUIRE(luau_host_collect(child) == LUAU_HOST_STATUS_OK);
+    REQUIRE(luau_host_memory_reset_failure(root.state) == LUAU_HOST_STATUS_OK);
+    REQUIRE(luau_host_stack_get_top(root.state) == endTop);
+
+    // The top is still at the physical end, and the metamethod call now runs.
+    switch (operation)
+    {
+    case StackEndOperation::TableGet:
+        REQUIRE(luau_host_table_get(root.state, 2, nullptr) == LUAU_HOST_STATUS_OK);
+        REQUIRE(luau_host_stack_get_top(root.state) == endTop);
+        REQUIRE(string_at(root.state, -1) == "metamethod result");
+        break;
+    case StackEndOperation::TableSet:
+        REQUIRE(luau_host_table_set(root.state, 2) == LUAU_HOST_STATUS_OK);
+        REQUIRE(luau_host_stack_get_top(root.state) == endTop - 2);
+        break;
+    case StackEndOperation::DisplayString:
+    {
+        const uint8_t* text = nullptr;
+        uint64_t length = 0;
+        REQUIRE(luau_host_to_display_string(root.state, 2, &text, &length) == LUAU_HOST_STATUS_OK);
+        REQUIRE(luau_host_stack_get_top(root.state) == endTop + 1);
+        REQUIRE(string_at(root.state, -1) == "metamethod result");
+        break;
+    }
+    }
+    REQUIRE(metamethodInvocations == 1);
+
+    REQUIRE(luau_host_stack_set_top(root.state, 1) == LUAU_HOST_STATUS_OK);
+    require_reusable(root.state, "@stack-end/recovered");
+}
+
+void test_metamethods_at_the_physical_stack_end()
+{
+    require_metamethods_at_the_physical_stack_end(StackEndOperation::TableGet);
+    require_metamethods_at_the_physical_stack_end(StackEndOperation::TableSet);
+    require_metamethods_at_the_physical_stack_end(StackEndOperation::DisplayString);
+}
+
+// Leaves [1] the destination thread, with its initial small stack, and kMoved
+// integers above it on a source stack sized for exactly that.
+constexpr int32_t kMovedValues = 3000;
+
+void prepare_move_source(luau_host_state* root, luau_host_state** child)
+{
+    REQUIRE(luau_host_thread_create(root, child) == LUAU_HOST_STATUS_OK);
+    int32_t reserved = 0;
+    REQUIRE(luau_host_stack_check(root, kMovedValues, &reserved) == LUAU_HOST_STATUS_OK);
+    REQUIRE(reserved != 0);
+    for (int32_t value = 0; value < kMovedValues; ++value)
+        REQUIRE(luau_host_push_integer(root, value) == LUAU_HOST_STATUS_OK);
+}
+
+// A move whose destination cannot grow restores the source and reports the
+// failure there; the destination is untouched.
+void test_stack_move_when_the_destination_cannot_grow()
+{
+    // The destination needs about 48 KB of stack for the moved values. Measure
+    // the setup, then leave only half of that available.
+    uint64_t setupBytes = 0;
+    {
+        const luau_host_state_options unlimited = tracked_memory_options(0);
+        Root probe = create_root(&unlimited);
+        luau_host_state* probeChild = nullptr;
+        prepare_move_source(probe.state, &probeChild);
+        setupBytes = current_memory(probe.state);
+    }
+
+    const luau_host_state_options options = tracked_memory_options(setupBytes + UINT64_C(24) * 1024);
+    Root root = create_root(&options);
+    luau_host_state* child = nullptr;
+    prepare_move_source(root.state, &child);
+    const int32_t sourceTop = 1 + kMovedValues;
+
+    for (int attempt = 0; attempt < kRefusalRepetitions; ++attempt)
+    {
+        REQUIRE(luau_host_stack_move(root.state, child, kMovedValues) == LUAU_HOST_STATUS_MEMORY_QUOTA);
+        REQUIRE(luau_host_stack_get_top(root.state) == sourceTop + 1);
+        REQUIRE(string_at(root.state, -1) == "not enough memory");
+        REQUIRE(luau_host_stack_get_top(child) == 0);
+        REQUIRE(luau_host_stack_set_top(root.state, -2) == LUAU_HOST_STATUS_OK);
+    }
+
+    // A move that fits the destination's existing stack needs no memory.
+    REQUIRE(luau_host_memory_reset_failure(root.state) == LUAU_HOST_STATUS_OK);
+    REQUIRE(luau_host_stack_move(root.state, child, 8) == LUAU_HOST_STATUS_OK);
+    REQUIRE(luau_host_stack_get_top(root.state) == sourceTop - 8);
+    REQUIRE(luau_host_stack_get_top(child) == 8);
+    REQUIRE(luau_host_stack_move(child, root.state, 8) == LUAU_HOST_STATUS_OK);
+    REQUIRE(luau_host_stack_get_top(root.state) == sourceTop);
+    REQUIRE(luau_host_stack_get_top(child) == 0);
+}
+
+// A coroutine can be resumed with a full frame of arguments, and one that
+// yielded a full frame can be resumed with an error.
+void test_coroutine_resume_at_the_frame_slot_limit()
+{
+    Root root = create_root();
+    int32_t ignored = 0;
+    REQUIRE(luau_host_open_library(root.state, LUAU_HOST_LIBRARY_BASE, &ignored) == LUAU_HOST_STATUS_OK);
+    REQUIRE(luau_host_open_library(root.state, LUAU_HOST_LIBRARY_TABLE, &ignored) == LUAU_HOST_STATUS_OK);
+    REQUIRE(luau_host_open_library(root.state, LUAU_HOST_LIBRARY_COROUTINE, &ignored) == LUAU_HOST_STATUS_OK);
+    REQUIRE(luau_host_stack_set_top(root.state, 0) == LUAU_HOST_STATUS_OK);
+    luau_host_state* child = nullptr;
+    REQUIRE(luau_host_thread_create(root.state, &child) == LUAU_HOST_STATUS_OK);
+
+    // The function and its arguments fill the frame exactly.
+    REQUIRE(compile_and_load(child, "return select('#', ...)", "@frame-limit/resume-arguments") == LUAU_HOST_STATUS_OK);
+    for (int32_t value = 1; value < kFrameSlotLimit; ++value)
+        REQUIRE(luau_host_push_integer(child, value) == LUAU_HOST_STATUS_OK);
+    REQUIRE(luau_host_stack_get_top(child) == kFrameSlotLimit);
+    require_stack_limit(child, luau_host_push_nil(child), kFrameSlotLimit);
+    REQUIRE(luau_host_resume(child, root.state, kFrameSlotLimit - 1) == LUAU_HOST_STATUS_OK);
+    REQUIRE(luau_host_stack_get_top(child) == 1);
+    int32_t isNumber = 0;
+    REQUIRE(luau_host_to_number(child, -1, &isNumber) == double(kFrameSlotLimit - 1));
+    REQUIRE(isNumber != 0);
+    REQUIRE(luau_host_stack_set_top(child, 0) == LUAU_HOST_STATUS_OK);
+    REQUIRE(luau_host_thread_reset(child) == LUAU_HOST_STATUS_OK);
+
+    constexpr char failure[] = "resume failure";
+    auto replaceTopWithFailure = [&]() {
+        REQUIRE(luau_host_stack_get_top(child) == kFrameSlotLimit);
+        for (int attempt = 0; attempt < kRefusalRepetitions; ++attempt)
+            require_stack_limit(child, luau_host_push_nil(child), kFrameSlotLimit);
+        REQUIRE(luau_host_stack_set_top(child, -2) == LUAU_HOST_STATUS_OK);
+        REQUIRE(
+            luau_host_push_string(child, bytes(failure), static_cast<uint64_t>(sizeof(failure) - 1)) ==
+            LUAU_HOST_STATUS_OK);
+    };
+
+    // The error raised at a full-frame yield reaches the script's pcall.
+    REQUIRE(
+        compile_and_load(
+            child,
+            "local t = table.create(7999, 1) "
+            "local ok, e = pcall(function() coroutine.yield(0, table.unpack(t)) end) return ok, e",
+            "@frame-limit/resume-error-caught") == LUAU_HOST_STATUS_OK);
+    REQUIRE(luau_host_resume(child, root.state, 0) == LUAU_HOST_STATUS_YIELDED);
+    replaceTopWithFailure();
+    REQUIRE(luau_host_resume_error(child, root.state) == LUAU_HOST_STATUS_OK);
+    REQUIRE(luau_host_stack_get_top(child) == 2);
+    REQUIRE(luau_host_to_boolean(child, -2) == 0);
+    REQUIRE(string_at(child, -1) == failure);
+    REQUIRE(luau_host_stack_set_top(child, 0) == LUAU_HOST_STATUS_OK);
+    REQUIRE(luau_host_thread_reset(child) == LUAU_HOST_STATUS_OK);
+
+    // Without a handler the coroutine ends with exactly that error.
+    REQUIRE(
+        compile_and_load(
+            child,
+            "local t = table.create(7999, 1) coroutine.yield(0, table.unpack(t))",
+            "@frame-limit/resume-error-uncaught") == LUAU_HOST_STATUS_OK);
+    REQUIRE(luau_host_resume(child, root.state, 0) == LUAU_HOST_STATUS_YIELDED);
+    replaceTopWithFailure();
+    REQUIRE(luau_host_resume_error(child, root.state) == LUAU_HOST_STATUS_LUA_ERROR);
+    REQUIRE(string_at(child, -1) == failure);
+    REQUIRE(luau_host_thread_reset(child) == LUAU_HOST_STATUS_OK);
+
+    REQUIRE(compile_and_load(child, "return 7", "@frame-limit/resume-reused") == LUAU_HOST_STATUS_OK);
+    REQUIRE(luau_host_resume(child, root.state, 0) == LUAU_HOST_STATUS_OK);
+    REQUIRE(luau_host_to_number(child, -1, &isNumber) == 7.0);
+    REQUIRE(isNumber != 0);
+    require_reusable(root.state, "@frame-limit/resume-root");
+}
+
 using TestFunction = void (*)();
 
 int run_test(const char* name, TestFunction test)
@@ -2214,6 +2586,10 @@ int main()
         test_multi_root_interrupt_uninstall_preserves_other_root);
     failures += run_test("stack slot limit refusals and recovery", test_stack_slot_limit_refusals_and_recovery);
     failures += run_test("stack growth failure without an error slot", test_stack_growth_failure_without_an_error_slot);
+    failures += run_test("callback failure on a full frame", test_callback_failure_on_a_full_frame);
+    failures += run_test("metamethods at the physical stack end", test_metamethods_at_the_physical_stack_end);
+    failures += run_test("stack move when the destination cannot grow", test_stack_move_when_the_destination_cannot_grow);
+    failures += run_test("coroutine resume at the frame slot limit", test_coroutine_resume_at_the_frame_slot_limit);
 
     if (failures != 0)
         std::cerr << failures << " conformance test group(s) failed\n";
