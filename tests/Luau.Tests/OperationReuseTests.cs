@@ -104,6 +104,24 @@ public sealed class OperationReuseTests
         Assert.Equal(0, AllocatedBytesPerWindow(() => hook.InvokeVoid()));
     }
 
+    [Theory]
+    [MemberData(nameof(BudgetShapes))]
+    public void HookReturningValuesAllocatesNothingOnceWarm(string shape)
+    {
+        // The values are discarded on the native stack; none is decoded.
+        using var root = CreateRoot(BudgetShape(shape));
+        using var hook = LoadFunction(root, "return function(dt) return dt, true, 'step', {} end");
+        var arguments = new[] { LuauValue.FromNumber(1d / 72) };
+        var argument = arguments[0];
+        var zeroResultOptions = BudgetShape(shape) with { MaxResultCount = 0 };
+
+        Assert.Equal(0, AllocatedBytesPerWindow(() => hook.InvokeVoid(arguments)));
+        Assert.Equal(0, AllocatedBytesPerWindow(() => hook.InvokeVoid(argument)));
+        Assert.Equal(0, AllocatedBytesPerWindow(() => hook.InvokeVoid()));
+        Assert.Equal(0, AllocatedBytesPerWindow(() => hook.InvokeVoid(argument, zeroResultOptions)));
+        Assert.Equal(0, root.GetTop());
+    }
+
     [Fact]
     public void HookInvocationWithPerCallOptionsAllocatesNothingOnceWarm()
     {
@@ -172,6 +190,31 @@ public sealed class OperationReuseTests
         var phaseOptions = LuauExecutionOptions.Default with { WallClockLimit = TimeSpan.FromSeconds(5) };
 
         Assert.Equal(0, AllocatedBytesPerWindow(() => update.InvokeVoid(argument, phaseOptions)));
+    }
+
+    [Fact]
+    public async Task ScriptEntrypointReturningAValueAllocatesNothingOnceWarm()
+    {
+        // As the Unity scheduler calls a hook whose last statement returns
+        // another function's values, under hook options that allow none.
+        using var root = CreateRoot(BudgetShape("default-shape"));
+        root.SandboxRoot();
+        using var instance = await LuauScriptInstance.CreateAsync(
+            root,
+            "hooks",
+            static (thread, _) => ValueTask.FromResult(thread.DoString(
+                "local function step(dt) return dt > 0, dt end " +
+                "return { update = function(dt) return step(dt) end }")));
+        var update = instance.GetRequiredEntrypoint("update");
+        var argument = LuauValue.FromNumber(1d / 72);
+        var phaseOptions = LuauExecutionOptions.Default with
+        {
+            WallClockLimit = TimeSpan.FromSeconds(5),
+            MaxResultCount = 0,
+        };
+
+        Assert.Equal(0, AllocatedBytesPerWindow(() => update.InvokeVoid(argument, phaseOptions)));
+        Assert.Equal(0, root.GetTop());
     }
 
     [Fact]
@@ -784,28 +827,40 @@ public sealed class OperationReuseTests
     // between operations that differ.
 
     [Fact]
-    public void ZeroResultMergeDoesNotLeakIntoOrdinaryInvocations()
+    public void VoidInvocationsShareMergedOptionsWithoutChangingTheirLimits()
     {
+        // Void and delivering calls with the same options share one merge.
+        // Discarding is a property of the call, not of the merged options, so
+        // a void call under a limit the values exceed must not loosen that
+        // limit for a delivering call with the same instance, or the reverse.
         using var root = CreateRoot(SafetyNet);
         using var pair = LoadFunction(root, "return function() return 1, 2 end");
         var options = SafetyNet with { MaxResultCount = 5 };
         var tighter = SafetyNet with { MaxResultCount = 1 };
+        var zero = SafetyNet with { MaxResultCount = 0 };
 
         for (var round = 0; round < 3; round++)
         {
-            Assert.Equal(0, Assert.Throws<LuauResultLimitException>(() => pair.InvokeVoid(options)).Limit);
+            pair.InvokeVoid(options);
             using (var results = pair.Invoke(executionOptions: options))
             {
                 Assert.Equal(2, results.Count);
             }
 
-            Assert.Equal(0, Assert.Throws<LuauResultLimitException>(() => pair.InvokeVoid()).Limit);
+            pair.InvokeVoid();
             using (var results = pair.Invoke())
             {
                 Assert.Equal(2, results.Count);
             }
 
+            pair.InvokeVoid(tighter);
             Assert.Equal(1, Assert.Throws<LuauResultLimitException>(() => pair.Invoke(executionOptions: tighter)).Limit);
+            pair.InvokeVoid(tighter);
+
+            pair.InvokeVoid(zero);
+            Assert.Equal(0, Assert.Throws<LuauResultLimitException>(() => pair.Invoke(executionOptions: zero)).Limit);
+            pair.InvokeVoid(zero);
+            Assert.Equal(0, root.GetTop());
         }
     }
 

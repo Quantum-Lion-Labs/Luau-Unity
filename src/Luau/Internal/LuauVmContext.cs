@@ -70,7 +70,6 @@ internal sealed unsafe class LuauVmContext
     WeakReference<LuauVmContext>? watchdogEntry;
     const int OptionsCacheSize = 4;
     readonly ResolvedOptions?[] optionsCache = new ResolvedOptions?[OptionsCacheSize];
-    readonly ResolvedOptions?[] zeroResultOptionsCache = new ResolvedOptions?[OptionsCacheSize];
     int optionsCacheCursor;
     int lifecycleState;
     int rootSandboxed;
@@ -374,10 +373,9 @@ internal sealed unsafe class LuauVmContext
         CancellationToken cancellationToken,
         bool isAsync,
         ScriptOperationMode mode,
-        bool requireZeroResults = false,
         bool resumesThread = false)
     {
-        var effectiveOptions = ResolveOperationOptions(options, requireZeroResults);
+        var effectiveOptions = ResolveOperationOptions(options);
         if (effectiveOptions.ContinuationScheduler is { } scheduler && !scheduler.CheckAccess())
         {
             throw new InvalidOperationException(
@@ -619,47 +617,44 @@ internal sealed unsafe class LuauVmContext
     }
 
     /// <summary>
-    /// Merges per-operation options into the state defaults. Options records
-    /// are immutable, so a merge is reused for the same instance:
-    /// <see cref="LuauFunction.InvokeVoid(LuauExecutionOptions?)"/> merges
-    /// even without options, and the Unity scheduler passes one instance per
-    /// phase on every call. A few entries per kind cover several phases on
-    /// one root; a miss only costs the merge it replaces.
+    /// Merges per-operation options into the state defaults. Without options
+    /// an operation uses the defaults themselves. Options records are
+    /// immutable, so a merge is reused for the same instance: the Unity
+    /// scheduler passes one instance per phase on every call. A few entries
+    /// cover several phases on one root; a miss only costs the merge it
+    /// replaces.
     /// </summary>
-    LuauExecutionOptions ResolveOperationOptions(LuauExecutionOptions? requested, bool requireZeroResults)
+    LuauExecutionOptions ResolveOperationOptions(LuauExecutionOptions? requested)
     {
-        if (!requireZeroResults && requested == null)
+        if (requested == null)
         {
             return Options.DefaultExecutionOptions;
         }
 
-        var cache = requireZeroResults ? zeroResultOptionsCache : optionsCache;
-        for (var index = 0; index < cache.Length; index++)
+        for (var index = 0; index < optionsCache.Length; index++)
         {
-            var cached = Volatile.Read(ref cache[index]);
+            var cached = Volatile.Read(ref optionsCache[index]);
             if (cached != null && ReferenceEquals(cached.Requested, requested))
             {
                 return cached.Effective;
             }
         }
 
-        var effective = LuauExecutionOptions.ResolveForOperation(
-            Options.DefaultExecutionOptions,
-            requireZeroResults ? LuauExecutionOptions.RequireZeroResults(requested) : requested);
-        var slot = (int)((uint)Interlocked.Increment(ref optionsCacheCursor) % (uint)cache.Length);
-        Volatile.Write(ref cache[slot], new ResolvedOptions(requested, effective));
+        var effective = LuauExecutionOptions.ResolveForOperation(Options.DefaultExecutionOptions, requested);
+        var slot = (int)((uint)Interlocked.Increment(ref optionsCacheCursor) % (uint)optionsCache.Length);
+        Volatile.Write(ref optionsCache[slot], new ResolvedOptions(requested, effective));
         return effective;
     }
 
     sealed class ResolvedOptions
     {
-        internal ResolvedOptions(LuauExecutionOptions? requested, LuauExecutionOptions effective)
+        internal ResolvedOptions(LuauExecutionOptions requested, LuauExecutionOptions effective)
         {
             Requested = requested;
             Effective = effective;
         }
 
-        internal LuauExecutionOptions? Requested { get; }
+        internal LuauExecutionOptions Requested { get; }
         internal LuauExecutionOptions Effective { get; }
     }
 

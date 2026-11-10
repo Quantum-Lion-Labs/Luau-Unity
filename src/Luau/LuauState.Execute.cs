@@ -653,7 +653,6 @@ partial class LuauState
         CancellationToken cancellationToken,
         bool isAsync,
         ScriptOperationMode mode = ScriptOperationMode.TopLevelResume,
-        bool requireZeroResults = false,
         bool resumesThread = false)
     {
         ThrowIfDisposed();
@@ -669,7 +668,6 @@ partial class LuauState
             cancellationToken,
             isAsync,
             mode,
-            requireZeroResults,
             resumesThread);
     }
 

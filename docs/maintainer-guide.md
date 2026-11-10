@@ -248,10 +248,14 @@ The modes choose entry mechanics, not separate failure systems. All share:
 ### 6.1 Stack boundary
 
 Each entry captures its base top and explicitly tracks values it produces or
-consumes. Success hands validated results to the caller. Managed failure restores
-the owned base. If native reset fails, the boundary performs no further stack
-action: the entire root becomes terminal and deferred close is the only remaining
-native operation.
+consumes. Success hands validated results to the caller. A void call
+(`InvokeVoid`, `InvokeVoidAsync`) wants none: `ScriptRunner` trims the stack to
+the base where it takes the result count, so `MaxResultCount` does not apply,
+nothing is decoded, and the free frame slot that reading a result needs is not
+required: a return that fills or overfills the frame is trimmed like any other.
+Managed failure restores the owned base. If native
+reset fails, the boundary performs no further stack action: the entire root
+becomes terminal and deferred close is the only remaining native operation.
 
 Review stack effects at each call site. The boundary is an ownership tool, not a
 reason to hide pushes, consumes, or result counts.
@@ -330,9 +334,10 @@ Reuse is safe only under these rules:
 
 Nothing an operation might use is created up front:
 
-- **Options.** The context caches merged per-operation options by instance,
-  so `InvokeVoid` and the Unity scheduler, which pass the same options object
-  on every call, do not rebuild a record per call.
+- **Options.** An operation without options uses the state defaults as they
+  are. The context caches merged per-operation options by instance, so the
+  Unity scheduler, which passes the same options object on every call, does
+  not rebuild a record per call.
 - **Callback token.** The callback-visible `CancellationToken` is created the
   first time a callback reads it (`LuauCallContext.CancellationToken`, or a
   generated member's `CancellationToken` parameter). It links the state's

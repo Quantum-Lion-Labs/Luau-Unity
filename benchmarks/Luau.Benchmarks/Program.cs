@@ -118,6 +118,11 @@ sealed class Stage6BenchmarkSuite(BenchmarkConfiguration configuration)
 
         var defaults = LuauExecutionOptions.Default;
         cases.Add(Entry("entry-invoke-void-one-arg-default", () => CreateHookInvokeOneArgument(defaults)));
+        // A hook whose values are discarded, as when its last statement
+        // returns another function's results.
+        cases.Add(Entry(
+            "entry-invoke-void-returning-default",
+            () => CreateHookInvoke(defaults, "return function(dt) return dt, true end")));
         cases.Add(Entry("entry-invoke-into-default", () => CreateHookInvokeInto(defaults)));
         cases.Add(Entry("entry-invoke-scope-default", () => CreateHookInvokeScope(defaults)));
         cases.Add(Entry("entry-resume-into-default", () => CreateCoroutineResume(defaults)));
@@ -154,9 +159,11 @@ sealed class Stage6BenchmarkSuite(BenchmarkConfiguration configuration)
         return (state, owner[0].Read<LuauFunction>().Retain());
     }
 
-    static BenchmarkLease CreateHookInvoke(LuauExecutionOptions options)
+    static BenchmarkLease CreateHookInvoke(
+        LuauExecutionOptions options,
+        string source = "return function(dt) end")
     {
-        var (state, function) = CreateEntryFunction(options, "return function(dt) end");
+        var (state, function) = CreateEntryFunction(options, source);
         var arguments = new[] { LuauValue.FromNumber(1d / 72) };
         return new BenchmarkLease(
             () =>

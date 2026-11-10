@@ -14,6 +14,30 @@ API or ABI breaks.
 
 ### Changed
 
+- `InvokeVoid` and `InvokeVoidAsync`, on `LuauFunction` and
+  `LuauScriptEntrypoint`, now discard the values the function returns, and
+  the call succeeds. They used to run the function to completion, drop its
+  results, and then throw `LuauResultLimitException` with a limit of 0.
+  `LuauScriptScheduler` calls every hook this way, so a hook whose last
+  statement was `return other()`, or that returned `true` out of habit, ran
+  once and was then disabled by the default `DisableAndContinue` mode, with an
+  error about a result limit that the script author could not relate to
+  anything. In Luau, as in Lua, a caller that wants no results ignores them.
+  `MaxResultCount` does not apply to these calls, because no value reaches
+  the host: a function may return values under any limit, including the
+  `MaxResultCount = 0` the samples' hook options set. The limit keeps its
+  meaning for every call that delivers results (`Invoke`, `InvokeInto`,
+  `DoString`, `Resume`, and the module a `require` loads, also during a void
+  call). A module first required during a void call used to fail the same
+  way, because the call's forced limit of 0 applied to it; it now gets the
+  limit of the call's own options. The 8000-value frame ceiling does not
+  apply to the discarded values either: it exists so the host can read
+  results, and these calls read none. Errors, budgets, cancellation, and the
+  rejection of a yield on the root are unchanged, the stack is left as it
+  was, and a warmed synchronous call whose function returns values allocates
+  nothing. To keep treating returned values as an error,
+  call `InvokeInto` with an empty destination (`ArgumentException`) or
+  `Invoke` with `MaxResultCount = 0` (`LuauResultLimitException`).
 - `LuauExecutionOptions.Default`, and with it `LuauStateOptions.Default` and
   every state created without its own execution options, now allows
   10,000,000 interrupt safepoints per operation instead of 100,000. A

@@ -57,41 +57,58 @@ public sealed class FunctionInvocationOutputTests
     }
 
     [Fact]
-    public void InvokeVoidDiscardsUnexpectedResultsReportsLabelAndLeavesVmReusable()
+    public void InvokeVoidDiscardsReturnedValuesWithoutWrappingThemAndLeavesVmReusable()
     {
         using var root = TestBudgets.CreateRoot();
         using var functionOwner = root.DoString(
             "return function() return {}, 42 end");
         var function = functionOwner.Read<LuauFunction>(0);
         var disposableCount = root.RegisteredDisposableCount;
+        var top = root.GetTop();
 
-        var unlabeled = Assert.Throws<LuauResultLimitException>(() => function.InvokeVoid());
-        var labeled = Assert.Throws<LuauResultLimitException>(
-            () => function.InvokeVoidLabeled("match:update"));
+        function.InvokeVoid();
+        function.InvokeVoidLabeled("match:update");
 
-        Assert.Equal(2, unlabeled.ActualCount);
-        Assert.Equal(0, unlabeled.Limit);
-        Assert.Null(unlabeled.ChunkName);
-        Assert.Equal("match:update", labeled.ChunkName);
-        Assert.Contains("match:update", labeled.Message, StringComparison.Ordinal);
+        Assert.Equal(top, root.GetTop());
         Assert.Equal(disposableCount, root.RegisteredDisposableCount);
         Assert.Equal(42, Assert.Single(root.DoString("return 40 + 2")).Read<int>());
     }
 
     [Fact]
-    public void InvokeVoidReportsTheZeroResultContractAboveTheStateDefaultLimit()
+    public void InvokeVoidLabelStillNamesAFailure()
+    {
+        using var root = TestBudgets.CreateRoot();
+        root.OpenBaseLibrary();
+        using var functionOwner = root.DoString(
+            "return function() error('boom') return 1 end");
+        var function = functionOwner.Read<LuauFunction>(0);
+
+        var labeled = Assert.Throws<LuauException>(
+            () => function.InvokeVoidLabeled("match:update"));
+
+        Assert.Equal("match:update", labeled.ChunkName);
+        Assert.Contains("match:update", labeled.Message, StringComparison.Ordinal);
+        Assert.Equal(42, Assert.Single(root.DoString("return 40 + 2")).Read<int>());
+    }
+
+    [Fact]
+    public void InvokeVoidDiscardsMoreValuesThanTheStateDefaultLimit()
     {
         using var root = TestBudgets.CreateRoot();
         var returnedValues = string.Join(", ", Enumerable.Repeat("1", 65));
         using var functionOwner = root.DoString(
             $"return function() return {returnedValues} end");
         var function = functionOwner.Read<LuauFunction>(0);
+        var top = root.GetTop();
 
+        function.InvokeVoidLabeled("match:update");
+
+        Assert.Equal(top, root.GetTop());
+        // The state default still limits a call that delivers the values.
         var exception = Assert.Throws<LuauResultLimitException>(
-            () => function.InvokeVoidLabeled("match:update"));
-
+            () => function.InvokeLabeled(ReadOnlySpan<LuauValue>.Empty, "match:update"));
         Assert.Equal(65, exception.ActualCount);
-        Assert.Equal(0, exception.Limit);
+        Assert.Equal(64, exception.Limit);
         Assert.Equal("match:update", exception.ChunkName);
         Assert.Equal(42, Assert.Single(root.DoString("return 40 + 2")).Read<int>());
     }

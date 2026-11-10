@@ -92,8 +92,11 @@ var dispatch = updatePhase.Dispatch((LuauValue)(double)Time.deltaTime);
 ```
 
 Dispatch is synchronous and non-yielding. Async entrypoints remain useful for
-loading and startup outside a phase. Registrations run by ascending `order` and
-then registration sequence. Registering, disposing, enabling, or disabling a
+loading and startup outside a phase. Each hook is called with `InvokeVoid`,
+which discards whatever it returns: a hook whose last statement is
+`return other()`, or that returns `true`, succeeds like one that returns
+nothing, whatever the phase's `MaxResultCount`. Registrations run by ascending
+`order` and then registration sequence. Registering, disposing, enabling, or disabling a
 token during dispatch takes effect on the next dispatch. Re-entrant or
 overlapping dispatch is rejected.
 
