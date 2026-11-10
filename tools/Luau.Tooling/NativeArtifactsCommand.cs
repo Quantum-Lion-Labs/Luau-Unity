@@ -22,10 +22,6 @@ internal static class NativeArtifactsCommand
             ["linux-x64"] = new("linux-x64", "linux-x64-shipping", "native/luau-host/out/install/linux-x64-shipping/libluau_host.so", "linux-x64/libluau_host.so", true, 0),
         };
 
-    // A shipping Linux host may depend only on the C runtime. Everything else,
-    // including the C++ runtime, is linked statically and hidden.
-    private static readonly string[] LinuxAllowedNeeded = ["ld-linux-x86-64.so.2", "libc.so.6", "libm.so.6"];
-
     public static async Task<int> RunAsync(RepositoryContext repository, CommandLine options)
     {
         var requested = options.GetMany("--platform");
@@ -120,9 +116,10 @@ internal static class NativeArtifactsCommand
             }
 
             await AssertElfHardeningAsync(readelf, shipping, repository.Root, artifact.Platform);
+            await AssertElfDependenciesAsync(readelf, shipping, repository.Root, artifact.Platform);
             if (!IsAndroid(artifact))
             {
-                await AssertLinuxDependenciesAsync(readelf, shipping, repository.Root, policy.LinuxGlibcMaximum);
+                await AssertLinuxSymbolVersionsAsync(readelf, shipping, repository.Root, policy.LinuxGlibcMaximum);
             }
             var symbolsDirectory = Path.Combine(outRoot, "symbols", artifact.Platform);
             var unstripped = Path.Combine(symbolsDirectory, "libluau_host.unstripped.so");
@@ -181,12 +178,13 @@ internal static class NativeArtifactsCommand
         {
             shippingRecord["android_api"] = artifact.AndroidApi;
             shippingRecord["android_ndk_revision"] = ndkRevision;
+            shippingRecord["android_allowed_needed"] = new JsonArray(NativeDependencyPolicy.AndroidAllowedNeeded.Select(static name => (JsonNode)name).ToArray());
         }
         else if (artifact.Strip)
         {
             shippingRecord["linux_clang_version"] = policy.LinuxClangVersion;
             shippingRecord["linux_glibc_maximum"] = policy.LinuxGlibcMaximum;
-            shippingRecord["linux_allowed_needed"] = new JsonArray(LinuxAllowedNeeded.Select(static name => (JsonNode)name).ToArray());
+            shippingRecord["linux_allowed_needed"] = new JsonArray(NativeDependencyPolicy.LinuxAllowedNeeded.Select(static name => (JsonNode)name).ToArray());
             shippingRecord["linux_toolchain_packages"] = new JsonObject(policy.LinuxToolchainPackages
                 .OrderBy(static package => package.Key, StringComparer.Ordinal)
                 .Select(static package => KeyValuePair.Create(package.Key, (JsonNode?)package.Value)));
@@ -318,14 +316,23 @@ internal static class NativeArtifactsCommand
             $"{platform} shipping artifact is missing immediate binding.");
     }
 
-    private static async Task AssertLinuxDependenciesAsync(string readelf, string binary, string root, string glibcMaximum)
+    // Every ELF plugin may load only the system libraries its platform
+    // guarantees; see NativeDependencyPolicy.
+    private static async Task AssertElfDependenciesAsync(string readelf, string binary, string root, string platform)
     {
         var dynamic = (await ProcessRunner.RequireAsync(readelf, ["--dynamic", binary], root, echo: false)).CombinedOutput;
         var needed = ParseNeededLibraries(dynamic);
-        var unexpected = needed.Where(name => !LinuxAllowedNeeded.Contains(name, StringComparer.Ordinal)).ToArray();
-        Require(needed.Contains("libc.so.6", StringComparer.Ordinal) && unexpected.Length == 0,
-            $"Linux shipping artifact has unexpected dynamic dependencies: {string.Join(", ", unexpected)}.");
+        // package-static audits the committed plugins with the managed reader,
+        // so every shipping build proves it agrees with the pinned readelf.
+        var managed = NativeDependencyPolicy.ReadNeededLibraries(File.ReadAllBytes(binary), $"{platform} shipping artifact");
+        Require(needed.SequenceEqual(managed, StringComparer.Ordinal),
+            $"{platform} shipping artifact dependencies differ between readelf ({string.Join(", ", needed)}) " +
+            $"and the package audit ({string.Join(", ", managed)}).");
+        NativeDependencyPolicy.Validate(platform, $"{platform} shipping artifact", needed);
+    }
 
+    private static async Task AssertLinuxSymbolVersionsAsync(string readelf, string binary, string root, string glibcMaximum)
+    {
         var versions = (await ProcessRunner.RequireAsync(readelf, ["--version-info", binary], root, echo: false)).CombinedOutput;
         var maximum = Version.Parse(glibcMaximum);
         var required = ParseGlibcVersions(versions);

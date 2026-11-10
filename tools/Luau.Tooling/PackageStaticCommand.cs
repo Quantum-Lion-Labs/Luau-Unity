@@ -32,6 +32,15 @@ internal static class PackageStaticCommand
         "Samples~/Getting Started", "Tests", "Tests/EditMode",
     ];
 
+    // Every committed ELF plugin and the platform whose dependency policy it
+    // must satisfy.
+    internal static readonly (string Platform, string Path)[] ElfPlugins =
+    [
+        ("android-arm64", "Runtime/Plugins/android-arm64/libluau_host.so"),
+        ("android-x64", "Runtime/Plugins/android-x64/libluau_host.so"),
+        ("linux-x64", "Runtime/Plugins/linux-x64/libluau_host.so"),
+    ];
+
     private static readonly HashSet<string> AllowedExtensions = new(StringComparer.OrdinalIgnoreCase)
     {
         ".asmdef", ".cs", ".dll", ".json", ".luau", ".md", ".meta", ".png", ".prefab", ".so", ".unity", ".xml",
@@ -184,12 +193,26 @@ internal static class PackageStaticCommand
         var linuxMeta = File.ReadAllText(Path.Combine(packageRoot, "Runtime", "Plugins", "linux-x64", "libluau_host.so.meta"));
         Require(IsLinuxPluginImporter(linuxMeta),
             "Linux plugin importer must target only the Linux x64 editor and Linux x64 players.");
+        ValidateNativeDependencies(packageRoot);
 
         var xml = XDocument.Load(Path.Combine(packageRoot, "Runtime", "Luau.xml"));
         Require(xml.Root?.Element("assembly")?.Element("name")?.Value == "Luau", "Runtime/Luau.xml does not describe Luau.");
         var sourceProjectVersion = File.ReadAllText(repository.PathOf("tests", "Luau.Unity.Integration", "ProjectSettings", "ProjectVersion.txt"));
         Require(HasCanonicalIntegrationVersion(sourceProjectVersion),
             "The canonical integration project must pin one exact Unity 6000.3 editor.");
+    }
+
+    // The committed binaries are read directly, without native tools, so every
+    // managed and release run rejects a plugin that needs a shared library a
+    // Unity player might not contain.
+    internal static void ValidateNativeDependencies(string packageRoot)
+    {
+        foreach (var (platform, relative) in ElfPlugins)
+        {
+            var path = Path.Combine(packageRoot, relative.Replace('/', Path.DirectorySeparatorChar));
+            FileSystem.RequireFile(path, "Required package artifact");
+            NativeDependencyPolicy.ValidateElf(platform, $"Package plugin '{relative}'", File.ReadAllBytes(path));
+        }
     }
 
     internal static bool IsLinuxPluginImporter(string meta)
