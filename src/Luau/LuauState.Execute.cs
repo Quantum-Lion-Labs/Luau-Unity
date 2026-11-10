@@ -373,7 +373,7 @@ partial class LuauState
     {
         ThrowIfDisposed();
         using var access = EnterNativeAccess();
-        var baseTop = luau_host_stack_get_top(l);
+        var baseTop = GetModuleCallBase(DecodeChunkName(utf8ChunkName));
         CompileAndLoadString(this, utf8Source, utf8ChunkName, options);
         return ExecuteLoadedForRequire(baseTop, DecodeChunkName(utf8ChunkName));
     }
@@ -390,7 +390,7 @@ partial class LuauState
         ThrowIfDisposed();
         ValidateCompilerOutput(output, DecodeChunkName(utf8ChunkName));
         using var access = EnterNativeAccess();
-        var baseTop = luau_host_stack_get_top(l);
+        var baseTop = GetModuleCallBase(DecodeChunkName(utf8ChunkName));
         LoadAcceptedBytecodeInternal(output.Bytecode, utf8ChunkName);
         return ExecuteLoadedForRequire(baseTop, DecodeChunkName(utf8ChunkName));
     }
@@ -407,9 +407,21 @@ partial class LuauState
         ThrowIfDisposed();
         ValidateArtifact(artifact, DecodeChunkName(utf8ChunkName));
         using var access = EnterNativeAccess();
-        var baseTop = luau_host_stack_get_top(l);
+        var baseTop = GetModuleCallBase(DecodeChunkName(utf8ChunkName));
         LoadAcceptedBytecodeInternal(artifact.Bytecode, utf8ChunkName);
         return ExecuteLoadedForRequire(baseTop, DecodeChunkName(utf8ChunkName));
+    }
+
+    /// <summary>
+    /// The stack base of a module's protected call, read once the thread is
+    /// known to be able to run one. A module may run on a thread that is
+    /// itself running, inside the operation that called <c>require</c>, but
+    /// never on one that is suspended. The caller holds the native gate.
+    /// </summary>
+    unsafe int GetModuleCallBase(string? chunkName)
+    {
+        ThrowIfSuspendedUnderNativeAccess("execute a module", chunkName, includeUnstartedCoroutine: false);
+        return luau_host_stack_get_top(l);
     }
 
     unsafe LuauResultScope ExecuteLoadedForRequire(int baseTop, string? chunkName)
@@ -523,7 +535,7 @@ partial class LuauState
     {
         EnsureCoroutine();
         var hasFunction = HasInitialCoroutineFunction();
-        using var operation = BeginOperation((string?)null, executionOptions, default, isAsync: false);
+        using var operation = BeginOperation((string?)null, executionOptions, default, isAsync: false, resumesThread: true);
         PushResumeArguments(operation, arguments);
         return ScriptRunner.Run(operation, this, arguments.Length, hasFunction);
     }
@@ -553,7 +565,7 @@ partial class LuauState
     {
         EnsureCoroutine();
         var hasFunction = HasInitialCoroutineFunction();
-        using var operation = BeginOperation((string?)null, executionOptions, default, isAsync: false);
+        using var operation = BeginOperation((string?)null, executionOptions, default, isAsync: false, resumesThread: true);
         PushResumeArguments(operation, arguments);
         return ScriptRunner.Run(operation, this, arguments.Length, destination, hasFunction);
     }
@@ -569,7 +581,7 @@ partial class LuauState
     {
         EnsureCoroutine();
         var hasFunction = HasInitialCoroutineFunction();
-        using var operation = BeginOperation((string?)null, executionOptions, cancellationToken, isAsync: true);
+        using var operation = BeginOperation((string?)null, executionOptions, cancellationToken, isAsync: true, resumesThread: true);
         PushResumeArguments(operation, arguments.Span);
 
         return await ScriptRunner.RunAsync(operation, this, arguments.Length, hasFunction).ConfigureAwait(false);
@@ -606,7 +618,7 @@ partial class LuauState
     {
         EnsureCoroutine();
         var hasFunction = HasInitialCoroutineFunction();
-        using var operation = BeginOperation((string?)null, executionOptions, cancellationToken, isAsync: true);
+        using var operation = BeginOperation((string?)null, executionOptions, cancellationToken, isAsync: true, resumesThread: true);
         PushResumeArguments(operation, arguments.Span);
 
         return await ScriptRunner.RunAsync(
@@ -641,7 +653,8 @@ partial class LuauState
         CancellationToken cancellationToken,
         bool isAsync,
         ScriptOperationMode mode = ScriptOperationMode.TopLevelResume,
-        bool requireZeroResults = false)
+        bool requireZeroResults = false,
+        bool resumesThread = false)
     {
         ThrowIfDisposed();
         if (cancellationToken.IsCancellationRequested)
@@ -656,7 +669,43 @@ partial class LuauState
             cancellationToken,
             isAsync,
             mode,
-            requireZeroResults);
+            requireZeroResults,
+            resumesThread);
+    }
+
+    /// <summary>
+    /// Rejects work that would start a new call on this thread while it holds
+    /// a pending continuation. Native resume of a yielded or interrupted
+    /// thread continues that continuation and drops the new callee, and a
+    /// protected call cannot run on it. With
+    /// <paramref name="includeUnstartedCoroutine"/>, a child whose coroutine
+    /// function has not started is rejected too: a new call would run above
+    /// that function, and the reset after a failed call would discard it. The
+    /// caller holds the native gate and has pushed nothing for its call.
+    /// </summary>
+    internal unsafe void ThrowIfSuspendedUnderNativeAccess(
+        string action,
+        string? chunkName,
+        bool includeUnstartedCoroutine)
+    {
+        var status = luau_host_thread_status(l);
+        if (status is LuauHostStatus.Yielded or LuauHostStatus.Break ||
+            (includeUnstartedCoroutine &&
+                status == LuauHostStatus.Ok &&
+                !isMainThread &&
+                luau_host_stack_get_top(l) > 0))
+        {
+            ThrowSuspendedThread(action, chunkName);
+        }
+    }
+
+    [System.Diagnostics.CodeAnalysis.DoesNotReturn]
+    static void ThrowSuspendedThread(string action, string? chunkName)
+    {
+        throw new InvalidOperationException(LuauDiagnosticMessages.WithChunk(
+            $"Cannot {action} on a suspended Luau thread. The thread has yielded, or holds a coroutine " +
+            "function that has not started; resume it until it finishes, or use another thread.",
+            chunkName));
     }
 
     // A host that executes the same chunk every frame passes the same name

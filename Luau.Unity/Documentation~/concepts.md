@@ -21,6 +21,13 @@ all script-function invocations. For resumable execution, run source on a child
 thread and continue it with `Resume` or `ResumeAsync`. Asynchronous root calls
 can still await managed callbacks.
 
+A child thread that has yielded accepts only `Resume` until it finishes.
+Starting a new call on it, with `DoString`, `Execute`, or any of their forms,
+throws `InvalidOperationException` and leaves the thread as it was, so the
+script cannot turn your next call into a continuation of its old code. The
+same applies to a coroutine a script created with `coroutine.create` that has
+not started yet. A thread that finished or failed accepts new calls.
+
 **Sandboxed thread** — a cheap script environment running inside a root. Threads
 share the root's globals and host functions, but each one gets its own writable
 global table, so a variable one script declares is invisible to the next. This

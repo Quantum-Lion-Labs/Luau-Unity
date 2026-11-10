@@ -90,6 +90,22 @@ API or ABI breaks.
 
 ### Fixed
 
+- Starting a new call on a child thread that a script had left suspended ran
+  the script's pending code instead. After
+  `thread.DoString("coroutine.yield(1) return 'A'")`, a later
+  `thread.DoString("return 'B'")` returned `'A'`, never ran `return 'B'`, and
+  raised no error, so a script that chose when to yield chose what the host's
+  next call on that thread did. On a coroutine created with `coroutine.create`
+  that had not started, the new chunk ran above the pending function, and a
+  failure discarded that function. `DoString`, `ExecuteCompilerOutput`,
+  `ExecuteVerifiedBytecode` (synchronous, asynchronous, and `Into` forms),
+  the `LuauAsset` execution helpers, and script-instance loaders now throw
+  `InvalidOperationException` on such a thread and leave it unchanged, so
+  `Resume` continues it as before. `SandboxThread` and module execution
+  reject a suspended thread the same way; `SandboxThread` used to install the
+  thread's sandbox and then fail with a generic native error. A finished or
+  failed thread still accepts new calls, and a thread waiting on an
+  asynchronous callback still reports that the VM is executing.
 - The Android plugins no longer depend on `libc++_shared.so`. A Unity Android
   player contains that library only when something else ships it, in practice
   the GameActivity application entry point, so a project that used the classic

@@ -121,6 +121,9 @@ public unsafe partial class LuauState
         }
 
         using var access = EnterNativeAccess();
+        // Sandboxing runs the guard chunk on this thread. Reject a suspended
+        // thread before its globals change, so a rejection leaves it as it was.
+        ThrowIfSuspendedUnderNativeAccess("sandbox a thread", chunkName: null, includeUnstartedCoroutine: false);
         LuauNativeProtection.Prepare(context);
         var status = luau_host_sandbox_thread(l);
         LuauNativeProtection.ThrowIfFailed(this, l, status, "sandbox a child thread");

@@ -272,7 +272,8 @@ internal sealed unsafe class LuauVmContext
         CancellationToken cancellationToken,
         bool isAsync,
         ScriptOperationMode mode,
-        bool requireZeroResults = false)
+        bool requireZeroResults = false,
+        bool resumesThread = false)
     {
         var effectiveOptions = ResolveOperationOptions(options, requireZeroResults);
         if (effectiveOptions.ContinuationScheduler is { } scheduler && !scheduler.CheckAccess())
@@ -304,6 +305,21 @@ internal sealed unsafe class LuauVmContext
                 if (activeOperation != null)
                 {
                     ThrowHelper.ThrowInvalidOperationException("The Luau VM is already executing.");
+                }
+
+                // Every top-level entry except Resume starts a new call. Both
+                // gates are held and no operation is active, so nothing can
+                // resume or reset the thread between this check and the
+                // entry; nothing has been pushed yet, so a rejection leaves
+                // the thread exactly as it was. The root is never left
+                // suspended (ScriptRunner.RejectRootYield resets it), so the
+                // per-frame calls on it skip the native read.
+                if (mode == ScriptOperationMode.TopLevelResume && !resumesThread && !state.IsMainThread)
+                {
+                    state.ThrowIfSuspendedUnderNativeAccess(
+                        "start a new call",
+                        chunkName,
+                        includeUnstartedCoroutine: true);
                 }
 
                 // Asynchronous operations are never reused: execution contexts

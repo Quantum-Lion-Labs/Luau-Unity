@@ -296,7 +296,7 @@
         </member>
         <member name="M:Luau.ScriptOperation.Activate(System.Int64,Luau.LuauState,System.String,Luau.LuauExecutionOptions,System.Threading.CancellationToken,System.Threading.CancellationToken,System.Threading.CancellationToken,System.Boolean,Luau.ScriptOperationMode)">
             <summary>
-            Starts a new life. Called by <see cref="M:Luau.LuauVmContext.BeginOperation(Luau.LuauState,System.String,Luau.LuauExecutionOptions,System.Threading.CancellationToken,System.Boolean,Luau.ScriptOperationMode,System.Boolean)"/>
+            Starts a new life. Called by <see cref="M:Luau.LuauVmContext.BeginOperation(Luau.LuauState,System.String,Luau.LuauExecutionOptions,System.Threading.CancellationToken,System.Boolean,Luau.ScriptOperationMode,System.Boolean,System.Boolean)"/>
             under the root gates, before the operation is published, so nothing
             else can observe the fields while they change.
             </summary>
@@ -2262,6 +2262,14 @@
             scope to release its scope-owned results; dispose child threads separately.
             </summary>
         </member>
+        <member name="M:Luau.LuauState.GetModuleCallBase(System.String)">
+            <summary>
+            The stack base of a module's protected call, read once the thread is
+            known to be able to run one. A module may run on a thread that is
+            itself running, inside the operation that called <c>require</c>, but
+            never on one that is suspended. The caller holds the native gate.
+            </summary>
+        </member>
         <member name="M:Luau.LuauState.Resume(System.ReadOnlySpan{Luau.LuauValue},Luau.LuauExecutionOptions)">
             <summary>
             Resumes this child coroutine with caller-owned arguments. The returned
@@ -2306,6 +2314,18 @@
             caller-owned memory. The caller owns and must dispose reference wrappers
             written to the destination. Slots that receive results must not already
             contain managed reference wrappers.
+            </summary>
+        </member>
+        <member name="M:Luau.LuauState.ThrowIfSuspendedUnderNativeAccess(System.String,System.String,System.Boolean)">
+            <summary>
+            Rejects work that would start a new call on this thread while it holds
+            a pending continuation. Native resume of a yielded or interrupted
+            thread continues that continuation and drops the new callee, and a
+            protected call cannot run on it. With
+            <paramref name="includeUnstartedCoroutine"/>, a child whose coroutine
+            function has not started is rejected too: a new call would run above
+            that function, and the reset after a failed call would discard it. The
+            caller holds the native gate and has pushed nothing for its call.
             </summary>
         </member>
         <member name="P:Luau.LuauState.Item(System.ReadOnlySpan{System.Byte})">
@@ -2889,6 +2909,14 @@
             Describes the managed lifecycle state of a child Luau coroutine.
             Root states do not have a coroutine lifecycle status.
             </summary>
+            <remarks>
+            A child that has yielded, or a coroutine created by script whose function
+            has not started, accepts only <c>Resume</c> until it finishes. Starting a
+            new call on it, for example with <c>DoString</c> or <c>ExecuteCompilerOutput</c>,
+            throws <see cref="T:System.InvalidOperationException"/> and leaves it
+            unchanged. A freshly created host thread and a <see cref="F:Luau.LuauThreadStatus.Dead"/> child
+            accept new calls.
+            </remarks>
         </member>
         <member name="F:Luau.LuauThreadStatus.Suspended">
             <summary>The child is freshly created or suspended at a yield.</summary>

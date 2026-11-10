@@ -283,6 +283,9 @@ work.
 For coroutines, `Resume(arguments)` returns an owned scope and `ResumeInto`
 writes into memory you own; the async forms follow the same naming. `GetStatus()`
 reports `Suspended`, `Running`, or `Dead`, and rejects being called on a root.
+While a coroutine has yielded, or has not started its function, only `Resume`
+continues it: `DoString`, `Execute`, and the asset helpers throw
+`InvalidOperationException` on it instead of running a new chunk.
 
 ## Ownership inside callbacks
 
