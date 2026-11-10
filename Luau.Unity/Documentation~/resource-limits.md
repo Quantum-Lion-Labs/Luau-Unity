@@ -73,12 +73,19 @@ every operation:
 | `InterruptCountLimit` | 10,000,000 safepoints | `LuauExecutionBudgetException`, `BudgetKind == InterruptCount` |
 | `MaxResultCount` | 64 values | `LuauResultLimitException` |
 
-Under these defaults the wall clock is the limit that normally stops a script
-that runs too long.
+Whichever limit an operation reaches first stops it, so handle both kinds of
+`LuauExecutionBudgetException` wherever you report a script that ran too long.
+On desktop hardware a tight loop of Luau code that never ends reaches the count
+first, after roughly 35 to 70 ms. Loops that do more work in each iteration,
+scripts that spend their time in host functions, and slower devices reach the
+wall clock first.
 
-`InterruptCountLimit` counts interrupt safepoints: every call, every return,
-every loop iteration, and each step of a Lua pattern match. A limit of N lets
-exactly N safepoints run and stops the script at safepoint N + 1, reported as
+`InterruptCountLimit` counts interrupt safepoints. Luau code reaches one when
+it calls a function, when a Luau function returns, on each loop iteration, and
+at each step of a Lua pattern match. A return from a host function is not a
+safepoint, and neither is a call to a built-in function that the VM runs
+inline. A limit of N lets exactly N safepoints run and stops the script at
+safepoint N + 1, reported as
 `LuauExecutionBudgetException` with `ObservedInterruptCount == N + 1`. Modules
 loaded by `require()` count toward the operation that required them.
 

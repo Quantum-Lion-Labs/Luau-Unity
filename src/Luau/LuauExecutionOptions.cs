@@ -19,12 +19,16 @@ public sealed record LuauExecutionOptions
     /// <c>new LuauExecutionOptions()</c> starts from the same values.
     /// </summary>
     /// <remarks>
-    /// The wall clock is the limit that normally stops a long-running script
-    /// under this profile. The interrupt-count limit is set high enough that
-    /// ordinary one-time work, such as filling a large grid or sorting a few
-    /// thousand entries with a comparison function, does not reach it. It
-    /// still stops a runaway script when a host removes the wall-clock limit,
-    /// for example while a debugger is attached.
+    /// Whichever limit an operation reaches first stops it. The
+    /// interrupt-count limit is set high enough that ordinary one-time work,
+    /// such as filling a large grid or sorting a few thousand entries with a
+    /// comparison function, does not reach it. A tight loop of Luau code that
+    /// never ends reaches it within tens of milliseconds on desktop hardware,
+    /// before the wall clock. Loops that do more work in each iteration,
+    /// scripts that spend their time in host functions, and slower devices
+    /// reach the wall clock first. The count is also what stops a runaway
+    /// script when a host removes the wall-clock limit, for example while a
+    /// debugger is attached.
     /// </remarks>
     public static LuauExecutionOptions Default { get; } = new();
 
@@ -64,16 +68,19 @@ public sealed record LuauExecutionOptions
     /// <summary>
     /// Gets the maximum number of interrupt safepoints permitted for an
     /// operation, or <see langword="null"/> when no interrupt-count budget is
-    /// configured. Every call, every return, every loop iteration, and each
-    /// step of a Lua pattern match is one safepoint. A limit of N lets exactly
-    /// N safepoints run and stops the operation at safepoint N + 1. The
-    /// <see cref="Default"/> profile allows 10,000,000.
+    /// configured. Luau code reaches a safepoint when it calls a function,
+    /// when a Luau function returns, on each loop iteration, and at each step
+    /// of a Lua pattern match. A limit of N lets exactly N safepoints run and
+    /// stops the operation at safepoint N + 1. The <see cref="Default"/>
+    /// profile allows 10,000,000.
     /// </summary>
     /// <remarks>
     /// Unlike <see cref="WallClockLimit"/>, this limit bounds the same amount
     /// of script work on every machine, and time the process spends paused or
     /// descheduled does not consume it. It does not bound time spent inside a
-    /// single host or library call.
+    /// single host or library call. A return from a host function is not a
+    /// safepoint, and neither is a call to a built-in function that the VM
+    /// runs inline.
     /// </remarks>
     /// <exception cref="ArgumentOutOfRangeException">
     /// The assigned count is zero or negative.
