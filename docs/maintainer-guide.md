@@ -939,6 +939,21 @@ calls and exact serial/parallel output comparison, and
 `luau_host_library_conformance` and `luau_host_library_coverage` compare the
 replaced library functions with upstream's (section 3.5).
 
+The native tests also build the reference-wrap fixture,
+`luau_host_reference_wrap`: the host compiled from its own source by
+`tests/luau_host_reference_wrap_fixture.cpp`, which adds two test-only exports
+that position the process reference-token allocator and count live tokens
+(`tests/luau_host_reference_wrap_fixture.h`). With it,
+`luau_host_reference_wrap_conformance` and the managed `ReferenceTokenWrapTests`
+reach the end of the token range without creating two billion references
+first. The fixture keeps the host's build identity, so the managed handshake
+accepts it; it is never installed or copied into the package, and the shipped
+source contains none of it. The managed tests load it, with a second copy of
+the runtime, in a load context of their own, and find it through
+`LUAU_HOST_REFERENCE_WRAP_FIXTURE` (which `validate-linux` and the native CI
+jobs set, so a missing fixture fails there), or else in the `linux-x64` or
+`windows-x64` build tree; without either they are skipped.
+
 ### 12.4 Package validation
 
 ```bash
