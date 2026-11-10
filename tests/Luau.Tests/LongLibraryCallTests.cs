@@ -284,12 +284,22 @@ public sealed class LongLibraryCallTests
     // The cancellation and disposal below come from another thread shortly
     // after the script reports that it is about to make the call, so that the
     // call has started. The sorts run for minutes, so the request always lands
-    // inside them. The other calls take a hundred milliseconds or more, and a
-    // runner that stalls the requesting thread for that long lets the call
-    // finish first; such an attempt is repeated. A call that cannot be stopped
-    // from inside finishes in every attempt.
+    // inside them. The other calls take 50 ms or more even on a fast runner,
+    // and a runner that stalls the requesting thread for that long lets the
+    // call, or the whole operation, finish first; such an attempt is repeated.
+    // A call that cannot be stopped from inside finishes in every attempt.
     const int Attempts = 5;
-    static readonly TimeSpan RequestDelay = TimeSpan.FromMilliseconds(20);
+
+    // Spins rather than sleeps: Windows rounds a sleep up to its timer tick,
+    // about 16 ms.
+    static void WaitUntilTheCallRuns()
+    {
+        var delay = Stopwatch.StartNew();
+        while (delay.Elapsed < TimeSpan.FromMilliseconds(2))
+        {
+            Thread.SpinWait(100);
+        }
+    }
 
     [Theory]
     [MemberData(nameof(CallNames))]
@@ -315,16 +325,26 @@ public sealed class LongLibraryCallTests
                     cancellationToken: cancellation.Token);
             });
             Assert.True(started.Wait(TestBudgets.WaitTimeout));
-            Thread.Sleep(RequestDelay);
+            WaitUntilTheCallRuns();
             var stopwatch = Stopwatch.StartNew();
             cancellation.Cancel();
 
-            await Assert.ThrowsAsync<LuauExecutionCanceledException>(() => execution.WaitAsync(TestBudgets.WaitTimeout));
+            var canceled = false;
+            try
+            {
+                await execution.WaitAsync(TestBudgets.WaitTimeout);
+            }
+            catch (LuauExecutionCanceledException)
+            {
+                canceled = true;
+            }
             Assert.True(stopwatch.Elapsed < StopBound, $"Stopping took {stopwatch.Elapsed}.");
-            if (!Reached(root))
+            // Without a cancellation, the operation finished before it came.
+            if (canceled && !Reached(root))
             {
                 break;
             }
+            Assert.True(Reached(root));
             Assert.True(attempt < Attempts, "The call finished before the cancellation stopped it in every attempt.");
         }
         RequireUsable(root, top);
@@ -359,7 +379,7 @@ public sealed class LongLibraryCallTests
             });
             thread.Start();
             Assert.True(started.Wait(TestBudgets.WaitTimeout));
-            Thread.Sleep(RequestDelay);
+            WaitUntilTheCallRuns();
             var stopwatch = Stopwatch.StartNew();
 
             // Dispose waits for the running operation to stop.
@@ -367,11 +387,16 @@ public sealed class LongLibraryCallTests
 
             Assert.True(thread.Join(TestBudgets.WaitTimeout));
             Assert.True(stopwatch.Elapsed < StopBound, $"Stopping took {stopwatch.Elapsed}.");
-            Assert.IsType<ObjectDisposedException>(observed);
-            if (!Reached(root))
+            // Without an exception, the operation finished before the disposal.
+            if (observed != null)
             {
-                break;
+                Assert.IsType<ObjectDisposedException>(observed);
+                if (!Reached(root))
+                {
+                    break;
+                }
             }
+            Assert.True(Reached(root));
             Assert.True(attempt < Attempts, "The call finished before the disposal stopped it in every attempt.");
         }
         RequireUsable(root, top);
@@ -384,32 +409,41 @@ public sealed class LongLibraryCallTests
         // Nothing of the root is left to show where the call stopped, so this
         // relies on the time bound, which the sorts would exceed many times
         // over; the child-thread test above shows the stop is inside.
-        var root = Prepare(name);
-        using var started = new ManualResetEventSlim();
-        root["started"] = root.CreateFunction("started", _ => started.Set());
-        Exception? observed = null;
-        var thread = new Thread(() =>
+        for (var attempt = 1; ; attempt++)
         {
-            try
+            var root = Prepare(name);
+            using var started = new ManualResetEventSlim();
+            root["started"] = root.CreateFunction("started", _ => started.Set());
+            Exception? observed = null;
+            var thread = new Thread(() =>
             {
-                root.DoString("started() " + Calls[name].Call + " reached = true", "@long-call/dispose").Dispose();
-            }
-            catch (Exception exception)
+                try
+                {
+                    root.DoString("started() " + Calls[name].Call + " reached = true", "@long-call/dispose").Dispose();
+                }
+                catch (Exception exception)
+                {
+                    observed = exception;
+                }
+            });
+            thread.Start();
+            Assert.True(started.Wait(TestBudgets.WaitTimeout));
+            WaitUntilTheCallRuns();
+            var stopwatch = Stopwatch.StartNew();
+
+            // Dispose waits for the running operation to stop.
+            root.Dispose();
+
+            Assert.True(thread.Join(TestBudgets.WaitTimeout));
+            Assert.True(stopwatch.Elapsed < StopBound, $"Stopping took {stopwatch.Elapsed}.");
+            Assert.True(root.IsDisposed);
+            // Without an exception, the operation finished before the disposal.
+            if (observed != null)
             {
-                observed = exception;
+                Assert.IsType<ObjectDisposedException>(observed);
+                break;
             }
-        });
-        thread.Start();
-        Assert.True(started.Wait(TestBudgets.WaitTimeout));
-        Thread.Sleep(RequestDelay);
-        var stopwatch = Stopwatch.StartNew();
-
-        // Dispose waits for the running operation to stop.
-        root.Dispose();
-
-        Assert.True(thread.Join(TestBudgets.WaitTimeout));
-        Assert.True(stopwatch.Elapsed < StopBound, $"Stopping took {stopwatch.Elapsed}.");
-        Assert.IsType<ObjectDisposedException>(observed);
-        Assert.True(root.IsDisposed);
+            Assert.True(attempt < Attempts, "The operation finished before the disposal in every attempt.");
+        }
     }
 }
