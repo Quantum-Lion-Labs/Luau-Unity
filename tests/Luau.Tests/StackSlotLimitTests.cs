@@ -408,4 +408,75 @@ return ok, read()";
             AssertRootUsable(root);
         }
     }
+
+    // Several full-frame callback failures in one operation, delivered through
+    // each path in turn: suspended and injected, raised immediately inside a
+    // non-yieldable metamethod, and through nested coroutines. Each must be
+    // caught where the script expects, and the chunk's own locals must survive.
+    const string RepeatedFullFrameFailuresSource = @"
+local kept = 41
+local function keep() return kept end
+kept += 1
+local function full() return fail(0, table.unpack(table.create(7999, 0))) end
+local a = pcall(full)
+local b = pcall(function()
+    local proxy = setmetatable({}, { __index = function() return full() end })
+    return proxy.x
+end)
+local c = pcall(full)
+local d = coroutine.wrap(function() return pcall(full) end)()
+local e = pcall(coroutine.wrap(function() return coroutine.wrap(full)() end))
+local co = coroutine.create(function() return coroutine.wrap(function() return pcall(full) end)() end)
+local resumed, f = coroutine.resume(co)
+local g = pcall(full)
+return a, b, c, d, e, resumed, f, g, keep()";
+
+    static void AssertRepeatedFullFrameFailuresWereCaught(LuauResultScope results)
+    {
+        using (results)
+        {
+            Assert.Equal(9, results.Count);
+            Assert.Equal(
+                [false, false, false, false, false, true, false, false],
+                results.Take(8).Select(value => value.Read<bool>()));
+            Assert.Equal(42, results[8].Read<int>());
+        }
+    }
+
+    [Fact]
+    public async Task RepeatedFullFrameCallbackFailuresInOneOperationAreEachCaught()
+    {
+        using var root = CreateRoot(UnboundedExecution);
+        root["fail"] = root.CreateFunction("fail", _ => throw new InvalidOperationException("boom"));
+        using var thread = root.CreateThread();
+
+        for (var attempt = 0; attempt < 8; attempt++)
+        {
+            AssertRepeatedFullFrameFailuresWereCaught(root.DoString(RepeatedFullFrameFailuresSource));
+            AssertRepeatedFullFrameFailuresWereCaught(thread.DoString(RepeatedFullFrameFailuresSource));
+            AssertRepeatedFullFrameFailuresWereCaught(await root.DoStringAsync(RepeatedFullFrameFailuresSource));
+            AssertRepeatedFullFrameFailuresWereCaught(await thread.DoStringAsync(RepeatedFullFrameFailuresSource));
+            AssertRootUsable(root);
+        }
+    }
+
+    [Fact]
+    public async Task RepeatedFullFrameAsyncCallbackFailuresInOneOperationAreEachCaught()
+    {
+        using var root = CreateRoot(UnboundedExecution);
+        root["fail"] = root.CreateAsyncFunction("fail", async _ =>
+        {
+            await Task.Yield();
+            throw new InvalidOperationException("boom");
+        });
+        using var thread = root.CreateThread();
+
+        for (var attempt = 0; attempt < 8; attempt++)
+        {
+            AssertRepeatedFullFrameFailuresWereCaught(await root.DoStringAsync(RepeatedFullFrameFailuresSource));
+            AssertRepeatedFullFrameFailuresWereCaught(await thread.DoStringAsync(RepeatedFullFrameFailuresSource));
+        }
+
+        AssertRootUsable(root);
+    }
 }
