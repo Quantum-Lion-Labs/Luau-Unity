@@ -518,9 +518,11 @@ namespace Luau.Unity.Tests
             {
                 StateOptions = LuauStateOptions.Default with
                 {
+                    // A safety net only. Each case below sets the one budget
+                    // it checks, so a busy editor cannot make the other win.
                     DefaultExecutionOptions = LuauExecutionOptions.Default with
                     {
-                        WallClockLimit = TimeSpan.FromMilliseconds(2),
+                        WallClockLimit = TimeSpan.FromSeconds(30),
                         InterruptCountLimit = null,
                     },
                 },
@@ -532,13 +534,16 @@ namespace Luau.Unity.Tests
             var count = Assert.Throws<LuauExecutionBudgetException>(() => script.DoString(
                 "for i = 1, 1000 do end",
                 "@budgets/count.luau",
-                executionOptions: new LuauExecutionOptions { InterruptCountLimit = 100 }));
+                executionOptions: LuauExecutionOptions.Unbounded with { InterruptCountLimit = 100 }));
             Assert.That(count.BudgetKind, Is.EqualTo(LuauExecutionBudgetKind.InterruptCount));
             Assert.That(count.ObservedInterruptCount, Is.EqualTo(101));
 
             var stopwatch = System.Diagnostics.Stopwatch.StartNew();
             var wallClock = Assert.Throws<LuauExecutionBudgetException>(() =>
-                script.DoString("local function f() end while true do f() end", "@budgets/wall-clock.luau"));
+                script.DoString(
+                    "local function f() end while true do f() end",
+                    "@budgets/wall-clock.luau",
+                    executionOptions: LuauExecutionOptions.Unbounded with { WallClockLimit = TimeSpan.FromMilliseconds(2) }));
             Assert.That(wallClock.BudgetKind, Is.EqualTo(LuauExecutionBudgetKind.WallClock));
             Assert.That(wallClock.Elapsed, Is.GreaterThanOrEqualTo(TimeSpan.FromMilliseconds(2)));
             Assert.That(stopwatch.Elapsed, Is.LessThan(TimeSpan.FromSeconds(10)));

@@ -491,7 +491,7 @@ internal sealed unsafe class ScriptOperation : IDisposable
         {
             if (interruptState != null &&
                 Options.InterruptCountLimit is { } interruptLimit &&
-                ReadNativeInterruptCount(interruptState) > interruptLimit)
+                ReadNativeInterruptCount(interruptState) > (ulong)interruptLimit)
             {
                 candidate = ScriptHardStopReason.InterruptCount;
             }
@@ -538,15 +538,15 @@ internal sealed unsafe class ScriptOperation : IDisposable
         };
     }
 
-    long ReadNativeInterruptCount(LuauHostState* interruptState)
+    ulong ReadNativeInterruptCount(LuauHostState* interruptState)
     {
         // The host counts safepoints itself and polls only when the count
-        // passes the limit or other work is due. Its count is the authority;
-        // keep the latest observation for the budget exception.
+        // passes the limit or other work is due. Its count is the authority
+        // and is compared unclamped; the latest observation is kept for the
+        // budget exception, which reports a signed count.
         var nativeCount = luau_host_interrupt_count(interruptState);
-        var observed = nativeCount > long.MaxValue ? long.MaxValue : (long)nativeCount;
-        Interlocked.Exchange(ref interruptCount, observed);
-        return observed;
+        Interlocked.Exchange(ref interruptCount, nativeCount > long.MaxValue ? long.MaxValue : (long)nativeCount);
+        return nativeCount;
     }
 
     TimeSpan GetElapsedTime()
@@ -579,6 +579,11 @@ internal sealed unsafe class ScriptOperation : IDisposable
             return;
         }
 
+        // Ask for a poll before canceling: registrations on the
+        // callback-visible token are host code, and one that blocks on the VM
+        // must not delay the stop it is waiting for.
+        RequestInterruptAttention();
+
         try
         {
             deadlineSource.Cancel();
@@ -595,7 +600,9 @@ internal sealed unsafe class ScriptOperation : IDisposable
         }
 
         // The native host also reads its own clock, but only every few
-        // safepoints; this request bounds detection by the timer as well.
+        // safepoints; this request bounds detection by the timer as well. It
+        // repeats the one above in case that poll ran before the cancellation
+        // became visible.
         RequestInterruptAttention();
     }
 

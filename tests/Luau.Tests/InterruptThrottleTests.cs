@@ -23,6 +23,12 @@ public sealed class InterruptThrottleTests
         WallClockLimit = TimeSpan.FromSeconds(20),
     };
 
+    // An interrupt-count budget with no wall-clock limit. A bare
+    // `new LuauExecutionOptions { InterruptCountLimit = n }` also carries the
+    // default 250 ms wall-clock limit, which a busy runner can exceed first.
+    static LuauExecutionOptions CountOnly(long limit) =>
+        LuauExecutionOptions.Unbounded with { InterruptCountLimit = limit };
+
     // A signal must stop the script well before the safety net would.
     static readonly TimeSpan StopBound = TimeSpan.FromSeconds(10);
 
@@ -151,7 +157,7 @@ public sealed class InterruptThrottleTests
             var exception = Assert.Throws<LuauExecutionBudgetException>(() => root.DoString(
                 source,
                 "@throttle/count.luau",
-                executionOptions: new LuauExecutionOptions { InterruptCountLimit = limit }));
+                executionOptions: CountOnly(limit)));
 
             Assert.Equal(LuauExecutionBudgetKind.InterruptCount, exception.BudgetKind);
             Assert.Equal(limit, exception.InterruptCountLimit);
@@ -166,7 +172,7 @@ public sealed class InterruptThrottleTests
         exact["fail"] = exactFail;
         exact.DoString(
             source,
-            executionOptions: new LuauExecutionOptions { InterruptCountLimit = safepoints }).Dispose();
+            executionOptions: CountOnly(safepoints)).Dispose();
     }
 
     [Fact]
@@ -192,7 +198,7 @@ public sealed class InterruptThrottleTests
             using var root = CreateRoot();
             using var wait = root.CreateAsyncFunction("wait", async _ => await Task.Yield());
             root["wait"] = wait;
-            var options = new LuauExecutionOptions { InterruptCountLimit = limit };
+            var options = CountOnly(limit);
             if (fails)
             {
                 var exception = await Assert.ThrowsAsync<LuauExecutionBudgetException>(async () =>
@@ -424,7 +430,7 @@ public sealed class InterruptThrottleTests
         root.CollectGarbage();
         var exception = Assert.Throws<LuauExecutionBudgetException>(() => root.DoString(
             "local t = {} while true do t[#t % 1024 + 1] = {} end",
-            executionOptions: new LuauExecutionOptions { InterruptCountLimit = 50_000 }));
+            executionOptions: CountOnly(50_000)));
         Assert.Equal(50_001, exception.ObservedInterruptCount);
     }
 
@@ -439,7 +445,7 @@ public sealed class InterruptThrottleTests
             using var root = CreateRoot();
             var exception = Assert.Throws<LuauExecutionBudgetException>(() => root.DoString(
                 limit % 50_000 == 0 ? "local function f() end while true do f() end" : "while true do end",
-                executionOptions: new LuauExecutionOptions { InterruptCountLimit = limit }));
+                executionOptions: CountOnly(limit)));
             return exception.ObservedInterruptCount!.Value;
         }))).WaitAsync(TestTimeout);
 
@@ -481,25 +487,55 @@ public sealed class InterruptThrottleTests
     [Fact]
     public void DeadlineTimersOutlivingTheirOperationsDoNotStopLaterOperations()
     {
-        // Each operation ends before its 1 ms deadline; a late timer must not
-        // stop the next operation on the same root.
-        using var root = CreateRoot(LuauExecutionOptions.Unbounded with { WallClockLimit = TimeSpan.FromMilliseconds(1) });
-        using var later = root.CreateFunction("later", _ => { });
-        root["later"] = later;
+        // A 1 ms deadline arms a timer that can fire just as its operation
+        // ends. The next operation on the same root has only the safety net,
+        // so nothing but a late signal from the earlier one could stop it.
+        using var root = CreateRoot();
+        var brief = LuauExecutionOptions.Unbounded with { WallClockLimit = TimeSpan.FromMilliseconds(1) };
         for (var round = 0; round < 500; round++)
         {
-            using var result = root.DoString("return 1");
-            Assert.Equal(1, Assert.Single(result).Read<int>());
-        }
+            try
+            {
+                root.DoString("return 1", executionOptions: brief).Dispose();
+            }
+            catch (LuauExecutionBudgetException)
+            {
+                // A stalled runner can legitimately exhaust a 1 ms budget;
+                // that is not what this test checks.
+            }
 
-        using var unbounded = CreateRoot(SafetyNet);
-        for (var round = 0; round < 50; round++)
-        {
-            using var result = unbounded.DoString(
+            using var result = root.DoString(
                 "local s = 0 for i = 1, 10000 do s += i end return s",
-                executionOptions: new LuauExecutionOptions { WallClockLimit = TimeSpan.FromSeconds(10) });
+                executionOptions: SafetyNet);
             Assert.Equal(50005000, Assert.Single(result).Read<int>());
         }
+    }
+
+    [Fact]
+    public async Task DisposalStopsALoopEvenWhenACancellationHandlerNeedsTheVm()
+    {
+        // Disposal cancels the callback-visible token, and its handlers are
+        // host code. This one needs the VM, which the executing thread holds
+        // until the script stops; the script has no budget, so only the
+        // disposal request can stop it. The request must not wait for the
+        // handler.
+        var root = CreateRoot();
+        using var entered = new ManualResetEventSlim();
+        CancellationTokenRegistration registration = default;
+        using var hook = root.CreateFunction("hook", context =>
+        {
+            registration = context.CancellationToken.Register(() => _ = root.MemoryUsage);
+            entered.Set();
+        });
+        root["hook"] = hook;
+
+        var execution = Task.Run(() => root.DoString("hook() while true do end").Dispose());
+        Assert.True(entered.Wait(TestTimeout));
+        var disposal = Task.Run(root.Dispose);
+
+        await Assert.ThrowsAsync<ObjectDisposedException>(() => execution.WaitAsync(StopBound));
+        await disposal.WaitAsync(StopBound);
+        registration.Dispose();
     }
 
     [Fact]
@@ -540,7 +576,7 @@ public sealed class InterruptThrottleTests
 
             var exception = Assert.Throws<LuauExecutionBudgetException>(() => root.DoString(
                 "local m = require('mod') for i = 1, 10 do end return m",
-                executionOptions: new LuauExecutionOptions { InterruptCountLimit = limit }));
+                executionOptions: CountOnly(limit)));
             Assert.Equal(expected, exception.ObservedInterruptCount);
         }
 
@@ -551,7 +587,7 @@ public sealed class InterruptThrottleTests
         }));
         using var result = exact.DoString(
             "local m = require('mod') for i = 1, 10 do end return m",
-            executionOptions: new LuauExecutionOptions { InterruptCountLimit = 38 });
+            executionOptions: CountOnly(38));
         Assert.Equal(325, Assert.Single(result).Read<int>());
     }
 
@@ -567,7 +603,7 @@ public sealed class InterruptThrottleTests
             {
                 inner.DoString(
                     "for i = 1, 1000 do end",
-                    executionOptions: new LuauExecutionOptions { InterruptCountLimit = 500 }).Dispose();
+                    executionOptions: CountOnly(500)).Dispose();
             }
             catch (LuauExecutionBudgetException exception) when (exception.ObservedInterruptCount == 501)
             {
@@ -580,13 +616,13 @@ public sealed class InterruptThrottleTests
         // safepoints per call never reach the outer count.
         var outerException = Assert.Throws<LuauExecutionBudgetException>(() => outer.DoString(
             "for i = 1, 10 do runInner() end",
-            executionOptions: new LuauExecutionOptions { InterruptCountLimit = 20 }));
+            executionOptions: CountOnly(20)));
         Assert.Equal(21, outerException.ObservedInterruptCount);
         Assert.Equal(10, innerFailures);
 
         outer.DoString(
             "for i = 1, 10 do runInner() end",
-            executionOptions: new LuauExecutionOptions { InterruptCountLimit = 21 }).Dispose();
+            executionOptions: CountOnly(21)).Dispose();
         Assert.Equal(20, innerFailures);
     }
 
@@ -623,7 +659,7 @@ public sealed class InterruptThrottleTests
         using var owner = root.DoString(
             "return coroutine.create(function() while true do for i = 1, 50 do end coroutine.yield() end end)");
         using var coroutine = owner.Read<LuauState>(0);
-        var options = new LuauExecutionOptions { InterruptCountLimit = 60 };
+        var options = CountOnly(60);
 
         // Each resume runs about 52 safepoints; five resumes would exceed a
         // shared budget of 60 four times over.
@@ -633,7 +669,7 @@ public sealed class InterruptThrottleTests
         }
 
         var exception = Assert.Throws<LuauExecutionBudgetException>(
-            () => coroutine.Resume(executionOptions: new LuauExecutionOptions { InterruptCountLimit = 10 }));
+            () => coroutine.Resume(executionOptions: CountOnly(10)));
         Assert.Equal(11, exception.ObservedInterruptCount);
     }
 }

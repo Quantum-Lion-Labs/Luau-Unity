@@ -1145,7 +1145,9 @@ LUAU_NOINLINE void throttledinterruptevent(lua_State* state, AllocatorContext* a
         }
         else if (slice < kClockTargetSliceNs / 2 && throttle.clockStride < kClockStrideMax)
         {
-            throttle.clockStride *= 2;
+            // Shrinking leaves arbitrary strides, so doubling can overshoot.
+            const uint32_t doubled = throttle.clockStride * 2;
+            throttle.clockStride = doubled > kClockStrideMax ? kClockStrideMax : doubled;
         }
 
         throttle.nextClockCheck = throttle.count + throttle.clockStride;
