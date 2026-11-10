@@ -97,7 +97,7 @@ namespace Luau.Unity.Tests
             var asset = CreateSourceAsset(
                 "@unity/package-shutdown-race.luau",
                 "return 42");
-            using var state = LuauState.Create();
+            using var state = TestBudgets.CreateRoot();
 
             try
             {
@@ -145,9 +145,9 @@ namespace Luau.Unity.Tests
         {
             var ownerThreadId = Environment.CurrentManagedThreadId;
             var scheduler = new QueuedOwnerScheduler();
-            using var state = LuauState.Create(new LuauStateOptions
+            using var state = LuauState.Create(TestBudgets.StateOptions with
             {
-                DefaultExecutionOptions = new LuauExecutionOptions
+                DefaultExecutionOptions = TestBudgets.Execution with
                 {
                     ContinuationScheduler = scheduler,
                 },
@@ -178,7 +178,7 @@ namespace Luau.Unity.Tests
             {
                 var execution = state.ExecuteAsync(asset).AsTask();
 
-                Assert.That(providerEntered.Wait(TimeSpan.FromSeconds(2)), Is.True);
+                Assert.That(providerEntered.Wait(TestBudgets.WaitTimeout), Is.True);
                 Assert.That(providerCalls, Is.EqualTo(1));
                 Assert.That(compilerThreadId, Is.Not.EqualTo(ownerThreadId));
                 Assert.That(sourceSnapshot, Is.EqualTo("return 42"));
@@ -186,7 +186,7 @@ namespace Luau.Unity.Tests
 
                 releaseProvider.Set();
                 Assert.That(
-                    SpinWait.SpinUntil(() => scheduler.PendingCount == 1, TimeSpan.FromSeconds(2)),
+                    SpinWait.SpinUntil(() => scheduler.PendingCount == 1, TestBudgets.WaitTimeout),
                     Is.True,
                     "Compilation completed without posting VM execution to the state owner.");
                 Assert.That(execution.IsCompleted, Is.False);
@@ -212,7 +212,7 @@ namespace Luau.Unity.Tests
             var asset = CreateSourceAsset(
                 "@unity/default-source-limit.luau",
                 "return 42");
-            using var state = LuauState.Create(new LuauStateOptions
+            using var state = LuauState.Create(TestBudgets.StateOptions with
             {
                 MaxSourceBytes = source.Length - 1,
             });
@@ -248,7 +248,7 @@ namespace Luau.Unity.Tests
             var asset = CreateSourceAsset(
                 "@unity/diagnostic-context.luau",
                 "this is not valid Luau");
-            using var state = LuauState.Create();
+            using var state = TestBudgets.CreateRoot();
             var diagnostic = new LuauCompilationException("expected an expression");
             using var providerOverride = LuauUnity.OverrideAssetCompilationProviderForTests(
                 (source, options, cancellationToken) =>
@@ -276,7 +276,7 @@ namespace Luau.Unity.Tests
             var asset = CreateSourceAsset(
                 "@unity/infrastructure-failure.luau",
                 "return 42");
-            using var state = LuauState.Create();
+            using var state = TestBudgets.CreateRoot();
             var failure = new InvalidOperationException("Compiler worker failed.");
             using var providerOverride = LuauUnity.OverrideAssetCompilationProviderForTests(
                 (source, options, cancellationToken) =>
@@ -307,7 +307,7 @@ namespace Luau.Unity.Tests
                     output,
                     "unity-tests/verified-provider-bypass",
                     "tests:first-party"));
-            using var state = LuauState.Create(new LuauStateOptions
+            using var state = LuauState.Create(TestBudgets.StateOptions with
             {
                 BytecodePolicy = LuauBytecodePolicy.RequireValidator,
                 BytecodeValidator = AcceptArtifactValidator.Instance,
@@ -345,7 +345,7 @@ namespace Luau.Unity.Tests
                     output,
                     "unity-tests/rejected-verified-provider",
                     "tests:untrusted"));
-            using var state = LuauState.Create();
+            using var state = TestBudgets.CreateRoot();
             var providerCalls = 0;
             using var providerOverride = LuauUnity.OverrideAssetCompilationProviderForTests(
                 (source, options, cancellationToken) =>
@@ -373,10 +373,10 @@ namespace Luau.Unity.Tests
         public void CompilerOutputExecutionPostsOperationStartToStateOwner()
         {
             var scheduler = new QueuedOwnerScheduler();
-            using var state = LuauState.Create(new LuauStateOptions
+            using var state = LuauState.Create(TestBudgets.StateOptions with
             {
                 BytecodePolicy = LuauBytecodePolicy.Reject,
-                DefaultExecutionOptions = new LuauExecutionOptions
+                DefaultExecutionOptions = TestBudgets.Execution with
                 {
                     ContinuationScheduler = scheduler,
                 },
@@ -393,7 +393,7 @@ namespace Luau.Unity.Tests
             }).GetAwaiter().GetResult();
 
             Assert.That(
-                SpinWait.SpinUntil(() => scheduler.PendingCount == 1, TimeSpan.FromSeconds(1)),
+                SpinWait.SpinUntil(() => scheduler.PendingCount == 1, TestBudgets.WaitTimeout),
                 Is.True,
                 "The background caller did not post the VM operation to its owner.");
             Assert.That(execution, Is.Not.Null);
@@ -414,7 +414,7 @@ namespace Luau.Unity.Tests
             var asset = ScriptableObject.CreateInstance<LuauAsset>();
             asset.name = "@unity/source-limit.luau";
             asset.SetSource("return 42", source);
-            using var state = LuauState.Create(new LuauStateOptions
+            using var state = LuauState.Create(TestBudgets.StateOptions with
             {
                 MaxSourceBytes = source.Length - 1,
                 MaxBytecodeBytes = 1024 * 1024,
@@ -448,7 +448,7 @@ namespace Luau.Unity.Tests
             var asset = CreateSourceAsset(
                 "@unity/service-source-limit.luau",
                 "return 42");
-            using var state = LuauState.Create(new LuauStateOptions
+            using var state = LuauState.Create(TestBudgets.StateOptions with
             {
                 MaxSourceBytes = source.Length,
             });
@@ -482,7 +482,7 @@ namespace Luau.Unity.Tests
             var asset = CreateSourceAsset(
                 "@unity/cancel-before-admission.luau",
                 "return 42");
-            using var state = LuauState.Create();
+            using var state = TestBudgets.CreateRoot();
             using var cancellation = new CancellationTokenSource();
             cancellation.Cancel();
             var providerCalls = 0;
@@ -515,7 +515,7 @@ namespace Luau.Unity.Tests
             var asset = CreateSourceAsset(
                 "@unity/cancel-pending-compilation.luau",
                 "return 42");
-            using var state = LuauState.Create();
+            using var state = TestBudgets.CreateRoot();
             using var cancellation = new CancellationTokenSource();
             var providerCompletion = new TaskCompletionSource<LuauCompileResult>(
                 TaskCreationOptions.RunContinuationsAsynchronously);
@@ -554,9 +554,9 @@ namespace Luau.Unity.Tests
         public void CancellationBeforeOwnerDispatchStopsVmInstallation()
         {
             var scheduler = new QueuedOwnerScheduler();
-            using var state = LuauState.Create(new LuauStateOptions
+            using var state = LuauState.Create(TestBudgets.StateOptions with
             {
-                DefaultExecutionOptions = new LuauExecutionOptions
+                DefaultExecutionOptions = TestBudgets.Execution with
                 {
                     ContinuationScheduler = scheduler,
                 },
@@ -580,7 +580,7 @@ namespace Luau.Unity.Tests
                     .GetResult();
 
                 Assert.That(
-                    SpinWait.SpinUntil(() => scheduler.PendingCount == 1, TimeSpan.FromSeconds(2)),
+                    SpinWait.SpinUntil(() => scheduler.PendingCount == 1, TestBudgets.WaitTimeout),
                     Is.True,
                     "Successful compilation did not queue owner-thread execution.");
                 cancellation.Cancel();
@@ -604,7 +604,7 @@ namespace Luau.Unity.Tests
             var asset = CreateSourceAsset(
                 "@unity/cancel-during-vm.luau",
                 "pending(); return 42");
-            using var state = LuauState.Create();
+            using var state = TestBudgets.CreateRoot();
             using var cancellation = new CancellationTokenSource();
             using var callbackEntered = new ManualResetEventSlim();
             var releaseCallback = new TaskCompletionSource<bool>(
@@ -624,7 +624,7 @@ namespace Luau.Unity.Tests
             try
             {
                 var execution = state.ExecuteAsync(asset, cancellation.Token).AsTask();
-                Assert.That(callbackEntered.Wait(TimeSpan.FromSeconds(2)), Is.True);
+                Assert.That(callbackEntered.Wait(TestBudgets.WaitTimeout), Is.True);
 
                 cancellation.Cancel();
                 Assert.That(execution.IsCompleted, Is.False);
@@ -649,7 +649,7 @@ namespace Luau.Unity.Tests
             var asset = CreateSourceAsset(
                 "@unity/destination-parity.luau",
                 sourceText);
-            using var state = LuauState.Create();
+            using var state = TestBudgets.CreateRoot();
             var output = LuauCompiler.Compile(Encoding.UTF8.GetBytes(sourceText));
             var providerCalls = 0;
             using var providerOverride = LuauUnity.OverrideAssetCompilationProviderForTests(
@@ -687,7 +687,7 @@ namespace Luau.Unity.Tests
                 "@unity/unknown-content.luau",
                 "return 42");
             asset.contentKind = (LuauAssetContentKind)12345;
-            using var state = LuauState.Create();
+            using var state = TestBudgets.CreateRoot();
             var providerCalls = 0;
             using var providerOverride = LuauUnity.OverrideAssetCompilationProviderForTests(
                 (source, options, cancellationToken) =>

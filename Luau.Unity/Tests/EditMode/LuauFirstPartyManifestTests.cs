@@ -417,6 +417,7 @@ namespace Luau.Unity.Tests
                 using var root = LuauUnity.CreateState(new LuauUnityOptions
                 {
                     UseFirstPartyBytecode = true,
+                    StateOptions = TestBudgets.StateOptions,
                     CaptureUnitySynchronizationContext = false,
                     Log = _ => { },
                 });

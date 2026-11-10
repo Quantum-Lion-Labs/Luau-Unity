@@ -75,6 +75,7 @@ namespace Luau.Unity.Tests
             var messages = new List<string>();
             using var root = LuauUnity.CreateState(new LuauUnityOptions
             {
+                StateOptions = TestBudgets.StateOptions,
                 MaxPrintArguments = 2,
                 MaxPrintUtf8Bytes = 12,
                 Log = messages.Add,
@@ -105,7 +106,11 @@ namespace Luau.Unity.Tests
         public void PrintBoundsMalformedUtf8AndSafelyTruncatesFollowingArguments(bool hasTail)
         {
             var messages = new List<string>();
-            using var root = LuauUnity.CreateState(new LuauUnityOptions { Log = messages.Add });
+            using var root = LuauUnity.CreateState(new LuauUnityOptions
+            {
+                StateOptions = TestBudgets.StateOptions,
+                Log = messages.Add,
+            });
             using var script = root.CreateSandboxedThread();
             using var results = script.DoString(
                 "print(string.rep(string.char(255), 4096)" + (hasTail ? ", 'tail'" : "") +
@@ -152,6 +157,7 @@ namespace Luau.Unity.Tests
             var messages = new List<string>();
             using var root = LuauUnity.CreateState(new LuauUnityOptions
             {
+                StateOptions = TestBudgets.StateOptions,
                 MaxPrintMessagesPerSecond = 2,
                 Log = messages.Add,
             });
@@ -277,6 +283,7 @@ namespace Luau.Unity.Tests
             var configured = false;
             using var root = LuauUnity.CreateState(new LuauUnityOptions
             {
+                StateOptions = TestBudgets.StateOptions,
                 ConfigureHostApis = state =>
                 {
                     configured = true;
@@ -340,6 +347,7 @@ namespace Luau.Unity.Tests
 
                 using var root = LuauUnity.CreateState(new LuauUnityOptions
                 {
+                    StateOptions = TestBudgets.StateOptions,
                     Log = _ => { },
                 });
                 using var script = root.CreateSandboxedThread();
@@ -415,6 +423,7 @@ namespace Luau.Unity.Tests
             using var root = LuauUnity.CreateState(new LuauUnityOptions
             {
                 ModuleMap = moduleMap,
+                StateOptions = TestBudgets.StateOptions,
                 ConfigureHostApis = state =>
                 {
                     state["mark"] = state.CreateFunction("mark", _ => executions++);
@@ -465,6 +474,7 @@ namespace Luau.Unity.Tests
             using var root = LuauUnity.CreateState(new LuauUnityOptions
             {
                 ModuleMap = moduleMap,
+                StateOptions = TestBudgets.StateOptions,
                 Log = _ => { },
             });
             using var script = root.CreateSandboxedThread();
@@ -480,12 +490,18 @@ namespace Luau.Unity.Tests
         public void OverfullScriptReturnFailsCleanlyAndLeavesTheStateUsable()
         {
             const string overfull = "local t = table.create(7999, 1) return 1, 2, 3, 4, table.unpack(t)";
-            using var root = LuauUnity.CreateState(new LuauUnityOptions { Log = _ => { } });
+            // The default result limit with the wall clock as a safety net
+            // only: each attempt builds an 8000-value frame.
+            using var root = LuauUnity.CreateState(new LuauUnityOptions
+            {
+                StateOptions = TestBudgets.StateOptions,
+                Log = _ => { },
+            });
             using var unbounded = LuauUnity.CreateState(new LuauUnityOptions
             {
-                StateOptions = LuauStateOptions.Default with
+                StateOptions = TestBudgets.StateOptions with
                 {
-                    DefaultExecutionOptions = LuauExecutionOptions.Default with
+                    DefaultExecutionOptions = TestBudgets.Execution with
                     {
                         MaxResultCount = null,
                     },
@@ -516,13 +532,12 @@ namespace Luau.Unity.Tests
         {
             using var root = LuauUnity.CreateState(new LuauUnityOptions
             {
-                StateOptions = LuauStateOptions.Default with
+                StateOptions = TestBudgets.StateOptions with
                 {
                     // A safety net only. Each case below sets the one budget
                     // it checks, so a busy editor cannot make the other win.
-                    DefaultExecutionOptions = LuauExecutionOptions.Default with
+                    DefaultExecutionOptions = TestBudgets.Execution with
                     {
-                        WallClockLimit = TimeSpan.FromSeconds(30),
                         InterruptCountLimit = null,
                     },
                 },

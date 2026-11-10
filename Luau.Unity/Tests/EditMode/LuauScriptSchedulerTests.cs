@@ -690,13 +690,13 @@ namespace Luau.Unity.Tests
                 }));
 
                 Assert.That(
-                    configureEntered.Wait(TimeSpan.FromSeconds(2)),
+                    configureEntered.Wait(TestBudgets.WaitTimeout),
                     Is.True,
                     "CreateState did not reach its host-configuration callback.");
 
                 drain = Task.Run(LuauUnity.DisposeTrackedRoots);
                 Assert.That(
-                    drain.Wait(TimeSpan.FromSeconds(2)),
+                    drain.Wait(TestBudgets.WaitTimeout),
                     Is.True,
                     "Lifecycle drain waited on host configuration instead of disposing the early-tracked root.");
                 Assert.That(configuringContext, Is.Not.Null);
@@ -736,9 +736,9 @@ namespace Luau.Unity.Tests
             return LuauUnity.CreateState(new LuauUnityOptions
             {
                 CaptureUnitySynchronizationContext = false,
-                StateOptions = LuauStateOptions.Default with
+                StateOptions = TestBudgets.StateOptions with
                 {
-                    DefaultExecutionOptions = LuauExecutionOptions.Default with
+                    DefaultExecutionOptions = TestBudgets.Execution with
                     {
                         ContinuationScheduler = continuationScheduler,
                     },
@@ -777,15 +777,18 @@ namespace Luau.Unity.Tests
             Action<LuauScriptRegistration, Exception> failureCallback = null,
             TimeSpan? aggregateBudget = null)
         {
+            // A phase needs finite limits. The wall-clock ones are safety nets
+            // here: tests of the aggregate budget pass their own and drive a
+            // fake clock, and every other dispatch runs on the real clock.
             return new LuauScriptPhaseOptions
             {
                 InvocationOptions = LuauExecutionOptions.Default with
                 {
-                    WallClockLimit = TimeSpan.FromSeconds(1),
+                    WallClockLimit = TestBudgets.WallClockSafetyNet,
                     InterruptCountLimit = 100_000,
                     MaxResultCount = 0,
                 },
-                AggregateWallClockBudget = aggregateBudget ?? TimeSpan.FromSeconds(5),
+                AggregateWallClockBudget = aggregateBudget ?? TestBudgets.WallClockSafetyNet,
                 FailureMode = failureMode,
                 FailureCallback = failureCallback,
             };
