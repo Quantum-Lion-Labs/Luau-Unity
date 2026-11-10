@@ -519,6 +519,25 @@ if(LUAU_HOST_BUILD_TESTS)
 
     add_test(NAME luau_host_conformance COMMAND luau_host_conformance)
 
+    # The host replaces a few library functions with versions that reach the
+    # interrupt callback while they work. This executable also links the
+    # upstream VM, as a plain reference to compare them against; its copy is
+    # separate from the one inside luau_host, whose symbols stay hidden.
+    add_executable(
+        luau_host_library_conformance
+        tests/luau_host_library_conformance.cpp
+    )
+    target_compile_features(luau_host_library_conformance PRIVATE cxx_std_17)
+    target_link_libraries(luau_host_library_conformance PRIVATE luau_host Luau.VM Threads::Threads)
+
+    if(MSVC)
+        target_compile_options(luau_host_library_conformance PRIVATE /W4 /WX /permissive- /EHsc)
+    else()
+        target_compile_options(luau_host_library_conformance PRIVATE -Wall -Wextra -Wpedantic -Werror)
+    endif()
+
+    add_test(NAME luau_host_library_conformance COMMAND luau_host_library_conformance)
+
     # Purpose-built malformed ABI libraries exercise the managed handshake
     # without adding mutation hooks or test exports to the production host.
     # Each target compiles the same tiny C fixture with one fixed defect.

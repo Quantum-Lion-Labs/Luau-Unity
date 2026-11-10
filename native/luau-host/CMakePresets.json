@@ -124,6 +124,7 @@
         "luau_host",
         "luau_host_c_header_compile",
         "luau_host_conformance",
+        "luau_host_library_conformance",
         "luau_host_invalid_abi_fixtures",
         "luau_host_export_audit",
         "luau_host_compatibility_audit"
@@ -136,6 +137,7 @@
         "luau_host",
         "luau_host_c_header_compile",
         "luau_host_conformance",
+        "luau_host_library_conformance",
         "luau_host_invalid_abi_fixtures",
         "luau_host_export_audit",
         "luau_host_compatibility_audit"
@@ -148,6 +150,7 @@
         "luau_host",
         "luau_host_c_header_compile",
         "luau_host_conformance",
+        "luau_host_library_conformance",
         "luau_host_invalid_abi_fixtures",
         "luau_host_export_audit",
         "luau_host_compatibility_audit"
@@ -160,6 +163,7 @@
         "luau_host",
         "luau_host_c_header_compile",
         "luau_host_conformance",
+        "luau_host_library_conformance",
         "luau_host_compiler_fuzzer",
         "luau_host_abi_fuzzer",
         "luau_host_export_audit",
@@ -173,6 +177,7 @@
         "luau_host",
         "luau_host_c_header_compile",
         "luau_host_conformance",
+        "luau_host_library_conformance",
         "luau_host_invalid_abi_fixtures",
         "luau_host_export_audit",
         "luau_host_compatibility_audit"
@@ -185,6 +190,7 @@
         "luau_host",
         "luau_host_c_header_compile",
         "luau_host_conformance",
+        "luau_host_library_conformance",
         "luau_host_invalid_abi_fixtures",
         "luau_host_export_audit",
         "luau_host_compatibility_audit"

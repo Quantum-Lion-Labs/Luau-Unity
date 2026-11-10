@@ -5,8 +5,12 @@
 #include "luacode.h"
 
 #include "lapi.h"
+#include "ldebug.h"
 #include "ldo.h"
+#include "lgc.h"
+#include "ltable.h"
 #include "ludata.h"
+#include "lvm.h"
 
 #include "reference_tokens.h"
 #include "tracked_allocation.h"
@@ -1012,6 +1016,1056 @@ void opresume(lua_State* state, void* userdata)
     }
 }
 
+// ---------------------------------------------------------------------------
+// Long library calls
+//
+// Luau code reaches an interrupt safepoint at each call, return, and loop
+// iteration, and upstream's pattern matcher reaches one at each matching step
+// (lstrlib.cpp, match()). A few other library functions do work that grows
+// with their inputs inside one C call and never reach one, so a wall-clock or
+// interrupt-count limit, cancellation, or disposal could not stop them until
+// they returned. The plain-text search behind string.find and string.split
+// compares the needle at every position, so its time grows with the product
+// of the two lengths: strings that fit the default 64 MB memory limit can keep
+// one call running for hours. table.sort, table.concat, and utf8.len are
+// linear or n log n, but one call can still run for hundreds of milliseconds.
+//
+// When it opens a library, the host replaces those entries of the library
+// table with the versions below, before a sandbox can freeze the table. The
+// string metatable's __index is the same table, so method calls, saved
+// references, and calls through the table all reach them. Each version does
+// exactly what upstream (as built here, with every fast flag at its default)
+// does for every input, including argument coercion, errors, and the order of
+// comparisons and table writes; luau_host_library_conformance compares them
+// with upstream over a generated corpus. Where only one path of a function can
+// run long, the host version handles that path and calls upstream's function
+// for everything else, in the same frame, so argument errors still name the
+// function. The version is a C closure in place of upstream's; upstream's
+// function pointer, the same for every state, is kept when the library opens.
+//
+// Each version reaches the interrupt callback after every kLibraryPollUnits of
+// work, as a non-yieldable EXECUTION safepoint like a pattern-matching step:
+// it counts toward the interrupt-count limit, and a stop raises the sticky
+// CANCELED hard stop. A unit is about one byte compared, sixteen bytes scanned
+// or copied, one UTF-8 byte decoded, or a sixteenth of a comparison, of a
+// concatenated field, or of a split piece, so polls stay about 10 to 100
+// microseconds apart on a desktop.
+//
+// Nothing here may own a resource with a destructor: the VM raises errors and
+// hard stops with longjmp.
+// ---------------------------------------------------------------------------
+
+constexpr size_t kLibraryPollUnits = 16384;
+// Memory scans and copies run about sixteen times as fast as byte loops.
+constexpr size_t kLibraryBytesPerUnit = 16;
+constexpr size_t kLibraryScanChunk = kLibraryPollUnits * kLibraryBytesPerUnit;
+// One table.sort comparison, one table.concat field, or one string.split
+// piece, beyond the bytes it touches.
+constexpr size_t kLibraryStepUnits = 16;
+// Subjects up to this many bytes go to upstream's string.find and string.split
+// directly, which keeps the common short call as fast as it was. Upstream's
+// search at this size compares at most about four million bytes (a needle of
+// half the subject that matches up to its last byte at every position), well
+// under a millisecond.
+constexpr size_t kPlainSearchDirectBytes = 4096;
+// Needles up to this many bytes are searched with upstream's loop only. Longer
+// needles are searched the same way while the bytes compared stay within one
+// per position plus kNaiveSearchSlack, and with the two-way algorithm after.
+constexpr size_t kShortNeedleBytes = 32;
+constexpr size_t kShortNeedleCandidates = 1024;
+constexpr size_t kNaiveSearchSlack = 4096;
+// How many scans in a row may advance fewer than four positions before the
+// two-way search stops scanning for the needle's first byte.
+constexpr int kShortScanLimit = 64;
+
+std::atomic<lua_CFunction> upstreamStringFind = {nullptr};
+std::atomic<lua_CFunction> upstreamStringSplit = {nullptr};
+
+// The remaining work before the next safepoint.
+struct LibraryWork
+{
+    explicit LibraryWork(lua_State* state)
+        : L(state)
+    {
+    }
+
+    lua_State* L;
+    size_t remaining = kLibraryPollUnits;
+};
+
+// Reaches the interrupt callback the way upstream's pattern matcher does. The
+// interrupt cannot yield here: raising nCcalls makes the thread non-yieldable,
+// so a stop unwinds as a CANCELED error, which luaD_pcall contains and which
+// restores nCcalls.
+LUAU_NOINLINE void librarysafepoint(lua_State* L)
+{
+    void (*interrupt)(lua_State*, int) = L->global->cb.interrupt;
+    if (interrupt)
+    {
+        L->nCcalls++;
+        interrupt(L, -1);
+        L->nCcalls--;
+    }
+}
+
+// Records units of work, and reaches a safepoint when they add up. Returns
+// whether it did.
+inline bool spend(LibraryWork& work, size_t units)
+{
+    if (LUAU_LIKELY(units < work.remaining))
+    {
+        work.remaining -= units;
+        return false;
+    }
+    work.remaining = kLibraryPollUnits;
+    librarysafepoint(work.L);
+    return true;
+}
+
+inline size_t smaller(size_t a, size_t b)
+{
+    return a < b ? a : b;
+}
+
+// The first index i in [from, end) with x[i] != y[i], or end.
+size_t matchforward(LibraryWork& work, const uint8_t* x, const uint8_t* y, size_t from, size_t end)
+{
+    size_t i = from;
+    for (;;)
+    {
+        const size_t stop = i + smaller(end - i, work.remaining);
+        const size_t start = i;
+        while (i < stop && x[i] == y[i])
+            ++i;
+        spend(work, i - start + 1);
+        if (i != stop || stop == end)
+            return i;
+    }
+}
+
+// Compares x[k - 1] with y[k - 1] downward while k > lowest, and returns the k
+// at which it stopped: lowest when every byte matched.
+size_t matchbackward(LibraryWork& work, const uint8_t* x, const uint8_t* y, size_t from, size_t lowest)
+{
+    size_t k = from;
+    for (;;)
+    {
+        const size_t stop = k - smaller(k - lowest, work.remaining);
+        const size_t start = k;
+        while (k > stop && x[k - 1] == y[k - 1])
+            --k;
+        spend(work, start - k + 1);
+        if (k != stop || stop == lowest)
+            return k;
+    }
+}
+
+// The first position p in [from, to) with bytes[p] == value, or to.
+size_t scanbyte(LibraryWork& work, const uint8_t* bytes, size_t from, size_t to, uint8_t value)
+{
+    while (from < to)
+    {
+        const size_t chunk = smaller(to - from, kLibraryScanChunk);
+        if (const void* hit = std::memchr(bytes + from, value, chunk))
+        {
+            const size_t at = size_t(static_cast<const uint8_t*>(hit) - bytes);
+            spend(work, (at - from) / kLibraryBytesPerUnit + 1);
+            return at;
+        }
+        from += chunk;
+        spend(work, chunk / kLibraryBytesPerUnit + 1);
+    }
+    return to;
+}
+
+bool equalbytes(LibraryWork& work, const uint8_t* a, const uint8_t* b, size_t size)
+{
+    while (size != 0)
+    {
+        const size_t chunk = smaller(size, kLibraryScanChunk);
+        if (std::memcmp(a, b, chunk) != 0)
+            return false;
+        a += chunk;
+        b += chunk;
+        size -= chunk;
+        spend(work, chunk / kLibraryBytesPerUnit + 1);
+    }
+    return true;
+}
+
+// A needle of at least two bytes, prepared for the two-way string-matching
+// algorithm (Crochemore and Perrin, 1991), which compares at most about twice
+// the subject length in bytes, whatever the inputs, and uses constant extra
+// memory. This follows glibc's two_way_short_needle.
+struct PlainNeedle
+{
+    // The critical position: the needle is split into x[0, critical) and
+    // x[critical, size). Always less than size.
+    size_t critical = 0;
+    // The period of the needle when periodic; otherwise the shift after a
+    // mismatch in the left half.
+    size_t period = 0;
+    bool periodic = false;
+};
+
+// glibc's critical_factorization: the later of the two maximal suffixes, for
+// the byte order and its reverse, starts the right half.
+size_t criticalfactorization(LibraryWork& work, const uint8_t* x, size_t size, size_t* period)
+{
+    // Index of the last byte of the left half; SIZE_MAX stands for -1.
+    size_t suffix = SIZE_MAX;
+    size_t j = 0;
+    size_t k = 1;
+    size_t p = 1;
+    while (j + k < size)
+    {
+        const uint8_t a = x[j + k];
+        const uint8_t b = x[suffix + k];
+        if (a < b)
+        {
+            j += k;
+            k = 1;
+            p = j - suffix;
+        }
+        else if (a == b)
+        {
+            if (k != p)
+                ++k;
+            else
+            {
+                j += p;
+                k = 1;
+            }
+        }
+        else
+        {
+            suffix = j++;
+            k = p = 1;
+        }
+        spend(work, 1);
+    }
+    *period = p;
+
+    size_t reversed = SIZE_MAX;
+    j = 0;
+    k = p = 1;
+    while (j + k < size)
+    {
+        const uint8_t a = x[j + k];
+        const uint8_t b = x[reversed + k];
+        if (b < a)
+        {
+            j += k;
+            k = 1;
+            p = j - reversed;
+        }
+        else if (a == b)
+        {
+            if (k != p)
+                ++k;
+            else
+            {
+                j += p;
+                k = 1;
+            }
+        }
+        else
+        {
+            reversed = j++;
+            k = p = 1;
+        }
+        spend(work, 1);
+    }
+
+    if (reversed + 1 < suffix + 1)
+        return suffix + 1;
+    *period = p;
+    return reversed + 1;
+}
+
+void prepareneedle(LibraryWork& work, PlainNeedle& needle, const uint8_t* x, size_t size)
+{
+    needle.critical = criticalfactorization(work, x, size, &needle.period);
+    // The period of the right half never exceeds its length, so this stays
+    // inside the needle.
+    needle.periodic = equalbytes(work, x, x + needle.period, needle.critical);
+    if (!needle.periodic)
+    {
+        const size_t right = size - needle.critical;
+        needle.period = (needle.critical > right ? needle.critical : right) + 1;
+    }
+}
+
+// The plain search behind string.find and string.split. It searches as
+// upstream's lmemfind does: memchr for the needle's first byte, then compare
+// the rest. That is fast for ordinary text, but on a subject that matches most
+// of a long needle at many positions it compares the needle at every one of
+// them. For a needle of at most kShortNeedleBytes that is still linear. For a
+// longer one the searcher counts the bytes it compares and, once they exceed
+// one per position by kNaiveSearchSlack, finishes with the two-way algorithm.
+// The counts carry over from one search to the next, which keeps string.split
+// linear over all its pieces.
+struct PlainSearcher
+{
+    PlainSearcher(const char* bytes, size_t size)
+        : x(reinterpret_cast<const uint8_t*>(bytes))
+        , m(size)
+    {
+    }
+
+    const uint8_t* x;
+    size_t m; // at least 2
+    bool twoway = false;
+    size_t positions = 0;
+    size_t compared = 0;
+    PlainNeedle needle;
+};
+
+const uint8_t* findtwoway(LibraryWork& work, const PlainSearcher& searcher, const uint8_t* subject, size_t size)
+{
+    const uint8_t* x = searcher.x;
+    const size_t m = searcher.m;
+    const PlainNeedle& needle = searcher.needle;
+    const size_t critical = needle.critical;
+    if (size < m)
+        return nullptr;
+
+    // Alignments j run from 0 to last. Alignments at which a chosen byte of
+    // the needle does not match cannot match, and are skipped with memchr:
+    // the first byte while that skips well, as upstream's search does, and
+    // otherwise the byte at the critical position, where the comparison
+    // starts. A skip only moves forward, so the scans stay linear.
+    const size_t last = size - m;
+    size_t skip = 0;
+    int shortScans = 0;
+    size_t j = 0;
+    // In a periodic needle, the length of the prefix known to match at j.
+    size_t memory = 0;
+    while (j <= last)
+    {
+        if (memory <= skip)
+        {
+            const size_t at = scanbyte(work, subject + skip, j, last + 1, x[skip]);
+            if (at > last)
+                return nullptr;
+            if (at != j)
+                memory = 0;
+            if (skip == 0)
+            {
+                shortScans = at - j < 4 ? shortScans + 1 : 0;
+                if (shortScans == kShortScanLimit)
+                    skip = critical;
+            }
+            j = at;
+        }
+
+        const uint8_t* y = subject + j;
+        const size_t i = matchforward(work, x, y, memory > critical ? memory : critical, m);
+        if (i < m)
+        {
+            j += i - critical + 1;
+            memory = 0;
+            continue;
+        }
+
+        const size_t known = needle.periodic ? memory : 0;
+        const size_t k = critical > known ? matchbackward(work, x, y, critical, known) : known;
+        if (k <= known)
+            return y;
+
+        j += needle.period;
+        memory = needle.periodic ? m - needle.period : 0;
+    }
+    return nullptr;
+}
+
+// The first occurrence of the needle in subject[0, size), or nullptr.
+const uint8_t* findplain(LibraryWork& work, PlainSearcher& searcher, const uint8_t* subject, size_t size)
+{
+    const uint8_t* x = searcher.x;
+    const size_t m = searcher.m;
+    if (size < m)
+        return nullptr;
+
+    const size_t last = size - m;
+    size_t j = 0;
+    if (m <= kShortNeedleBytes)
+    {
+        // lmemfind's loop. It compares at most kShortNeedleBytes bytes at each
+        // position, so it stays linear. To keep the loop as tight as
+        // upstream's, it counts candidates rather than bytes: a safepoint
+        // after every kShortNeedleCandidates of them, and after each
+        // kLibraryScanChunk bytes that memchr scans without a candidate.
+        const uint8_t first = x[0];
+        const uint8_t* candidate = subject;
+        const uint8_t* const end = subject + last + 1;
+        size_t countdown = kShortNeedleCandidates;
+        for (;;)
+        {
+            const size_t span = smaller(size_t(end - candidate), kLibraryScanChunk);
+            const uint8_t* hit = static_cast<const uint8_t*>(std::memchr(candidate, first, span));
+            if (!hit)
+            {
+                candidate += span;
+                if (candidate == end)
+                    return nullptr;
+                spend(work, kLibraryPollUnits);
+                continue;
+            }
+            if (std::memcmp(hit + 1, x + 1, m - 1) == 0)
+                return hit;
+            candidate = hit + 1;
+            if (--countdown == 0)
+            {
+                countdown = kShortNeedleCandidates;
+                spend(work, kLibraryPollUnits);
+            }
+        }
+    }
+
+    if (!searcher.twoway)
+    {
+        const uint8_t first = x[0];
+        // The verification compares at most this many bytes inline; a longer
+        // match continues in matchforward, which reaches safepoints.
+        const size_t inlineEnd = m < kLibraryPollUnits ? m : kLibraryPollUnits;
+        for (;;)
+        {
+            const size_t span = smaller(last + 1 - j, kLibraryScanChunk);
+            const void* hit = std::memchr(subject + j, first, span);
+            if (!hit)
+            {
+                j += span;
+                spend(work, span / kLibraryBytesPerUnit + 1);
+                if (j > last)
+                    return nullptr;
+                continue;
+            }
+
+            const size_t at = size_t(static_cast<const uint8_t*>(hit) - subject);
+            const uint8_t* y = subject + at;
+            size_t i = 1;
+            while (i < inlineEnd && x[i] == y[i])
+                ++i;
+            if (i == inlineEnd && i < m)
+                i = matchforward(work, x, y, i, m);
+            if (i == m)
+                return y;
+
+            searcher.positions += at - j + 1;
+            searcher.compared += i;
+            spend(work, (at - j) / kLibraryBytesPerUnit + i);
+            j = at + 1;
+            if (j > last)
+                return nullptr;
+            if (searcher.compared > searcher.positions + kNaiveSearchSlack)
+                break;
+        }
+        searcher.twoway = true;
+        prepareneedle(work, searcher.needle, x, m);
+    }
+    return findtwoway(work, searcher, subject + j, size - j);
+}
+
+// lmemfind's contract: the first occurrence of s2 in s1, s1 when s2 is empty.
+const char* plainsearch(LibraryWork& work, const char* s1, size_t l1, const char* s2, size_t l2)
+{
+    if (l2 == 0)
+        return s1;
+    if (l2 > l1)
+        return nullptr;
+
+    const uint8_t* subject = reinterpret_cast<const uint8_t*>(s1);
+    if (l2 == 1)
+    {
+        const size_t at = scanbyte(work, subject, 0, l1, uint8_t(s2[0]));
+        return at < l1 ? s1 + at : nullptr;
+    }
+
+    PlainSearcher searcher(s2, l2);
+    const uint8_t* found = findplain(work, searcher, subject, l1);
+    return found ? reinterpret_cast<const char*>(found) : nullptr;
+}
+
+// From lstrlib.cpp.
+int stringposrelat(int pos, size_t len)
+{
+    if (pos < 0)
+        pos += int(len) + 1;
+    return pos >= 0 ? pos : 0;
+}
+
+// lstrlib.cpp's nospecials: whether a pattern has none of the characters in
+// "^$*+?.([%-". Upstream looks for them with strpbrk in each zero-terminated
+// segment, which checks every byte of the pattern, as this does.
+bool nospecials(const char* p, size_t l)
+{
+    for (size_t i = 0; i < l; i++)
+    {
+        switch (p[i])
+        {
+        case '^':
+        case '$':
+        case '*':
+        case '+':
+        case '?':
+        case '.':
+        case '(':
+        case '[':
+        case '%':
+        case '-':
+            return false;
+        default:
+            break;
+        }
+    }
+    return true;
+}
+
+// Whether argument n (1-based) is a string of at most `limit` bytes. Reads the
+// argument without converting it.
+inline bool shortstringargument(lua_State* L, int n, size_t limit)
+{
+    const TValue* argument = L->base + (n - 1);
+    return argument < L->top && ttisstring(argument) && tsvalue(argument)->len <= limit;
+}
+
+// string.find. Only the plain search (a true fourth argument, or a pattern
+// without special characters) is replaced: pattern matching already reaches a
+// safepoint at each step, and subjects of kPlainSearchDirectBytes or fewer go
+// to upstream directly. The checks before a call to upstream read their
+// arguments without converting them, so upstream sees the call unchanged.
+// Each step is its own function, so that the common calls that go straight to
+// upstream do not pay for the frame of the search.
+LUAU_NOINLINE int hoststringfindplain(lua_State* L)
+{
+    // The rest of upstream's str_find_aux, in its order.
+    size_t ls = 0;
+    size_t lp = 0;
+    const char* s = luaL_checklstring(L, 1, &ls);
+    const char* p = luaL_checklstring(L, 2, &lp);
+    int init = stringposrelat(luaL_optinteger(L, 3, 1), ls);
+    if (init < 1)
+        init = 1;
+    else if (init > int(ls) + 1)
+    {
+        lua_pushnil(L);
+        return 1;
+    }
+    if (!(lua_toboolean(L, 4) || nospecials(p, lp)))
+        return upstreamStringFind.load(std::memory_order_relaxed)(L);
+
+    LibraryWork work(L);
+    const char* found = plainsearch(work, s + init - 1, ls - size_t(init) + 1, p, lp);
+    if (found)
+    {
+        lua_pushinteger(L, int(found - s + 1));
+        lua_pushinteger(L, int(found - s + ptrdiff_t(lp)));
+        return 2;
+    }
+    lua_pushnil(L);
+    return 1;
+}
+
+LUAU_NOINLINE int hoststringfindlong(lua_State* L)
+{
+    const TValue* base = L->base;
+    const int arguments = int(L->top - base);
+    const bool plain = arguments >= 4 && !l_isfalse(base + 3);
+    if (!plain && arguments >= 2 && ttisstring(base + 1))
+    {
+        const TString* pattern = tsvalue(base + 1);
+        if (!nospecials(getstr(pattern), pattern->len))
+            return upstreamStringFind.load(std::memory_order_relaxed)(L);
+    }
+    return hoststringfindplain(L);
+}
+
+int hoststringfind(lua_State* L)
+{
+    if (shortstringargument(L, 1, kPlainSearchDirectBytes))
+        return upstreamStringFind.load(std::memory_order_relaxed)(L);
+    return hoststringfindlong(L);
+}
+
+// string.split, as upstream's str_split does it with LuauOptimizeStringSplit
+// off: the same pieces, inserted with the same table operations, so the table
+// it returns has the same layout. Only the search differs. Subjects of
+// kPlainSearchDirectBytes or fewer go to upstream directly.
+LUAU_NOINLINE int hoststringsplitlong(lua_State* L)
+{
+    size_t haystackLen = 0;
+    const char* haystack = luaL_checklstring(L, 1, &haystackLen);
+    size_t needleLen = 0;
+    const char* needle = luaL_optlstring(L, 2, ",", &needleLen);
+
+    const char* end = haystack + haystackLen;
+    const char* spanStart = haystack;
+    int numMatches = 0;
+    LibraryWork work(L);
+
+    lua_createtable(L, 0, 0);
+
+    if (needleLen == 0)
+    {
+        // Every position after the first ends a piece of one byte, and no
+        // piece follows the last.
+        for (const char* iter = haystack + 1; iter <= end; iter++)
+        {
+            lua_pushinteger(L, ++numMatches);
+            lua_pushlstring(L, spanStart, size_t(iter - spanStart));
+            lua_settable(L, -3);
+            spanStart = iter;
+            spend(work, kLibraryStepUnits);
+        }
+        return 1;
+    }
+
+    if (needleLen <= haystackLen)
+    {
+        PlainSearcher searcher(needle, needleLen);
+        const char* iter = haystack;
+        for (;;)
+        {
+            const uint8_t* subject = reinterpret_cast<const uint8_t*>(iter);
+            const size_t remaining = size_t(end - iter);
+            const char* found = nullptr;
+            if (needleLen == 1)
+            {
+                const size_t at = scanbyte(work, subject, 0, remaining, uint8_t(needle[0]));
+                found = at < remaining ? iter + at : nullptr;
+            }
+            else if (const uint8_t* at = findplain(work, searcher, subject, remaining))
+                found = reinterpret_cast<const char*>(at);
+            if (!found)
+                break;
+
+            lua_pushinteger(L, ++numMatches);
+            lua_pushlstring(L, spanStart, size_t(found - spanStart));
+            lua_settable(L, -3);
+            spend(work, kLibraryStepUnits + size_t(found - spanStart) / kLibraryBytesPerUnit);
+
+            spanStart = found + needleLen;
+            iter = spanStart;
+        }
+    }
+
+    lua_pushinteger(L, ++numMatches);
+    lua_pushlstring(L, spanStart, size_t(end - spanStart));
+    lua_settable(L, -3);
+    return 1;
+}
+
+int hoststringsplit(lua_State* L)
+{
+    if (shortstringargument(L, 1, kPlainSearchDirectBytes))
+        return upstreamStringSplit.load(std::memory_order_relaxed)(L);
+    return hoststringsplitlong(L);
+}
+
+// table.concat, as upstream's tconcat and addfield do it, with a safepoint
+// after every few fields. Concatenating numbers converts each one to an
+// interned string, which makes a long table take a fifth of a second.
+size_t tableconcatfield(lua_State* L, luaL_Strbuf* b, int i, LuaTable* t)
+{
+    if (t && unsigned(i - 1) < unsigned(t->sizearray) && ttisstring(&t->array[i - 1]))
+    {
+        TString* ts = tsvalue(&t->array[i - 1]);
+        luaL_addlstring(b, getstr(ts), ts->len);
+        return kLibraryStepUnits + ts->len / kLibraryBytesPerUnit;
+    }
+
+    const int tt = lua_rawgeti(L, 1, i);
+    if (tt != LUA_TSTRING && tt != LUA_TNUMBER)
+        luaL_errorL(L, "invalid value (%s) at index %d in table for 'concat'", luaL_typename(L, -1), i);
+    luaL_addvalue(b);
+    return kLibraryStepUnits;
+}
+
+int hosttableconcat(lua_State* L)
+{
+    size_t lsep = 0;
+    const char* sep = luaL_optlstring(L, 2, "", &lsep);
+    luaL_checktype(L, 1, LUA_TTABLE);
+    int i = luaL_optinteger(L, 3, 1);
+    const int last = luaL_opt(L, luaL_checkinteger, 4, lua_objlen(L, 1));
+
+    LuaTable* t = hvalue(L->base);
+    LibraryWork work(L);
+
+    luaL_Strbuf b;
+    luaL_buffinit(L, &b);
+    for (; i < last; i++)
+    {
+        size_t units = tableconcatfield(L, &b, i, t);
+        if (lsep != 0)
+        {
+            luaL_addlstring(&b, sep, lsep);
+            units += lsep / kLibraryBytesPerUnit;
+        }
+        spend(work, units);
+    }
+    if (i == last)
+        tableconcatfield(L, &b, i, t);
+    luaL_pushresult(&b);
+    return 1;
+}
+
+// table.sort, as upstream's tsort does it: the same introsort, so that every
+// comparison happens in the same order and an inconsistent comparison
+// function produces the same permutation or error. The default comparison and
+// a C comparison function compare without reaching a safepoint, so the sort
+// reaches one itself; a Luau comparison function reaches one at each return
+// already, and the sort adds none.
+enum class SortComparison
+{
+    Default,
+    CFunction,
+    LuauFunction,
+};
+
+int sortfunction(lua_State* L, const TValue* l, const TValue* r)
+{
+    LUAU_ASSERT(L->top == L->base + 2); // table, function
+
+    setobj2s(L, L->top, &L->base[1]);
+    setobj2s(L, L->top + 1, l);
+    setobj2s(L, L->top + 2, r);
+    L->top += 3; // safe because of LUA_MINSTACK guarantee
+    luaD_call(L, L->top - 3, 1);
+    L->top -= 1; // maintain stack depth
+
+    return !l_isfalse(L->top);
+}
+
+inline void sortswap(lua_State* L, LuaTable* t, int i, int j)
+{
+    TValue* arr = t->array;
+    LUAU_ASSERT(unsigned(i) < unsigned(t->sizearray) && unsigned(j) < unsigned(t->sizearray));
+
+    // no barrier required because both elements are in the array before and after the swap
+    TValue temp;
+    setobj2s(L, &temp, &arr[i]);
+    setobj2t(L, &arr[i], &arr[j]);
+    setobj2t(L, &arr[j], &temp);
+}
+
+// The package's interrupt poll runs no Luau code, but the table is read
+// again after a safepoint, and checked like after a comparison.
+inline void sortaftersafepoint(lua_State* L, LuaTable* t, int n)
+{
+    if (t->sizearray != n)
+        luaL_errorL(L, "table modified during sorting");
+}
+
+// The default comparison when it is not two numbers or two strings, or when a
+// safepoint is due: luaV_lessthan, which may run a __lt metamethod.
+LUAU_NOINLINE int sortlessslow(lua_State* L, LuaTable* t, LibraryWork& work, int i, int j)
+{
+    const int n = t->sizearray;
+    LUAU_ASSERT(unsigned(i) < unsigned(n) && unsigned(j) < unsigned(n));
+
+    // A comparison of two strings costs up to their common length.
+    const TValue* l = &t->array[i];
+    const TValue* r = &t->array[j];
+    size_t units = kLibraryStepUnits;
+    if (ttisstring(l) && ttisstring(r))
+        units += smaller(tsvalue(l)->len, tsvalue(r)->len) / kLibraryBytesPerUnit;
+    if (spend(work, units))
+        sortaftersafepoint(L, t, n);
+    const int res = luaV_lessthan(L, &t->array[i], &t->array[j]);
+
+    // predicate call may resize the table, which is invalid
+    if (t->sizearray != n)
+        luaL_errorL(L, "table modified during sorting");
+
+    return res;
+}
+
+template<SortComparison Comparison>
+LUAU_FORCEINLINE int sortless(lua_State* L, LuaTable* t, LibraryWork& work, int i, int j)
+{
+    if constexpr (Comparison == SortComparison::Default)
+    {
+        // luaV_lessthan's cases for two numbers and for two strings, inline:
+        // they run no code, so the table cannot change. A comparison of two
+        // strings costs up to their common length.
+        LUAU_ASSERT(unsigned(i) < unsigned(t->sizearray) && unsigned(j) < unsigned(t->sizearray));
+        const TValue* l = &t->array[i];
+        const TValue* r = &t->array[j];
+        if (LUAU_LIKELY(ttisnumber(l) && ttisnumber(r) && kLibraryStepUnits < work.remaining))
+        {
+            work.remaining -= kLibraryStepUnits;
+            return nvalue(l) < nvalue(r);
+        }
+        if (ttisstring(l) && ttisstring(r))
+        {
+            const size_t units = kLibraryStepUnits + smaller(tsvalue(l)->len, tsvalue(r)->len) / kLibraryBytesPerUnit;
+            if (LUAU_LIKELY(units < work.remaining))
+            {
+                work.remaining -= units;
+                return luaV_strcmp(tsvalue(l), tsvalue(r)) < 0;
+            }
+        }
+        return sortlessslow(L, t, work, i, j);
+    }
+    else
+    {
+        // As upstream's sort_less with sort_func.
+        const int n = t->sizearray;
+        LUAU_ASSERT(unsigned(i) < unsigned(n) && unsigned(j) < unsigned(n));
+        if constexpr (Comparison == SortComparison::CFunction)
+        {
+            if (spend(work, kLibraryStepUnits))
+                sortaftersafepoint(L, t, n);
+        }
+        const int res = sortfunction(L, &t->array[i], &t->array[j]);
+        if (t->sizearray != n)
+            luaL_errorL(L, "table modified during sorting");
+        return res;
+    }
+}
+
+template<SortComparison Comparison>
+void sortsiftheap(lua_State* L, LuaTable* t, LibraryWork& work, int l, int u, int root)
+{
+    LUAU_ASSERT(l <= u);
+    const int count = u - l + 1;
+
+    // process all elements with two children
+    while (root * 2 + 2 < count)
+    {
+        const int left = root * 2 + 1;
+        const int right = root * 2 + 2;
+        int next = root;
+        next = sortless<Comparison>(L, t, work, l + next, l + left) ? left : next;
+        next = sortless<Comparison>(L, t, work, l + next, l + right) ? right : next;
+
+        if (next == root)
+            break;
+
+        sortswap(L, t, l + root, l + next);
+        root = next;
+    }
+
+    // process last element if it has just one child
+    const int lastleft = root * 2 + 1;
+    if (lastleft == count - 1 && sortless<Comparison>(L, t, work, l + root, l + lastleft))
+        sortswap(L, t, l + root, l + lastleft);
+}
+
+template<SortComparison Comparison>
+void sortheap(lua_State* L, LuaTable* t, LibraryWork& work, int l, int u)
+{
+    LUAU_ASSERT(l <= u);
+    const int count = u - l + 1;
+
+    for (int i = count / 2 - 1; i >= 0; --i)
+        sortsiftheap<Comparison>(L, t, work, l, u, i);
+
+    for (int i = count - 1; i > 0; --i)
+    {
+        sortswap(L, t, l, l + i);
+        sortsiftheap<Comparison>(L, t, work, l, l + i - 1, 0);
+    }
+}
+
+template<SortComparison Comparison>
+void sortrec(lua_State* L, LuaTable* t, LibraryWork& work, int l, int u, int limit)
+{
+    // sort range [l..u] (inclusive, 0-based)
+    while (l < u)
+    {
+        // if the limit has been reached, quick sort is going over the permitted nlogn complexity, so we fall back to heap sort
+        if (limit == 0)
+            return sortheap<Comparison>(L, t, work, l, u);
+
+        // sort elements a[l], a[(l+u)/2] and a[u]
+        // note: this simultaneously acts as a small sort and a median selector
+        if (sortless<Comparison>(L, t, work, u, l)) // a[u] < a[l]?
+            sortswap(L, t, u, l);                   // swap a[l] - a[u]
+        if (u - l == 1)
+            break;                                          // only 2 elements
+        const int m = l + ((u - l) >> 1);                   // midpoint
+        if (sortless<Comparison>(L, t, work, m, l))         // a[m]<a[l]?
+            sortswap(L, t, m, l);
+        else if (sortless<Comparison>(L, t, work, u, m)) // a[u]<a[m]?
+            sortswap(L, t, m, u);
+        if (u - l == 2)
+            break; // only 3 elements
+
+        // here l, m, u are ordered; m will become the new pivot
+        const int p = u - 1;
+        sortswap(L, t, m, u - 1); // pivot is now (and always) at u-1
+
+        // a[l] <= P == a[u-1] <= a[u], only need to sort from l+1 to u-2
+        int i = l;
+        int j = u - 1;
+        for (;;)
+        { // invariant: a[l..i] <= P <= a[j..u]
+            // repeat ++i until a[i] >= P
+            while (sortless<Comparison>(L, t, work, ++i, p))
+            {
+                if (i >= u)
+                    luaL_errorL(L, "invalid order function for sorting");
+            }
+            // repeat --j until a[j] <= P
+            while (sortless<Comparison>(L, t, work, p, --j))
+            {
+                if (j <= l)
+                    luaL_errorL(L, "invalid order function for sorting");
+            }
+            if (j < i)
+                break;
+            sortswap(L, t, i, j);
+        }
+
+        // swap pivot a[p] with a[i], which is the new midpoint
+        sortswap(L, t, p, i);
+
+        // adjust limit to allow 1.5 log2N recursive steps
+        limit = (limit >> 1) + (limit >> 2);
+
+        // a[l..i-1] <= a[i] == P <= a[i+1..u]
+        // sort smaller half recursively; the larger half is sorted in the next loop iteration
+        if (i - l < u - i)
+        {
+            sortrec<Comparison>(L, t, work, l, i - 1, limit);
+            l = i + 1;
+        }
+        else
+        {
+            sortrec<Comparison>(L, t, work, i + 1, u, limit);
+            u = i - 1;
+        }
+    }
+}
+
+int hosttablesort(lua_State* L)
+{
+    luaL_checktype(L, 1, LUA_TTABLE);
+    LuaTable* t = hvalue(L->base);
+    const int n = luaH_getn(t);
+    if (t->readonly)
+        luaG_readonlyerror(L);
+
+    SortComparison comparison = SortComparison::Default;
+    if (!lua_isnoneornil(L, 2)) // is there a 2nd argument?
+    {
+        luaL_checktype(L, 2, LUA_TFUNCTION);
+        comparison = SortComparison::CFunction;
+    }
+    lua_settop(L, 2); // make sure there are two arguments
+
+    if (n > 0)
+    {
+        LibraryWork work(L);
+        if (comparison == SortComparison::Default)
+            sortrec<SortComparison::Default>(L, t, work, 0, n - 1, n);
+        else if (clvalue(L->base + 1)->isC)
+            sortrec<SortComparison::CFunction>(L, t, work, 0, n - 1, n);
+        else
+            sortrec<SortComparison::LuauFunction>(L, t, work, 0, n - 1, n);
+    }
+    return 0;
+}
+
+// utf8.len, as upstream's utflen and utf8_decode do it, with a safepoint
+// after every block of bytes decoded.
+const char* utf8decode(const char* o, int* val)
+{
+    static const unsigned int limits[] = {0xFF, 0x7F, 0x7FF, 0xFFFF};
+    const unsigned char* s = reinterpret_cast<const unsigned char*>(o);
+    unsigned int c = s[0];
+    unsigned int res = 0; // final result
+    if (c < 0x80)         // ascii?
+        res = c;
+    else
+    {
+        int count = 0; // to count number of continuation bytes
+        while (c & 0x40)
+        {                                   // still have continuation bytes?
+            const int cc = s[++count];      // read next byte
+            if ((cc & 0xC0) != 0x80)        // not a continuation byte?
+                return nullptr;             // invalid byte sequence
+            res = (res << 6) | (cc & 0x3F); // add lower 6 bits from cont. byte
+            c <<= 1;                        // to test next bit
+        }
+        res |= ((c & 0x7F) << (count * 5)); // add first byte
+        if (count > 3 || res > 0x10FFFF || res <= limits[count])
+            return nullptr; // invalid byte sequence
+        if (unsigned(res - 0xD800) < 0x800)
+            return nullptr; // surrogate
+        s += count;         // skip continuation bytes read
+    }
+    if (val)
+        *val = int(res);
+    return reinterpret_cast<const char*>(s) + 1; // +1 to include first byte
+}
+
+// From lutf8lib.cpp.
+int utf8posrelat(int pos, size_t len)
+{
+    if (pos >= 0)
+        return pos;
+    else if (0u - size_t(pos) > len)
+        return 0;
+    else
+        return int(len) + pos + 1;
+}
+
+int hostutf8len(lua_State* L)
+{
+    int n = 0;
+    size_t len = 0;
+    const char* s = luaL_checklstring(L, 1, &len);
+    int posi = utf8posrelat(luaL_optinteger(L, 2, 1), len);
+    int posj = utf8posrelat(luaL_optinteger(L, 3, -1), len);
+    luaL_argcheck(L, 1 <= posi && --posi <= int(len), 2, "initial position out of string");
+    luaL_argcheck(L, --posj < int(len), 3, "final position out of string");
+
+    LibraryWork work(L);
+    while (posi <= posj)
+    {
+        // Each character takes at least one byte, so a block of bytes bounds
+        // the work between safepoints without a count in the inner loop.
+        const int block = int(kLibraryPollUnits);
+        const int stop = posj - posi > block ? posi + block : posj;
+        while (posi <= stop)
+        {
+            const char* s1 = utf8decode(s + posi, nullptr);
+            if (s1 == nullptr)
+            {                                 // conversion error?
+                lua_pushnil(L);               // return nil ...
+                lua_pushinteger(L, posi + 1); // ... and current position
+                return 2;
+            }
+            posi = int(s1 - s);
+            n++;
+        }
+        spend(work, kLibraryPollUnits);
+    }
+    lua_pushinteger(L, n);
+    return 1;
+}
+
+// Replaces one function of the library table at the top of the stack. The
+// debug name must be a string literal: the closure keeps the pointer.
+void replacelibraryfunction(lua_State* L, const char* name, lua_CFunction function, std::atomic<lua_CFunction>* upstream)
+{
+    lua_rawgetfield(L, -1, name);
+    lua_CFunction original = lua_tocfunction(L, -1);
+    lua_pop(L, 1);
+    // Upstream always registers these; the library conformance tests fail if
+    // a replacement is missing.
+    if (!original)
+        return;
+    if (upstream)
+        upstream->store(original, std::memory_order_relaxed);
+    lua_pushcfunction(L, function, name);
+    lua_rawsetfield(L, -2, name);
+}
+
 void opopenlibrary(lua_State* state, void* userdata)
 {
     LibraryContext* context = static_cast<LibraryContext*>(userdata);
@@ -1019,12 +2073,23 @@ void opopenlibrary(lua_State* state, void* userdata)
     {
     case LUAU_HOST_LIBRARY_BASE: context->result = luaopen_base(state); break;
     case LUAU_HOST_LIBRARY_COROUTINE: context->result = luaopen_coroutine(state); break;
-    case LUAU_HOST_LIBRARY_TABLE: context->result = luaopen_table(state); break;
+    case LUAU_HOST_LIBRARY_TABLE:
+        context->result = luaopen_table(state);
+        replacelibraryfunction(state, "concat", hosttableconcat, nullptr);
+        replacelibraryfunction(state, "sort", hosttablesort, nullptr);
+        break;
     case LUAU_HOST_LIBRARY_OS: context->result = luaopen_os(state); break;
-    case LUAU_HOST_LIBRARY_STRING: context->result = luaopen_string(state); break;
+    case LUAU_HOST_LIBRARY_STRING:
+        context->result = luaopen_string(state);
+        replacelibraryfunction(state, "find", hoststringfind, &upstreamStringFind);
+        replacelibraryfunction(state, "split", hoststringsplit, &upstreamStringSplit);
+        break;
     case LUAU_HOST_LIBRARY_BIT32: context->result = luaopen_bit32(state); break;
     case LUAU_HOST_LIBRARY_BUFFER: context->result = luaopen_buffer(state); break;
-    case LUAU_HOST_LIBRARY_UTF8: context->result = luaopen_utf8(state); break;
+    case LUAU_HOST_LIBRARY_UTF8:
+        context->result = luaopen_utf8(state);
+        replacelibraryfunction(state, "len", hostutf8len, nullptr);
+        break;
     case LUAU_HOST_LIBRARY_MATH: context->result = luaopen_math(state); break;
     case LUAU_HOST_LIBRARY_DEBUG: context->result = luaopen_debug(state); break;
     case LUAU_HOST_LIBRARY_VECTOR: context->result = luaopen_vector(state); break;

@@ -234,6 +234,61 @@ that only the refresh makes true would fail that job and withhold the
 replacement. Add such a test after the refresh commit. Do not relax the audit
 to get a refresh through.
 
+### 3.5 Library functions the host replaces
+
+`luau_host_open_library` opens upstream's library and then, before anything
+can freeze the library table, replaces a few of its functions with host
+versions in `luau_host.cpp` ("Long library calls"):
+
+| Function | What the host version changes |
+| --- | --- |
+| `string.find` | Plain-text search only (a true fourth argument, or a pattern without special characters, on a subject of more than 4096 bytes); every other call goes to upstream's function |
+| `string.split` | Subjects of more than 4096 bytes; shorter ones go to upstream's function |
+| `table.sort` | Safepoints for the default comparison and for C comparison functions |
+| `table.concat` | Safepoints |
+| `utf8.len` | Safepoints |
+
+Each of these could run for seconds, or for hours, in one C call that never
+reached an interrupt safepoint, so no budget, cancellation, or disposal could
+stop it. Upstream's plain-text search compares the needle at every position;
+the host's search does what upstream's does for needles of up to 32 bytes and
+switches to the two-way algorithm for longer ones once it has compared more
+than one byte per position (plus a 4096-byte allowance), so its time is linear
+in the subject. Each host version reaches the interrupt callback after a fixed
+amount of work, as a non-yieldable EXECUTION safepoint exactly like a step of
+upstream's pattern matcher (`match()` in `lstrlib.cpp`): the throttle counts
+it, a stop unwinds as the sticky `CANCELED` hard stop, and a script `pcall`
+that catches it sees the stop again at its next safepoint.
+
+The table entry is the only route to these functions: the string metatable's
+`__index` is the string table, none of them is a fastcall builtin, and a
+reference a script saves is taken after the library is opened. `string.find`
+and `string.split` keep upstream's function pointer, the same in every state,
+and call it in the same frame, so argument errors still name the function.
+
+A host version must do exactly what upstream's function, as built here with
+every fast flag at its default, does for every input: the same argument
+coercion and errors, the same results, the same comparisons in the same order
+(an inconsistent sort comparator must produce the same permutation or error),
+and the same table writes in the same order, so that a table it returns has
+the same layout. This is not a change to language behavior; it is what keeps
+the host layer from becoming one. `luau_host_library_conformance` holds it to
+that: it links upstream's VM as a plain reference, runs a generated corpus of
+calls (periodic and adversarial subjects, coerced and rejected arguments,
+inconsistent and failing comparators, a quicksort adversary that reaches the
+heap-sort fallback, invalid UTF-8) in a host root and in the reference, and
+requires identical results. It also checks that each version reaches the
+interrupt callback while it works and that a count limit, a deadline, and a
+request from another thread stop it inside the call.
+
+When the submodule moves, run that test before anything else. A difference
+means upstream changed one of these functions: port the change into the host
+version, or remove the replacement if upstream's function no longer runs long.
+To replace another function, follow the same rules: hold no resource with a
+destructor (the VM raises errors with `longjmp`), reach a safepoint at least
+every `kLibraryPollUnits` units of work, keep upstream's behavior exactly, and
+add it to the corpus and the interrupt tests.
+
 ## 4. Package interop
 
 The package owns the only interop source. `Luau.Interop` uses the internal
@@ -343,7 +398,8 @@ diagnostics, original/final stack top, and whether the root remains reusable.
 
 ### 6.3 Interrupt throttle
 
-Every call, return, and loop back-edge is a Luau interrupt safepoint, so a
+Every call, return, and loop back-edge is a Luau interrupt safepoint, as are
+the steps of a pattern match and of the library functions in section 3.5, so a
 reverse call into managed code at each one would cost far more than the Luau
 instructions in between. `BeginOperation` hands the
 operation's count limit and remaining wall-clock time to
@@ -809,7 +865,9 @@ cmake --install out/build/linux-x64
 Installing a rebuilt plugin is a deliberate action separate from managed
 refresh. Recheck exports, manifest identity, ABI handshake, and `.meta` importer
 settings. Native conformance includes thousands of mixed concurrent compiler
-calls and exact serial/parallel output comparison.
+calls and exact serial/parallel output comparison, and
+`luau_host_library_conformance` compares the replaced library functions with
+upstream's (section 3.5).
 
 ### 12.4 Package validation
 
@@ -895,7 +953,8 @@ one compatibility unit.
 ### Update upstream Luau
 
 1. Update the `native/luau` submodule deliberately.
-2. Review upstream behavior and ABI assumptions.
+2. Review upstream behavior and ABI assumptions, including the library
+   functions the host replaces (section 3.5).
 3. Rebuild all maintained native targets.
 4. Update fingerprints/manifests as one compatibility unit.
 5. Run native conformance, managed parity, Unity, and all player gates.
