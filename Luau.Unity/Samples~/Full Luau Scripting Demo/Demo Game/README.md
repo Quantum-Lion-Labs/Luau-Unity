@@ -20,7 +20,10 @@ The scene uses one `LuauBehaviourRuntime` and three `LuauBehaviour` components:
 | `PlayerController.luau` | `0` | `Bird` | `flapAudio` (`AudioSource`), `hitAudio` (`AudioSource`) |
 | `PipeController.luau` | `100` | `Pipes` | `bird` (`Transform`), `scoreAudio` (`AudioSource`) |
 
-All three components reference the same runtime host. The controller creates
+All three components reference the same runtime host. The bird's
+`collisionEnter2D` receives the pipe, ground, or ceiling it hit as a read-only
+view, because the bird's behaviour has no reference to those objects;
+`PlayerController.luau` only needs to know that a collision happened. The controller creates
 `shared.phase`, `shared.score`, and `shared.round`; the other scripts coordinate
 through those values while keeping their ordinary globals sandbox-local. Each
 script aliases the mutable global as `local gameState = shared`; see the core
@@ -34,7 +37,8 @@ The pipe pairs are not in the scene. `PipeController.luau` calls
 exactly that: one prefab named `pipePair`, and **Max Spawned Objects** of `2`.
 Asking for a third pair, or for a prefab name that is not in the list, is an
 error rather than a silent extra object — raise the cap deliberately if you want
-more. The behaviour destroys both instances when it shuts down, so leaving Play
+more. The runtime's own **Max Spawned Objects** (64 by default) applies on top
+of that cap: it is the host's limit for every behaviour on the runtime. The behaviour destroys both instances when it shuts down, so leaving Play
 Mode leaves no orphans behind.
 
 Each pipe-pair root holds its upper and lower pipe sprites and colliders at a
@@ -46,7 +50,10 @@ carries a `Rigidbody2D`, `CircleCollider2D`, `SpriteRenderer`, and
 ## Input
 
 The scene reads keyboard, mouse, and touch through the sample's `Input` library,
-which is built on the Input System package. Set **Active Input Handling** to
+which is built on the Input System package. The runtime's default **Input
+Policy** enables exactly what the scripts read: the `Space` key, the left mouse
+button, and touch. To read another key, add it to the policy on the
+`Luau Runtime` object; reading one that is not listed is a script error. Set **Active Input Handling** to
 *Input System Package (New)* or *Both* in Player Settings; the runtime warns in
 the Console if no input devices are visible.
 

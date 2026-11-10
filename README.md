@@ -155,8 +155,9 @@ Two samples ship with the package:
   injection.
 - **Full Luau Scripting Demo** pairs a reusable `Core/` with a one-scene Flappy
   Bird game written entirely in Luau. The core handles lifecycle scheduling,
-  prefab spawning against a per-behaviour cap, explicit references, input and
-  quaternion libraries, and the Unity capability policy the game runs on. Delete
+  prefab spawning against per-behaviour and per-runtime caps, explicit
+  references, an input library behind a per-runtime policy, a quaternion
+  library, and the Unity capability policy the game runs on. Delete
   `Demo Game/` to use the core as a starter kit.
 
 Those Unity policies are sample code you edit, not a package default switching

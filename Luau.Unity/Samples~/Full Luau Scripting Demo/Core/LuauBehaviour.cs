@@ -68,11 +68,15 @@ namespace Luau.Unity.Samples.FullLuauScriptingDemo
         [Min(0)]
         [Tooltip(
             "Maximum live prefab instances this behaviour may own. Set to zero " +
-            "to disable spawning even when prefab references are assigned.")]
+            "to disable spawning even when prefab references are assigned. The " +
+            "runtime's own limit applies as well.")]
         int maxSpawnedObjects = 32;
 
         readonly List<GameObject> spawnedObjects = new List<GameObject>();
 
+        // The GameObjects of the Object References bound into refs. Physics
+        // callbacks hand these over with full authority.
+        GameObject[] referencedGameObjects = Array.Empty<GameObject>();
         Dictionary<string, GameObject> prefabCatalog;
         string stableSortKey;
         LuauScriptInstance instance;
@@ -296,6 +300,7 @@ namespace Luau.Unity.Samples.FullLuauScriptingDemo
                     if (!initialized)
                     {
                         prefabCatalog = null;
+                        referencedGameObjects = Array.Empty<GameObject>();
                         collisionEnterEntrypoint = null;
                         collisionExitEntrypoint = null;
                         triggerEnterEntrypoint = null;
@@ -323,6 +328,7 @@ namespace Luau.Unity.Samples.FullLuauScriptingDemo
             }
 
             var references = objectReferences ?? Array.Empty<ObjectReference>();
+            var referenced = new GameObject[references.Length];
             using (var refs = thread.CreateTable(0, references.Length))
             {
                 for (var index = 0; index < references.Length; index++)
@@ -335,10 +341,19 @@ namespace Luau.Unity.Samples.FullLuauScriptingDemo
                     {
                         refs.RawSet(reference.Name, handle);
                     }
+
+                    // Every supported component capability already reaches its
+                    // GameObject through gameObject, so granting that GameObject
+                    // in physics callbacks adds no authority.
+                    referenced[index] = reference.Target is Component component
+                        ? component.gameObject
+                        : reference.Target as GameObject;
                 }
 
                 thread["refs"] = refs;
             }
+
+            referencedGameObjects = referenced;
 
             thread["shared"] = host.Shared;
             using (var spawnPrefab = thread.CreateFunction(
@@ -403,6 +418,17 @@ namespace Luau.Unity.Samples.FullLuauScriptingDemo
                     throw new InvalidOperationException(
                         "Assign a prefab to prefab reference '" +
                         reference.Name + "'.");
+                }
+                if (reference.Prefab.GetComponentInChildren<LuauBehaviourRuntime>(true) != null)
+                {
+                    // A spawned runtime would start its own root with its own
+                    // spawn limit, input policy, and shared table, outside every
+                    // limit of the runtime that spawned it.
+                    throw new InvalidOperationException(
+                        "Prefab reference '" + reference.Name + "' contains a " +
+                        "LuauBehaviourRuntime. A script cannot spawn a runtime of " +
+                        "its own, because nothing that runtime's scripts do would " +
+                        "count against this runtime's limits.");
                 }
                 if (!catalog.TryAdd(reference.Name, reference.Prefab))
                 {
@@ -485,6 +511,9 @@ namespace Luau.Unity.Samples.FullLuauScriptingDemo
                     "' has been destroyed.");
             }
 
+            // The behaviour's limit belongs to whoever authored it; the
+            // runtime's limit belongs to the host and counts every behaviour on
+            // the runtime, including behaviours on objects spawned here.
             PruneDestroyedSpawnedObjects();
             if (spawnedObjects.Count >= maxSpawnedObjects)
             {
@@ -492,6 +521,7 @@ namespace Luau.Unity.Samples.FullLuauScriptingDemo
                     "LuauBehaviour '" + name + "' reached its prefab limit of " +
                     maxSpawnedObjects + " live object(s).");
             }
+            runtimeHost.ThrowIfSpawnLimitReached();
 
             var spawned = Instantiate(
                 prefab,
@@ -500,6 +530,7 @@ namespace Luau.Unity.Samples.FullLuauScriptingDemo
             try
             {
                 spawnedObjects.Add(spawned);
+                runtimeHost.AddSpawnedObject(spawned);
                 using (var handle = context.State.CreateHandle(
                     spawned,
                     LuauUnityCapabilities.GameObjectDescriptor))
@@ -510,6 +541,7 @@ namespace Luau.Unity.Samples.FullLuauScriptingDemo
             catch
             {
                 spawnedObjects.Remove(spawned);
+                runtimeHost.RemoveSpawnedObject(spawned);
                 Destroy(spawned);
                 throw;
             }
@@ -618,9 +650,14 @@ namespace Luau.Unity.Samples.FullLuauScriptingDemo
 
             try
             {
+                // Touching an object grants nothing: the script gets full
+                // authority only over objects it already has, and a read-only
+                // view of anything else.
                 using (var otherHandle = runtimeHost.Root.CreateHandle(
                     other,
-                    LuauUnityCapabilities.GameObjectDescriptor))
+                    HasAuthorityOver(other)
+                        ? LuauUnityCapabilities.GameObjectDescriptor
+                        : LuauUnityCapabilities.GameObjectViewDescriptor))
                 {
                     var arguments = new LuauValue[1 + vectors.Length];
                     arguments[0] = otherHandle;
@@ -638,6 +675,37 @@ namespace Luau.Unity.Samples.FullLuauScriptingDemo
             {
                 DisableAfterFailure(exception);
             }
+        }
+
+        /// <summary>
+        /// Whether this behaviour's script already holds a full capability for
+        /// <paramref name="other"/>: its own GameObject, the GameObject of one of
+        /// its Object References, or an object it spawned.
+        /// </summary>
+        bool HasAuthorityOver(GameObject other)
+        {
+            if (other == gameObject)
+            {
+                return true;
+            }
+
+            for (var index = 0; index < referencedGameObjects.Length; index++)
+            {
+                if (referencedGameObjects[index] == other)
+                {
+                    return true;
+                }
+            }
+
+            for (var index = 0; index < spawnedObjects.Count; index++)
+            {
+                if (spawnedObjects[index] == other)
+                {
+                    return true;
+                }
+            }
+
+            return false;
         }
 
         internal void DisableAfterFailure(Exception exception)
@@ -704,6 +772,7 @@ namespace Luau.Unity.Samples.FullLuauScriptingDemo
                 triggerExitEntrypoint = null;
                 destroyEntrypoint = null;
                 prefabCatalog = null;
+                referencedGameObjects = Array.Empty<GameObject>();
                 initialized = false;
                 DestroySpawnedObjects();
             }
@@ -733,6 +802,9 @@ namespace Luau.Unity.Samples.FullLuauScriptingDemo
             for (var index = spawnedObjects.Count - 1; index >= 0; index--)
             {
                 var spawned = spawnedObjects[index];
+                // Destroy completes at the end of the frame; stop counting the
+                // object against the runtime now, as this behaviour does.
+                runtimeHost?.RemoveSpawnedObject(spawned);
                 if (spawned != null)
                 {
                     Destroy(spawned);

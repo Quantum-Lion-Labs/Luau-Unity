@@ -174,6 +174,9 @@ are not switching on a package default — there isn't one.
 A descriptor can offer a fixed component allowlist, the way that sample's
 `GameObject:GetComponent` does. That stays bounded: the script reaches only the
 component types you listed, and only on a `GameObject` you already handed it.
+The sample's physics callbacks keep to the same rule: an object a script
+touches but was never handed arrives through a separate read-only descriptor,
+with no `GetComponent`, instead of the full `GameObject` one.
 
 ### Descriptors are immutable authority
 

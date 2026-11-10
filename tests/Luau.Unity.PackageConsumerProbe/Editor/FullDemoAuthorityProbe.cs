@@ -30,9 +30,14 @@ namespace Luau.Unity.PackageConsumerProbe
         const BindingFlags InstanceMembers =
             BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
 
+        const string NotGrantedSuffix =
+            " was not granted to this script. A script can change only its own " +
+            "GameObject, its Object References, and objects it spawned.";
+
         static readonly TimeSpan StepTimeout = TimeSpan.FromSeconds(30);
         static readonly TimeSpan ProbeTimeout = TimeSpan.FromMinutes(5);
         static readonly List<string> errorLog = new List<string>();
+        static readonly List<string> warningLog = new List<string>();
 
         static CoreTypes types;
         static Scripts scripts;
@@ -50,11 +55,17 @@ namespace Luau.Unity.PackageConsumerProbe
             public Type ObjectReference;
             public Type PrefabReference;
             public Type InputLibrary;
+            public Type InputPolicy;
+            public Type MouseButtons;
+            public Type Capabilities;
 
             public static CoreTypes Load()
             {
                 var behaviour = Type.GetType(
                     NamespaceName + "LuauBehaviour, " + CoreAssembly,
+                    throwOnError: true);
+                var inputLibrary = Type.GetType(
+                    NamespaceName + "LuauInputLibrary, " + CoreAssembly,
                     throwOnError: true);
                 return new CoreTypes
                 {
@@ -68,10 +79,43 @@ namespace Luau.Unity.PackageConsumerProbe
                     PrefabReference = behaviour.GetNestedType("PrefabReference")
                         ?? throw new InvalidOperationException(
                             "LuauBehaviour is missing PrefabReference."),
-                    InputLibrary = Type.GetType(
-                        NamespaceName + "LuauInputLibrary, " + CoreAssembly,
+                    InputLibrary = inputLibrary,
+                    InputPolicy = inputLibrary.GetNestedType("Policy")
+                        ?? throw new InvalidOperationException(
+                            "LuauInputLibrary is missing Policy."),
+                    MouseButtons = inputLibrary.GetNestedType("MouseButtons")
+                        ?? throw new InvalidOperationException(
+                            "LuauInputLibrary is missing MouseButtons."),
+                    Capabilities = Type.GetType(
+                        NamespaceName + "LuauUnityCapabilities, " + CoreAssembly,
                         throwOnError: true),
                 };
+            }
+
+            /// <summary>Creates a policy; <paramref name="keys"/> null means the default.</summary>
+            public object CreateInputPolicy(string[] keys = null, int mouseButtons = 0, bool touch = false)
+            {
+                return keys == null
+                    ? Activator.CreateInstance(InputPolicy)
+                    : Activator.CreateInstance(
+                        InputPolicy,
+                        keys,
+                        Enum.ToObject(MouseButtons, mouseButtons),
+                        touch);
+            }
+
+            public ILuauLibrary CreateInputLibrary(object policy)
+            {
+                return (ILuauLibrary)Activator.CreateInstance(InputLibrary, policy);
+            }
+
+            public LuauObjectDescriptor<T> GetDescriptor<T>(string fieldName)
+                where T : class
+            {
+                var field = Capabilities.GetField(fieldName)
+                    ?? throw new InvalidOperationException(
+                        "LuauUnityCapabilities is missing " + fieldName + ".");
+                return (LuauObjectDescriptor<T>)field.GetValue(null);
             }
         }
 
@@ -105,16 +149,155 @@ namespace Luau.Unity.PackageConsumerProbe
         }
 
         // ------------------------------------------------------------------
+        // Edit Mode: the read-only views a physics callback hands over.
+        // ------------------------------------------------------------------
+
+        /// <summary>
+        /// Checks the view of an object a script was not granted: every read it
+        /// offers works, no member changes the object, and each write names the
+        /// object and says it was not granted. Running this in Edit Mode also
+        /// compiles the view's members before a 2 ms physics hook first uses them.
+        /// </summary>
+        public static void ValidateReadOnlyViews()
+        {
+            var coreTypes = CoreTypes.Load();
+            var viewDescriptor = coreTypes.GetDescriptor<GameObject>("GameObjectViewDescriptor");
+            coreTypes.GetDescriptor<Transform>("TransformViewDescriptor");
+            var quaternionLibrary = (ILuauLibrary)Activator.CreateInstance(Type.GetType(
+                NamespaceName + "LuauQuaternionLibrary, " + CoreAssembly,
+                throwOnError: true));
+            using var root = LuauUnity.CreateState(ConsumerApiProbe.CreateOptions(
+                state => state.OpenLibrary(quaternionLibrary)));
+            using var thread = root.CreateSandboxedThread();
+            var target = new GameObject("Ungranted view target");
+            try
+            {
+                target.layer = 4;
+                target.transform.position = new Vector3(1, 2, 3);
+                target.transform.rotation = Quaternion.Euler(0, 0, 90);
+                using (var handle = root.CreateHandle(target, viewDescriptor))
+                {
+                    thread["viewTarget"] = handle;
+                }
+
+                using (var values = thread.DoString(
+                    "local object = viewTarget\n" +
+                    "local transform = object.transform\n" +
+                    "local position = transform.position\n" +
+                    "return object.name, object.tag, object.layer, object.activeSelf, " +
+                    "object.activeInHierarchy, object:CompareTag('Untagged'), " +
+                    "position.x, position.y, position.z, transform.rotation.z, " +
+                    "object.SetActive == nil, object.GetComponent == nil, " +
+                    "transform.localPosition == nil, transform.Translate == nil, " +
+                    "transform.gameObject == nil, tostring(object), tostring(transform)",
+                    "@consumer/full-demo-view-reads.luau"))
+                {
+                    if (values.Length != 17 ||
+                        values[0].Read<string>() != "Ungranted view target" ||
+                        values[1].Read<string>() != "Untagged" ||
+                        values[2].Read<int>() != 4 ||
+                        !values[3].Read<bool>() ||
+                        !values[4].Read<bool>() ||
+                        !values[5].Read<bool>() ||
+                        values[6].Read<double>() != 1 ||
+                        values[7].Read<double>() != 2 ||
+                        values[8].Read<double>() != 3 ||
+                        Math.Abs(values[9].Read<double>() - Math.Sqrt(0.5)) > 0.001 ||
+                        !values[10].Read<bool>() ||
+                        !values[11].Read<bool>() ||
+                        !values[12].Read<bool>() ||
+                        !values[13].Read<bool>() ||
+                        !values[14].Read<bool>() ||
+                        values[15].Read<string>() != "GameObjectView" ||
+                        values[16].Read<string>() != "TransformView")
+                    {
+                        throw new InvalidOperationException(
+                            "The Full Demo read-only GameObject view did not offer " +
+                            "exactly its documented reads.");
+                    }
+                }
+
+                const string gameObjectError =
+                    "GameObject 'Ungranted view target'" + NotGrantedSuffix;
+                const string transformError =
+                    "the Transform of 'Ungranted view target'" + NotGrantedSuffix;
+                foreach (var (statement, expected) in new[]
+                {
+                    ("target.name = 'Renamed'", "Cannot set 'name': " + gameObjectError),
+                    ("target.tag = 'Player'", "Cannot set 'tag': " + gameObjectError),
+                    ("target.layer = 5", "Cannot set 'layer': " + gameObjectError),
+                    ("target.activeSelf = false", "Cannot set 'activeSelf': " + gameObjectError),
+                    ("target.activeInHierarchy = false",
+                        "Cannot set 'activeInHierarchy': " + gameObjectError),
+                    ("target.transform = target.transform",
+                        "Cannot set 'transform': " + gameObjectError),
+                    ("target.transform.position = vector.create(0, 0, 0)",
+                        "Cannot set 'position': " + transformError),
+                    ("target.transform.rotation = Quaternion.Euler(vector.create(0, 0, 0))",
+                        "Cannot set 'rotation': " + transformError),
+                })
+                {
+                    ExpectCallbackError(
+                        thread,
+                        "local target = viewTarget\n" + statement,
+                        expected);
+                }
+
+                // The view has no SetActive or GetComponent at all, so calling
+                // one is an ordinary Luau error rather than a host failure.
+                foreach (var statement in new[]
+                {
+                    "target:SetActive(false)",
+                    "target:GetComponent('Transform')",
+                })
+                {
+                    try
+                    {
+                        using (thread.DoString(
+                            "local target = viewTarget\n" + statement,
+                            "@consumer/full-demo-view-method.luau"))
+                        {
+                        }
+
+                        throw new InvalidOperationException(
+                            "The read-only GameObject view accepted " + statement + ".");
+                    }
+                    catch (LuauException exception)
+                        when (!(exception is LuauManagedCallbackException))
+                    {
+                        Debug.Log(ResultPrefix + "view " + statement + " -> " + exception.Message);
+                    }
+                }
+
+                if (target.name != "Ungranted view target" ||
+                    target.tag != "Untagged" ||
+                    target.layer != 4 ||
+                    !target.activeSelf ||
+                    target.transform.position != new Vector3(1, 2, 3) ||
+                    Quaternion.Angle(target.transform.rotation, Quaternion.Euler(0, 0, 90)) > 0.01f)
+                {
+                    throw new InvalidOperationException(
+                        "A script changed an object through its read-only view.");
+                }
+            }
+            finally
+            {
+                thread["viewTarget"] = LuauValue.Nil;
+                Object.DestroyImmediate(target);
+            }
+        }
+
+        // ------------------------------------------------------------------
         // Edit Mode: the Input library over virtual devices.
         // ------------------------------------------------------------------
 
         /// <summary>
-        /// Holds keys, a mouse button, and a touch on virtual devices and reads
-        /// them through the generated Input library.
+        /// Holds keys, mouse buttons, and a touch on virtual devices and reads
+        /// them through Input libraries built from different policies.
         /// </summary>
         public static void ValidateInputLibrary()
         {
-            var inputLibraryType = CoreTypes.Load().InputLibrary;
+            var coreTypes = CoreTypes.Load();
             var keyboard = InputSystem.AddDevice<Keyboard>();
             var mouse = InputSystem.AddDevice<Mouse>();
             var touchscreen = InputSystem.AddDevice<Touchscreen>();
@@ -146,31 +329,112 @@ namespace Luau.Unity.PackageConsumerProbe
                         "The virtual input devices did not take the probe's state.");
                 }
 
-                var library = (ILuauLibrary)Activator.CreateInstance(inputLibraryType);
-                using var root = LuauUnity.CreateState(ConsumerApiProbe.CreateOptions(
-                    state => state.OpenLibrary(library)));
-                using var thread = root.CreateSandboxedThread();
-                using var values = thread.DoString(
-                    "return Input.GetKey('A'), Input.GetKey('Enter'), " +
-                    "Input.GetMouseButton(1), Input.touchCount, Input.GetTouchPhase(0)",
-                    "@consumer/full-demo-input-any-key.luau");
-                if (values.Length != 5 ||
-                    !values[0].Read<bool>() ||
-                    values[1].Read<bool>() ||
-                    !values[2].Read<bool>() ||
-                    values[3].Read<int>() != 1 ||
-                    values[4].Read<string>() != "Began")
+                // The default policy reads what the demo reads and nothing more.
+                using (var root = LuauUnity.CreateState(ConsumerApiProbe.CreateOptions(
+                    state => state.OpenLibrary(
+                        coreTypes.CreateInputLibrary(coreTypes.CreateInputPolicy())))))
+                using (var thread = root.CreateSandboxedThread())
                 {
-                    throw new InvalidOperationException(
-                        "Claim 3 did not reproduce: the Input library did not read " +
-                        "the held A key, the right mouse button, and the touch.");
+                    using (var values = thread.DoString(
+                        "local pressed = Input.GetKeyDown('Space')\n" +
+                        "return Input.GetKey('Space'), Input.GetKey('space'), " +
+                        "type(pressed) == 'boolean', Input.GetMouseButton(0), " +
+                        "Input.touchCount, Input.GetTouchPhase(0)",
+                        "@consumer/full-demo-input-default-policy.luau"))
+                    {
+                        if (values.Length != 6 ||
+                            !values[0].Read<bool>() ||
+                            !values[1].Read<bool>() ||
+                            !values[2].Read<bool>() ||
+                            !values[3].Read<bool>() ||
+                            values[4].Read<int>() != 1 ||
+                            values[5].Read<string>() != "Began")
+                        {
+                            throw new InvalidOperationException(
+                                "The default input policy did not read Space, mouse " +
+                                "button 0, and the first touch.");
+                        }
+                    }
+
+                    const string keyA =
+                        "Input key 'A' is not enabled for this Luau runtime. Add it " +
+                        "to the runtime's Input Policy keys to let scripts read it.";
+                    const string mouse1 =
+                        "Mouse button 1 is not enabled for this Luau runtime. Add it " +
+                        "to the runtime's Input Policy mouse buttons to let scripts read it.";
+                    ExpectCallbackError(thread, "return Input.GetKey('A')", keyA);
+                    ExpectCallbackError(thread, "return Input.GetKeyDown('A')", keyA);
+                    ExpectCallbackError(
+                        thread,
+                        "return Input.GetKey('Enter')",
+                        "Input key 'Enter' is not enabled for this Luau runtime.");
+                    ExpectCallbackError(thread, "return Input.GetMouseButton(1)", mouse1);
+                    ExpectCallbackError(thread, "return Input.GetMouseButtonDown(1)", mouse1);
+                    ExpectCallbackError(
+                        thread,
+                        "return Input.GetKey('NotAKey')",
+                        "Unknown Input System Key name 'NotAKey'.");
+                    ExpectCallbackError(
+                        thread,
+                        "return Input.GetMouseButton(5)",
+                        "Mouse button indexes must be between 0 and 4.");
                 }
 
-                Debug.Log(
-                    ResultPrefix + "claim 3 (Input) reproduced: Input.GetKey('A') " +
-                    "returned true for a held key the demo never reads, " +
-                    "Input.GetMouseButton(1) returned true, and touchCount/GetTouchPhase(0) " +
-                    "returned 1/'Began'; the library has no per-runtime policy.");
+                // A host policy replaces the defaults entirely.
+                using (var root = LuauUnity.CreateState(ConsumerApiProbe.CreateOptions(
+                    state => state.OpenLibrary(coreTypes.CreateInputLibrary(
+                        coreTypes.CreateInputPolicy(
+                            new[] { "A", "Enter" },
+                            mouseButtons: 1 << 1,
+                            touch: false))))))
+                using (var thread = root.CreateSandboxedThread())
+                {
+                    using (var values = thread.DoString(
+                        "return Input.GetKey('A'), Input.GetKey('Enter'), " +
+                        "Input.GetMouseButton(1)",
+                        "@consumer/full-demo-input-host-policy.luau"))
+                    {
+                        if (values.Length != 3 ||
+                            !values[0].Read<bool>() ||
+                            values[1].Read<bool>() ||
+                            !values[2].Read<bool>())
+                        {
+                            throw new InvalidOperationException(
+                                "A host input policy did not read the keys and mouse " +
+                                "button it enabled.");
+                        }
+                    }
+
+                    const string touchError =
+                        "Touch input is not enabled for this Luau runtime. Enable " +
+                        "touch in the runtime's Input Policy to let scripts read it.";
+                    ExpectCallbackError(
+                        thread,
+                        "return Input.GetKey('Space')",
+                        "Input key 'Space' is not enabled for this Luau runtime.");
+                    ExpectCallbackError(
+                        thread,
+                        "return Input.GetMouseButton(0)",
+                        "Mouse button 0 is not enabled for this Luau runtime.");
+                    ExpectCallbackError(thread, "return Input.touchCount", touchError);
+                    ExpectCallbackError(thread, "return Input.GetTouchPhase(0)", touchError);
+                }
+
+                try
+                {
+                    coreTypes.CreateInputLibrary(coreTypes.CreateInputPolicy(
+                        new[] { "Spcae" },
+                        mouseButtons: 0,
+                        touch: false));
+                    throw new InvalidOperationException(
+                        "The Input library accepted a policy with an unknown key name.");
+                }
+                catch (TargetInvocationException exception)
+                    when (exception.InnerException is InvalidOperationException invalid &&
+                        invalid.Message ==
+                            "The input policy lists unknown Input System Key name 'Spcae'.")
+                {
+                }
             }
             finally
             {
@@ -178,6 +442,31 @@ namespace Luau.Unity.PackageConsumerProbe
                 InputSystem.RemoveDevice(mouse);
                 InputSystem.RemoveDevice(keyboard);
             }
+        }
+
+        static void ExpectCallbackError(LuauState thread, string source, string expected)
+        {
+            try
+            {
+                using (thread.DoString(source, "@consumer/full-demo-expected-error.luau"))
+                {
+                }
+            }
+            catch (LuauManagedCallbackException exception)
+                when (exception.InnerException is LuauException inner &&
+                    inner.Message.Contains(expected, StringComparison.Ordinal))
+            {
+                return;
+            }
+            catch (Exception exception)
+            {
+                throw new InvalidOperationException(
+                    "'" + source + "' failed, but not with: " + expected,
+                    exception);
+            }
+
+            throw new InvalidOperationException(
+                "'" + source + "' succeeded; expected it to fail with: " + expected);
         }
 
         // ------------------------------------------------------------------
@@ -272,6 +561,10 @@ namespace Luau.Unity.PackageConsumerProbe
             {
                 errorLog.Add(condition);
             }
+            else if (type == LogType.Warning)
+            {
+                warningLog.Add(condition);
+            }
         }
 
         static IEnumerable<object> RunPlayModeChecks()
@@ -350,35 +643,50 @@ namespace Luau.Unity.PackageConsumerProbe
                     yield return step;
                 }
 
-                var spawned = FindSceneObject("Spawn block(Clone) [written]");
-                if (spawned == null ||
-                    spawned.activeSelf ||
-                    granted.name != "Granted target [written]" ||
-                    granted.activeSelf)
+                // Objects the behaviour was granted stay fully writable.
+                foreach (var written in new[]
                 {
-                    throw new InvalidOperationException(
-                        "A physics callback could not change an object its behaviour " +
-                        "owns.\n" + PhysicsReport(runtime) + DescribeErrors());
+                    FindSceneObject("Spawn block(Clone) [written]"),
+                    granted,
+                })
+                {
+                    if (written == null ||
+                        !written.name.EndsWith(" [written]", StringComparison.Ordinal) ||
+                        written.transform.position != new Vector3(50, 50, 0) ||
+                        !written.GetComponent<Collider2D>().isTrigger ||
+                        written.activeSelf)
+                    {
+                        throw new InvalidOperationException(
+                            "A physics callback could not change an object its behaviour " +
+                            "spawned or references.\n" + PhysicsReport(runtime) +
+                            DescribeErrors());
+                    }
                 }
 
-                if (unlisted.name != "Unlisted target [written]" ||
-                    unlisted.transform.position != new Vector3(50, 50, 0) ||
-                    !unlisted.GetComponent<Collider2D>().isTrigger ||
-                    unlisted.activeSelf)
+                // Anything else arrives as a read-only view: readable, unchanged,
+                // and the first write fails the hook with a clear error.
+                const string expectedError =
+                    "Cannot set 'name': GameObject 'Unlisted target'" + NotGrantedSuffix;
+                var report = PhysicsReport(runtime);
+                if (!report.Contains("seen|Unlisted target|Untagged|0|true|true|true|0|1\n") ||
+                    report.Contains("wrote|Unlisted target") ||
+                    unlisted.name != "Unlisted target" ||
+                    unlisted.transform.position != Vector3.zero ||
+                    unlisted.GetComponent<Collider2D>().isTrigger ||
+                    !unlisted.activeSelf ||
+                    behaviour.enabled ||
+                    !ErrorLogged(expectedError))
                 {
                     throw new InvalidOperationException(
-                        "Claim 1 did not reproduce: triggerEnter2D did not rename, move, " +
-                        "reconfigure, and deactivate an object the behaviour was not " +
-                        "given.\n" + PhysicsReport(runtime) + DescribeErrors());
+                        "A physics callback changed, or failed to report, an object its " +
+                        "behaviour was not granted.\n" + report + DescribeErrors());
                 }
 
                 Debug.Log(
-                    ResultPrefix + "claim 1 (physics callbacks) reproduced: triggerEnter2D " +
-                    "received a full GameObject capability for 'Unlisted target', which is " +
-                    "not in the behaviour's Object References; the script renamed it to '" +
-                    unlisted.name + "', moved it to " + unlisted.transform.position +
-                    ", set its Collider2D.isTrigger through GetComponent, and deactivated it.\n" +
-                    PhysicsReport(runtime));
+                    ResultPrefix + "physics callbacks: the spawned block and the Object " +
+                    "Reference were written; 'Unlisted target' was read through a view, " +
+                    "left unchanged, and the write failed with: " +
+                    FindLoggedLine(expectedError));
             }
             finally
             {
@@ -400,8 +708,12 @@ namespace Luau.Unity.PackageConsumerProbe
         static IEnumerable<object> NestedSpawning()
         {
             const string templateName = "Nested spawner";
+            const int runtimeLimit = 5;
             var created = new List<GameObject>();
-            var runtime = CreateRuntime("Spawning probe runtime", created);
+            var runtime = CreateRuntime(
+                "Spawning probe runtime",
+                created,
+                configure: component => SetField(component, "maxSpawnedObjects", runtimeLimit));
             var plainBlock = new GameObject("Plain block");
             plainBlock.transform.position = new Vector3(2000, 0, 0);
             created.Add(plainBlock);
@@ -437,37 +749,71 @@ namespace Luau.Unity.PackageConsumerProbe
                     yield return step;
                 }
 
+                // Every behaviour stayed within its own limit of 2, so each
+                // refusal came from the runtime: 14 clones without it.
                 var clones = CountSceneObjects(templateName + "(Clone)");
-                if (clones != 14)
+                var refused = ReadSharedNumber(runtime, "refused");
+                if (clones != runtimeLimit || refused < 1)
                 {
                     throw new InvalidOperationException(
-                        "Claim 2 did not reproduce as expected: " + clones +
-                        " nested clones are live instead of 14." + DescribeErrors());
+                        "The runtime spawn limit of " + runtimeLimit + " did not hold " +
+                        "across nested behaviours: " + clones + " clones are live and " +
+                        refused + " spawns were refused." + DescribeErrors());
                 }
 
-                WriteShared(runtime, "extraAttempt", "protected");
-                foreach (var step in WaitUntil(
-                    () => ReadSharedString(runtime, "extraResult") != null,
-                    "the extra spawner's attempt",
-                    extraBehaviour))
+                // Another behaviour under its own limit is refused too.
+                foreach (var step in ExtraSpawn(runtime, "protected", extraBehaviour))
                 {
                     yield return step;
                 }
-
-                var extraResult = ReadSharedString(runtime, "extraResult");
-                if (extraResult != "spawned")
+                if (ReadSharedString(runtime, "extraResult") != "refused")
                 {
                     throw new InvalidOperationException(
-                        "Claim 2 did not reproduce as expected: the extra spawn was " +
-                        extraResult + "." + DescribeErrors());
+                        "A behaviour under its own limit spawned past the runtime limit." +
+                        DescribeErrors());
+                }
+
+                // A destroyed object stops counting.
+                Object.Destroy(FindSceneObject(templateName + "(Clone)(Clone)"));
+                foreach (var step in WaitFrames(2))
+                {
+                    yield return step;
+                }
+                foreach (var step in ExtraSpawn(runtime, "protected", extraBehaviour))
+                {
+                    yield return step;
+                }
+                if (ReadSharedString(runtime, "extraResult") != "spawned" ||
+                    CountSceneObjects(templateName + "(Clone)") != runtimeLimit - 1 ||
+                    FindSceneObject("Plain block(Clone)") == null)
+                {
+                    throw new InvalidOperationException(
+                        "The runtime did not admit a spawn after one of its spawned " +
+                        "objects was destroyed." + DescribeErrors());
+                }
+
+                // At the limit again, a refusal the script does not catch fails
+                // its hook with the runtime's error.
+                const string expectedError =
+                    "LuauBehaviourRuntime 'Spawning probe runtime' reached its limit of 5 " +
+                    "live spawned object(s) across all of its behaviours.";
+                foreach (var step in ExtraSpawn(runtime, "strict", null))
+                {
+                    yield return step;
+                }
+                if (extraBehaviour.enabled || !ErrorLogged(expectedError))
+                {
+                    throw new InvalidOperationException(
+                        "A spawn past the runtime limit did not fail with the runtime's " +
+                        "error." + DescribeErrors());
                 }
 
                 Debug.Log(
-                    ResultPrefix + "claim 2 (spawning) reproduced: every behaviour had " +
-                    "Max Spawned Objects = 2, yet one scene object listed as its own " +
-                    "prefab produced " + clones + " live clones on one runtime, and " +
-                    "another behaviour on that runtime spawned one more (" +
-                    (clones + 1) + " live spawned objects). The runtime has no limit of its own.");
+                    ResultPrefix + "spawning: with each behaviour limited to 2 and the " +
+                    "runtime to " + runtimeLimit + ", the self-listing spawner stopped at " +
+                    clones + " clones (" + refused + " spawns refused), another behaviour " +
+                    "was refused until one clone was destroyed, and an uncaught refusal " +
+                    "failed with: " + FindLoggedLine(expectedError));
             }
             finally
             {
@@ -486,7 +832,7 @@ namespace Luau.Unity.PackageConsumerProbe
             var created = new List<GameObject>();
             var runtime = CreateRuntime("Nested runtime host runtime", created);
             var host = CreateInactive("Nested runtime host", created);
-            AddBehaviour(
+            var hostBehaviour = AddBehaviour(
                 host,
                 runtime,
                 scripts.SpawnOnce,
@@ -497,29 +843,35 @@ namespace Luau.Unity.PackageConsumerProbe
 
             try
             {
-                var cloneName = nestedRuntimePrefab.name + "(Clone)";
-                foreach (var step in WaitUntilStable(
-                    () => CountSceneObjects(cloneName),
-                    () => IsReady(runtime) && CountSceneObjects(cloneName) > 0,
-                    "the spawned runtimes to settle"))
+                // Without the check, this one admitted spawn produced 7 objects
+                // with 7 runtimes of their own.
+                const string expectedError =
+                    "Prefab reference 'child' contains a LuauBehaviourRuntime. A script " +
+                    "cannot spawn a runtime of its own, because nothing that runtime's " +
+                    "scripts do would count against this runtime's limits.";
+                foreach (var step in WaitUntil(
+                    () => !hostBehaviour.enabled,
+                    "the host behaviour to refuse a prefab with its own runtime"))
+                {
+                    yield return step;
+                }
+                foreach (var step in WaitFrames(30))
                 {
                     yield return step;
                 }
 
-                var clones = CountSceneObjects(cloneName);
-                var runtimes = CountRuntimesUnder(cloneName);
-                if (clones != 7 || runtimes != 7)
+                var clones = CountSceneObjects(nestedRuntimePrefab.name + "(Clone)");
+                if (clones != 0 || !ErrorLogged(expectedError))
                 {
                     throw new InvalidOperationException(
-                        "The nested-runtime spawn produced " + clones + " objects and " +
-                        runtimes + " runtimes instead of 7 of each." + DescribeErrors());
+                        "A behaviour spawned a prefab that carries its own runtime (" +
+                        clones + " live)." + DescribeErrors());
                 }
 
                 Debug.Log(
-                    ResultPrefix + "claim 2 (spawning) also reproduced through a prefab " +
-                    "that carries its own LuauBehaviourRuntime: a host behaviour allowed " +
-                    "one spawn, and that one prefab produced " + clones + " live objects " +
-                    "with " + runtimes + " separate runtimes, each with fresh limits.");
+                    ResultPrefix + "nested runtime: the host behaviour refused to start " +
+                    "with a prefab that carries its own runtime: " +
+                    FindLoggedLine(expectedError));
             }
             finally
             {
@@ -585,12 +937,48 @@ namespace Luau.Unity.PackageConsumerProbe
 
         static IEnumerable<object> RuntimeInput()
         {
+            // The runtime's default policy: the demo's key, mouse button, and
+            // touch read; any other key is refused.
+            foreach (var step in RuntimeInputCase(
+                "Input probe runtime",
+                policy: null,
+                allowedKey: "Space",
+                unlistedKey: "A",
+                checkPointer: true))
+            {
+                yield return step;
+            }
+
+            // A host policy on the runtime replaces the defaults.
+            foreach (var step in RuntimeInputCase(
+                "Host input policy runtime",
+                policy: types.CreateInputPolicy(new[] { "A" }, mouseButtons: 0, touch: false),
+                allowedKey: "A",
+                unlistedKey: "Space",
+                checkPointer: false))
+            {
+                yield return step;
+            }
+        }
+
+        static IEnumerable<object> RuntimeInputCase(
+            string runtimeName,
+            object policy,
+            string allowedKey,
+            string unlistedKey,
+            bool checkPointer)
+        {
             var created = new List<GameObject>();
-            var runtime = CreateRuntime("Input probe runtime", created);
-            WriteShared(runtime, "allowedKey", "Space");
-            WriteShared(runtime, "unlistedKey", "A");
-            WriteShared(runtime, "checkPointer", true);
-            var owner = CreateInactive("Input probe", created);
+            var runtime = CreateRuntime(
+                runtimeName,
+                created,
+                configure: policy == null
+                    ? (Action<Component>)null
+                    : component => SetField(component, "inputPolicy", policy));
+            WriteShared(runtime, "allowedKey", allowedKey);
+            WriteShared(runtime, "unlistedKey", unlistedKey);
+            WriteShared(runtime, "checkPointer", checkPointer);
+            var owner = CreateInactive(runtimeName + " probe", created);
             var behaviour = AddBehaviour(
                 owner,
                 runtime,
@@ -603,25 +991,34 @@ namespace Luau.Unity.PackageConsumerProbe
             try
             {
                 foreach (var step in WaitUntil(
-                    () => ReadSharedString(runtime, "unlistedRead") != null || !behaviour.enabled,
+                    () => !behaviour.enabled || ReadSharedString(runtime, "unlistedRead") != null,
                     "the input probe's start"))
                 {
                     yield return step;
                 }
 
-                var unlisted = ReadSharedString(runtime, "unlistedRead");
-                if (unlisted == null || !behaviour.enabled)
+                var expectedError =
+                    "Input key '" + unlistedKey + "' is not enabled for this Luau runtime.";
+                var allowedRead = ReadSharedString(runtime, "allowedRead");
+                var pointerRead = ReadSharedString(runtime, "pointerRead");
+                if (behaviour.enabled ||
+                    ReadSharedString(runtime, "unlistedRead") != null ||
+                    allowedRead != "released/released" ||
+                    (checkPointer && pointerRead != "released/released/0") ||
+                    !ErrorLogged(expectedError) ||
+                    WarningLogged("host-API warmup failed"))
                 {
                     throw new InvalidOperationException(
-                        "Claim 3 did not reproduce: a runtime script could not read key 'A'." +
-                        DescribeErrors());
+                        "Runtime '" + runtimeName + "' did not read '" + allowedKey +
+                        "' and refuse '" + unlistedKey + "' (allowed " + allowedRead +
+                        ", pointer " + pointerRead + ")." + DescribeErrors());
                 }
 
                 Debug.Log(
-                    ResultPrefix + "claim 3 (Input) reproduced through a runtime: a " +
-                    "behaviour script read key 'A' (" + unlisted + "), mouse button 0 and " +
-                    "touch (" + ReadSharedString(runtime, "pointerRead") + ") with no " +
-                    "runtime setting to refuse them.");
+                    ResultPrefix + "input (" + runtimeName + "): '" + allowedKey +
+                    "' read " + allowedRead +
+                    (checkPointer ? ", mouse button 0 and touch read " + pointerRead : string.Empty) +
+                    "; '" + unlistedKey + "' failed with: " + FindLoggedLine(expectedError));
             }
             finally
             {
@@ -631,16 +1028,72 @@ namespace Luau.Unity.PackageConsumerProbe
             yield return null;
         }
 
+        static IEnumerable<object> ExtraSpawn(Component runtime, string attempt, Behaviour extra)
+        {
+            WriteShared(runtime, "extraResult", LuauValue.Nil);
+            WriteShared(runtime, "extraAttempt", attempt);
+            foreach (var step in WaitUntil(
+                () => ReadSharedString(runtime, "extraResult") != null ||
+                    ReadSharedString(runtime, "extraAttempt") == null,
+                "the extra spawner's " + attempt + " attempt",
+                extra))
+            {
+                yield return step;
+            }
+
+            // Let a failed hook reach the phase's failure callback.
+            yield return null;
+        }
+
         // ------------------------------------------------------------------
         // Helpers.
         // ------------------------------------------------------------------
 
-        static Component CreateRuntime(string name, List<GameObject> created)
+        static Component CreateRuntime(
+            string name,
+            List<GameObject> created,
+            Action<Component> configure = null)
         {
             var gameObject = CreateInactive(name, created);
             var runtime = gameObject.AddComponent(types.Runtime);
+            configure?.Invoke(runtime);
             gameObject.SetActive(true);
             return runtime;
+        }
+
+        static bool ErrorLogged(string text)
+        {
+            return FindLoggedLine(text) != null;
+        }
+
+        static bool WarningLogged(string text)
+        {
+            foreach (var entry in warningLog)
+            {
+                if (entry.Contains(text, StringComparison.Ordinal))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        /// <summary>Returns the logged error line containing <paramref name="text"/>.</summary>
+        static string FindLoggedLine(string text)
+        {
+            foreach (var entry in errorLog)
+            {
+                foreach (var line in entry.Split('\n'))
+                {
+                    if (line.Contains(text, StringComparison.Ordinal))
+                    {
+                        return line.Trim();
+                    }
+                }
+            }
+
+            return null;
         }
 
         static GameObject CreateInactive(string name, List<GameObject> created)
@@ -776,25 +1229,6 @@ namespace Luau.Unity.PackageConsumerProbe
                 FindObjectsSortMode.None))
             {
                 if (candidate.name.StartsWith(namePrefix, StringComparison.Ordinal))
-                {
-                    count++;
-                }
-            }
-
-            return count;
-        }
-
-        static int CountRuntimesUnder(string namePrefix)
-        {
-            var count = 0;
-            foreach (var candidate in Object.FindObjectsByType(
-                types.Runtime,
-                FindObjectsInactive.Include,
-                FindObjectsSortMode.None))
-            {
-                if (((Component)candidate).gameObject.name.StartsWith(
-                    namePrefix,
-                    StringComparison.Ordinal))
                 {
                     count++;
                 }

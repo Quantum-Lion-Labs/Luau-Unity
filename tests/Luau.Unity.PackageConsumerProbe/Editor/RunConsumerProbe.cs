@@ -70,6 +70,7 @@ namespace Luau.Unity.PackageConsumerProbe
 
             ValidateImportedGettingStartedLibrary();
             ValidateImportedFullDemo();
+            FullDemoAuthorityProbe.ValidateReadOnlyViews();
             FullDemoAuthorityProbe.ValidateInputLibrary();
         }
 
@@ -121,10 +122,14 @@ namespace Luau.Unity.PackageConsumerProbe
             var inputLibraryType = Type.GetType(
                 namespaceName + "LuauInputLibrary, " + coreAssembly,
                 throwOnError: true);
+            var inputPolicyType = inputLibraryType.GetNestedType("Policy")
+                ?? throw new InvalidOperationException(
+                    "The imported Full Demo Input library is missing its Policy.");
             var quaternionLibrary =
                 (ILuauLibrary)Activator.CreateInstance(quaternionLibraryType);
-            var inputLibrary =
-                (ILuauLibrary)Activator.CreateInstance(inputLibraryType);
+            var inputLibrary = (ILuauLibrary)Activator.CreateInstance(
+                inputLibraryType,
+                Activator.CreateInstance(inputPolicyType));
             using var root = LuauUnity.CreateState(ConsumerApiProbe.CreateOptions(state =>
             {
                 state.OpenLibrary(quaternionLibrary);
