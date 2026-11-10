@@ -487,9 +487,8 @@ sealed class Stage6BenchmarkSuite(BenchmarkConfiguration configuration)
 
     // Every loop back-edge, call, and return is a Luau interrupt safepoint.
     // These cases report nanoseconds per loop iteration, so the per-operation
-    // setup is amortized over the whole loop. The default profile's
-    // 100,000-safepoint count limit bounds its loops; the other profiles run
-    // long enough to make that setup negligible.
+    // setup is amortized over the whole loop, and each loop runs long enough
+    // to make that setup negligible.
     static void AddInterruptMatrix(List<BenchmarkCase> cases)
     {
         const string loopSource = "local n = ... local s = 0 for i = 1, n do s = s + i end return s";
@@ -501,8 +500,9 @@ sealed class Stage6BenchmarkSuite(BenchmarkConfiguration configuration)
             ("wall-clock", LuauExecutionOptions.Unbounded with { WallClockLimit = TimeSpan.FromSeconds(10) }, 1_000_000, 1_000_000),
             ("count", LuauExecutionOptions.Unbounded with { InterruptCountLimit = 1_000_000_000 }, 1_000_000, 1_000_000),
             // One back-edge per loop iteration; a call, return, and back-edge
-            // per call iteration. Both stay below 100,000 safepoints.
-            ("default", LuauExecutionOptions.Default, 90_000, 30_000),
+            // per call iteration. Both stay well below the default
+            // 10,000,000-safepoint count limit and 250 ms wall clock.
+            ("default", LuauExecutionOptions.Default, 1_000_000, 1_000_000),
         };
 
         foreach (var profile in profiles)

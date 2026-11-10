@@ -544,6 +544,35 @@ namespace Luau.Unity.Tests
         }
 
         [Test]
+        public void DefaultCountLimitLeavesRoomForOrdinaryOneTimeWork()
+        {
+            // Every default except the wall clock, which is a safety net here
+            // so that a stalled editor cannot stop the loop by time.
+            using var root = LuauUnity.CreateState(new LuauUnityOptions
+            {
+                StateOptions = TestBudgets.StateOptions,
+                Log = _ => { },
+            });
+            using var script = root.CreateSandboxedThread();
+            const string source = "local n = 0 for i = 1, 150000 do n = n + i end return n";
+
+            Assert.That(
+                root.Options.DefaultExecutionOptions.InterruptCountLimit,
+                Is.EqualTo(10_000_000));
+            using (var results = script.DoString(source, "@budgets/setup-loop.luau"))
+            {
+                Assert.That(results[0].Read<double>(), Is.EqualTo(150_000d * 150_001 / 2));
+            }
+
+            // The same loop needs more than the previous default of 100,000.
+            var exception = Assert.Throws<LuauExecutionBudgetException>(() => script.DoString(
+                source,
+                "@budgets/setup-loop.luau",
+                executionOptions: LuauExecutionOptions.Unbounded with { InterruptCountLimit = 100_000 }));
+            Assert.That(exception.BudgetKind, Is.EqualTo(LuauExecutionBudgetKind.InterruptCount));
+        }
+
+        [Test]
         public void ExecutionBudgetsStopTightLoopsAtTheirExactLimits()
         {
             using var root = LuauUnity.CreateState(new LuauUnityOptions

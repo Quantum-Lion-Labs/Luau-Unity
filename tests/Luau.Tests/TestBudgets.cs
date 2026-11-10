@@ -17,7 +17,10 @@ namespace Luau.Tests;
 /// <para>
 /// Roots from <see cref="CreateRoot"/> keep every other default, including the
 /// interrupt-count and result-count limits, and only the wall clock becomes a
-/// safety net that a hung operation reaches. Tests about the default options
+/// safety net that a hung operation reaches. A script that never ends stops at
+/// the default count of 10,000,000 safepoints instead: within tens of
+/// milliseconds for Luau code, and about a second for a loop that calls a host
+/// function, well before the safety net. Tests about the default options
 /// themselves create their roots with <c>LuauState.Create()</c>. Tests about
 /// the wall-clock budget configure the limit they test.
 /// </para>

@@ -14,6 +14,27 @@ API or ABI breaks.
 
 ### Changed
 
+- `LuauExecutionOptions.Default`, and with it `LuauStateOptions.Default` and
+  every state created without its own execution options, now allows
+  10,000,000 interrupt safepoints per operation instead of 100,000. A
+  function call, a return from a Luau function, and a loop iteration are each
+  a safepoint, so the old limit stopped ordinary one-time work after a
+  millisecond or two, long before the 250 ms
+  wall clock: `local n = 0 for i = 1, 150000 do n = n + i end return n`,
+  filling a 400 x 400 grid, and sorting 3,000 entities by distance with
+  `table.sort` and a comparison function all failed with an `InterruptCount`
+  `LuauExecutionBudgetException`. Under the defaults, whichever limit comes
+  first now stops a script that runs too long. Measured on desktop x64, a
+  tight loop of Luau code that never ends reaches the count after about 35 to
+  70 ms, before the wall clock; loops that do more work in each iteration,
+  slower devices, and a loop that calls a C# function (about 0.8 s to reach
+  the count) reach the 250 ms wall clock first. A host that removes the wall
+  clock keeps the count as its bound on a runaway script. The wall-clock and
+  result-count defaults are unchanged. `LuauScriptPhaseOptions` starts from
+  these defaults, so a phase that keeps its default `InvocationOptions` now
+  allows each call the same 10,000,000 safepoints; give per-frame hooks their
+  own limits, as the samples do. See
+  [Resource limits](Documentation~/resource-limits.md#execution-budgets).
 - Calling into the VM is about three times cheaper, and a steady stream of
   synchronous calls, such as per-frame script hooks, allocates no managed
   memory. Each call used to create an operation object, a timer, several

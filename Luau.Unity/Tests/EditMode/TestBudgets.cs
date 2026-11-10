@@ -19,8 +19,10 @@ namespace Luau.Unity.Tests
     /// <para>
     /// <see cref="StateOptions"/> keeps every other default, including the
     /// interrupt-count and result-count limits, and turns the wall clock into a
-    /// safety net that only a hung operation reaches. Tests about the default
-    /// options themselves keep creating their roots from the defaults.
+    /// safety net that only a hung operation reaches. A script that never ends
+    /// stops at the default count of 10,000,000 safepoints instead, well before
+    /// the safety net. Tests about the default options themselves keep creating
+    /// their roots from the defaults.
     /// </para>
     /// <para>
     /// The thread pool of the Editor's Mono starts work late when it is busy,

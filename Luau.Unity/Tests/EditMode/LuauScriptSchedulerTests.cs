@@ -25,6 +25,21 @@ namespace Luau.Unity.Tests
                 });
 
         [Test]
+        public void PhaseOptionsStartFromTheDefaultExecutionOptions()
+        {
+            var options = new LuauScriptPhaseOptions();
+
+            // A phase that keeps these gets the limits sized for one-time
+            // work; hosts give per-frame hooks their own, as every other test
+            // here does.
+            Assert.That(options.InvocationOptions, Is.SameAs(LuauExecutionOptions.Default));
+            Assert.That(
+                options.InvocationOptions.WallClockLimit,
+                Is.EqualTo(TimeSpan.FromMilliseconds(250)));
+            Assert.That(options.InvocationOptions.InterruptCountLimit, Is.EqualTo(10_000_000));
+        }
+
+        [Test]
         public void DispatchUsesOrderThenRegistrationSequence()
         {
             var calls = new List<int>();
