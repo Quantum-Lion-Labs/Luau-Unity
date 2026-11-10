@@ -331,6 +331,9 @@ internal static class ScriptRunner
                     throw new LuauException("Luau execution stopped without a reported cause.", operation.ChunkName);
                 case ScriptYieldReason.AsyncCallback:
                     operation.MarkAsyncCallbackSuspended();
+                    // ValidatePendingCallbackSuspension confirmed this thread is
+                    // the resume target, so its frame is the callback's own.
+                    var callbackThread = operation.PendingCallbackThread;
                     var pending = operation.TakePendingCallback();
                     var callbackName = operation.TakePendingCallbackName();
                     if (pending?.AsynchronousCallback == null)
@@ -338,6 +341,7 @@ internal static class ScriptRunner
                         operation.RecordCallbackFailure(
                             callbackName,
                             new InvalidOperationException("The pending managed callback was lost."));
+                        operation.RecordFailedCallbackSuspension(callbackThread);
                         resumeWithError = true;
                         argumentCount = 0;
                         operation.FinishAsyncCallback();
@@ -379,6 +383,11 @@ internal static class ScriptRunner
                             argumentCount = 0;
                             resumeWithError = true;
                         }
+                    }
+
+                    if (resumeWithError)
+                    {
+                        operation.RecordFailedCallbackSuspension(callbackThread);
                     }
 
                     operation.FinishAsyncCallback();
@@ -662,15 +671,21 @@ internal static class ScriptRunner
     {
         using var access = operation.Context.EnterOperationNativeAccess(operation);
         var target = luau_host_resume_target((LuauHostState*)state);
-        // The target's frame belongs to the failed callback, so the token
-        // replaces it: the push has room even when the callback's arguments or
-        // partial results filled the frame. Rich callback details remain
-        // attached to the managed exception; a Luau pcall receives only this
-        // opaque non-nil failure token.
+        // When the target is the thread the failed callback suspended on, its
+        // frame is that callback's and the token replaces it, so the push has
+        // room even when arguments or partial results filled the frame. A
+        // pending failure can instead arrive on another frame: a non-yieldable
+        // parent can reject the callback's suspension, and a later interrupt
+        // then suspends a Lua frame whose registers are live. Compare the saved
+        // pointer only; a rejected child may already be collected. Rich
+        // callback details remain attached to the managed exception; a Luau
+        // pcall receives only this opaque non-nil failure token.
+        var failedCallbackThread = operation.TakeFailedCallbackThread();
         LuauNativeProtection.Prepare(operation.Context);
-        var pushStatus = LuauNativeProtection.ReplaceFrameWithCallbackFailure(
+        var pushStatus = LuauNativeProtection.PushCallbackFailure(
             target,
-            operation.CallbackFailureToken);
+            operation.CallbackFailureToken,
+            replaceCallbackFrame: failedCallbackThread != IntPtr.Zero && failedCallbackThread == (IntPtr)target);
         if (pushStatus == LuauHostStatus.Ok)
         {
             return luau_host_resume_error((LuauHostState*)state, (LuauHostState*)from);
@@ -691,10 +706,10 @@ internal static class ScriptRunner
         }
         catch (Exception pushFailure)
         {
-            // The callback failure never reached Luau. That is not expected,
-            // because the emptied callback frame has room for the token. Below
-            // a hard stop the callback failure still outranks the failure to
-            // inject it.
+            // The callback failure never reached Luau: the frame it arrived on
+            // had no room for the token. An emptied callback frame always has
+            // room, so this is a frame the callback did not own. Below a hard
+            // stop the callback failure still outranks the failure to inject it.
             var callbackFailure = operation.GetHardStopException() == null
                 ? operation.TakeInjectedCallbackFailure()
                 : null;

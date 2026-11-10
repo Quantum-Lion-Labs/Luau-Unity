@@ -137,11 +137,13 @@
             the operation that later needs the slot reports it.
             </summary>
         </member>
-        <member name="M:Luau.LuauNativeProtection.ReplaceFrameWithCallbackFailure(Luau.Internal.Interop.LuauHostState*,System.IntPtr)">
+        <member name="M:Luau.LuauNativeProtection.PushCallbackFailure(Luau.Internal.Interop.LuauHostState*,System.IntPtr,System.Boolean)">
             <summary>
-            Replaces a failed callback's frame with its failure token. Once a
-            callback has failed, its arguments and partial results are dead;
-            dropping them leaves room for the token even when they filled the frame.
+            Pushes a callback failure token onto <paramref name="thread"/>. When
+            that thread's current frame is the failed callback's own, the token
+            replaces the frame: the callback's arguments and partial results are
+            dead, and dropping them leaves room for the token even when they filled
+            the frame. Any other frame may hold live values and is left intact.
             </summary>
         </member>
         <member name="T:Luau.LuauNativeAbiVerifier">
@@ -153,6 +155,14 @@
         <member name="T:Luau.LuauStackBoundary">
             <summary>
             Owns restoration of one synchronous managed/native stack boundary.
+            </summary>
+        </member>
+        <member name="M:Luau.ScriptOperation.RecordFailedCallbackSuspension(System.IntPtr)">
+            <summary>
+            Records the thread a failed callback suspended on. A pending failure
+            can also reach Luau through an interrupt on some other frame, for
+            example after a non-yieldable parent rejected this suspension; only
+            this thread's suspended frame is the failed callback's own.
             </summary>
         </member>
         <member name="T:Luau.Utf8BufferScope">

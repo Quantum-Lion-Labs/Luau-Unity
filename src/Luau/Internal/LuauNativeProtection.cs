@@ -179,19 +179,24 @@ internal static unsafe class LuauNativeProtection
     }
 
     /// <summary>
-    /// Replaces a failed callback's frame with its failure token. Once a
-    /// callback has failed, its arguments and partial results are dead;
-    /// dropping them leaves room for the token even when they filled the frame.
+    /// Pushes a callback failure token onto <paramref name="thread"/>. When
+    /// that thread's current frame is the failed callback's own, the token
+    /// replaces the frame: the callback's arguments and partial results are
+    /// dead, and dropping them leaves room for the token even when they filled
+    /// the frame. Any other frame may hold live values and is left intact.
     /// </summary>
-    internal static LuauHostStatus ReplaceFrameWithCallbackFailure(LuauHostState* frame, IntPtr token)
+    internal static LuauHostStatus PushCallbackFailure(
+        LuauHostState* thread,
+        IntPtr token,
+        bool replaceCallbackFrame)
     {
-        if (luau_host_stack_get_top(frame) > 0)
+        if (replaceCallbackFrame && luau_host_stack_get_top(thread) > 0)
         {
             // Shrinking needs no free slot, so the host cannot fail it.
-            _ = luau_host_stack_set_top(frame, 0);
+            _ = luau_host_stack_set_top(thread, 0);
         }
 
-        return luau_host_push_light_userdata(frame, token.ToPointer(), 0);
+        return luau_host_push_light_userdata(thread, token.ToPointer(), 0);
     }
 
     static bool IsCallbackFailureToken(LuauHostState* pointer, IntPtr token)

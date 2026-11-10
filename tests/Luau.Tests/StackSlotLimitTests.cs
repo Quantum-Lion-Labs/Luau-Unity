@@ -362,4 +362,50 @@ public sealed class StackSlotLimitTests
             AssertRootUsable(root);
         }
     }
+
+    // A failed callback's frame is replaced by its failure value, but a pending
+    // failure can also be delivered to a frame the callback never owned. Here
+    // the callback fails in a child coroutine whose suspension a non-yieldable
+    // metamethod rejects; the failure then reaches the outer Lua function
+    // through a later interrupt. That function's locals must survive.
+    const string RejectedSuspensionSource = @"
+local read
+local ok = pcall(function(value)
+    read = function() return value end
+    value += 1
+    local co = coroutine.create(function() fail() end)
+    pcall(function()
+        local proxy = setmetatable({}, { __index = function() return coroutine.resume(co) end })
+        return proxy.x
+    end)
+    while true do end
+end, 41)
+return ok, read()";
+
+    static void AssertInterruptedFrameKeptItsLocals(LuauResultScope results)
+    {
+        using (results)
+        {
+            Assert.Equal(2, results.Count);
+            Assert.False(results[0].Read<bool>());
+            Assert.Equal(42, results[1].Read<int>());
+        }
+    }
+
+    [Fact]
+    public async Task CallbackFailureDeliveredToAnotherFrameLeavesItsLocalsIntact()
+    {
+        using var root = CreateRoot(LuauExecutionOptions.Default with { InterruptCountLimit = null });
+        root["fail"] = root.CreateFunction("fail", _ => throw new InvalidOperationException("boom"));
+        using var thread = root.CreateThread();
+
+        for (var attempt = 0; attempt < 8; attempt++)
+        {
+            AssertInterruptedFrameKeptItsLocals(root.DoString(RejectedSuspensionSource));
+            AssertInterruptedFrameKeptItsLocals(thread.DoString(RejectedSuspensionSource));
+            AssertInterruptedFrameKeptItsLocals(await root.DoStringAsync(RejectedSuspensionSource));
+            AssertInterruptedFrameKeptItsLocals(await thread.DoStringAsync(RejectedSuspensionSource));
+            AssertRootUsable(root);
+        }
+    }
 }

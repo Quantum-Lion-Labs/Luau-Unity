@@ -78,6 +78,9 @@ internal sealed unsafe class LuauCSharpFunction : LuauFunction, ILuauManagedCall
     {
         if (luau_host_is_yieldable(state) != 0)
         {
+            // The runner injects the failure after this suspension. Tell it
+            // which thread holds the failed callback's frame.
+            operation?.RecordFailedCallbackSuspension((IntPtr)state);
             return luau_host_suspend(state);
         }
 
@@ -86,9 +89,11 @@ internal sealed unsafe class LuauCSharpFunction : LuauFunction, ILuauManagedCall
             return 0;
         }
 
-        var status = LuauNativeProtection.ReplaceFrameWithCallbackFailure(
+        // This runs inside the failed callback, so the frame is its own.
+        var status = LuauNativeProtection.PushCallbackFailure(
             state,
-            operation.CallbackFailureToken);
+            operation.CallbackFailureToken,
+            replaceCallbackFrame: true);
         if (status != LuauHostStatus.Ok)
         {
             // Not expected: Luau keeps free slots in every callback frame,
