@@ -8,12 +8,24 @@ namespace Luau;
 public sealed record LuauExecutionOptions
 {
     TimeSpan? wallClockLimit = TimeSpan.FromMilliseconds(250);
-    long? interruptCountLimit = 100_000;
+    long? interruptCountLimit = 10_000_000;
     int? maxResultCount = 64;
 
     /// <summary>
-    /// Gets the finite execution policy used by ordinary script states.
+    /// Gets the finite execution policy used by ordinary script states: a
+    /// <see cref="WallClockLimit"/> of 250 milliseconds, an
+    /// <see cref="InterruptCountLimit"/> of 10,000,000 interrupt safepoints,
+    /// and a <see cref="MaxResultCount"/> of 64. A new instance created with
+    /// <c>new LuauExecutionOptions()</c> starts from the same values.
     /// </summary>
+    /// <remarks>
+    /// The wall clock is the limit that normally stops a long-running script
+    /// under this profile. The interrupt-count limit is set high enough that
+    /// ordinary one-time work, such as filling a large grid or sorting a few
+    /// thousand entries with a comparison function, does not reach it. It
+    /// still stops a runaway script when a host removes the wall-clock limit,
+    /// for example while a debugger is attached.
+    /// </remarks>
     public static LuauExecutionOptions Default { get; } = new();
 
     /// <summary>
@@ -50,10 +62,19 @@ public sealed record LuauExecutionOptions
     }
 
     /// <summary>
-    /// Gets the maximum number of interrupt callbacks permitted for an
+    /// Gets the maximum number of interrupt safepoints permitted for an
     /// operation, or <see langword="null"/> when no interrupt-count budget is
-    /// configured.
+    /// configured. Every call, every return, every loop iteration, and each
+    /// step of a Lua pattern match is one safepoint. A limit of N lets exactly
+    /// N safepoints run and stops the operation at safepoint N + 1. The
+    /// <see cref="Default"/> profile allows 10,000,000.
     /// </summary>
+    /// <remarks>
+    /// Unlike <see cref="WallClockLimit"/>, this limit bounds the same amount
+    /// of script work on every machine, and time the process spends paused or
+    /// descheduled does not consume it. It does not bound time spent inside a
+    /// single host or library call.
+    /// </remarks>
     /// <exception cref="ArgumentOutOfRangeException">
     /// The assigned count is zero or negative.
     /// </exception>

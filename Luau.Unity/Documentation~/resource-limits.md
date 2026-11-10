@@ -64,6 +64,18 @@ them, and never swap the root's scheduler.
 
 ## Execution budgets
 
+`LuauExecutionOptions.Default`, which `LuauStateOptions.Default` uses, gives
+every operation:
+
+| Limit | Default | When it is reached |
+| --- | --- | --- |
+| `WallClockLimit` | 250 ms | `LuauExecutionBudgetException`, `BudgetKind == WallClock` |
+| `InterruptCountLimit` | 10,000,000 safepoints | `LuauExecutionBudgetException`, `BudgetKind == InterruptCount` |
+| `MaxResultCount` | 64 values | `LuauResultLimitException` |
+
+Under these defaults the wall clock is the limit that normally stops a script
+that runs too long.
+
 `InterruptCountLimit` counts interrupt safepoints: every call, every return,
 every loop iteration, and each step of a Lua pattern match. A limit of N lets
 exactly N safepoints run and stops the script at safepoint N + 1, reported as
@@ -85,6 +97,32 @@ deadline; it fires within the system timer's resolution of that deadline
 resolution). Cancellation, disposal, and managed callback failures are
 observed at the very next safepoint. Time spent inside a single host or
 library call is observed only when that call returns, as before.
+
+The count limit is the bound that still works when time is not a useful
+measure: a host that removes the wall clock, for example while a debugger is
+attached so that a breakpoint does not use up the 250 ms, or a host that wants
+the same verdict on every device. The default of 10,000,000 leaves
+room for ordinary one-time work, such as a setup loop, filling a 400 x 400
+grid, or sorting a few thousand entries with a comparison function. With no
+wall clock, it stops a runaway loop of Luau code in about 35 to 70 ms on a
+desktop x64 machine, and proportionally longer on slower hardware such as a
+standalone VR headset. It cannot bound host code: a loop that calls a C#
+function spends about 80 ns per safepoint on the same desktop, so it runs for
+most of a second before the count stops it, and a slower host function
+stretches that further.
+
+Set your own count limit when:
+
+- you remove or lengthen the wall-clock limit, because the count is then the
+  only bound on a runaway script; size it to the work you expect, and lower it
+  further if scripts call host functions in loops;
+- a call runs every frame, such as a lifecycle hook: give it small wall-clock
+  and count limits of its own, as the
+  [script instance](script-instances.md#bounded-synchronous-phases) example
+  does. The defaults are sized for one-time work, and
+  `LuauScriptPhaseOptions.InvocationOptions` starts from them;
+- you need a limit that does not depend on how fast the device is, for example
+  to give mod content the same budget on every platform.
 
 ## Module and bundle limits
 

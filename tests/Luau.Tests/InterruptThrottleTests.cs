@@ -176,19 +176,41 @@ public sealed class InterruptThrottleTests
     }
 
     [Fact]
-    public void DefaultCountLimitAllowsExactlyOneHundredThousandSafepoints()
+    public void DefaultCountLimitAllowsExactlyTenMillionSafepoints()
     {
         // The default count limit with the wall clock as a safety net only:
         // under the default 250 ms, a stalled runner stops the loop by time
         // before it reaches the count.
         using var root = TestBudgets.CreateRoot();
 
-        // 99,999 back-edges plus the final return.
-        root.DoString("for i = 1, 99999 do end").Dispose();
+        // 9,999,999 back-edges plus the final return.
+        root.DoString("for i = 1, 9999999 do end").Dispose();
         var exception = Assert.Throws<LuauExecutionBudgetException>(
-            () => root.DoString("for i = 1, 100000 do end"));
-        Assert.Equal(100_000, exception.InterruptCountLimit);
-        Assert.Equal(100_001, exception.ObservedInterruptCount);
+            () => root.DoString("for i = 1, 10000000 do end"));
+        Assert.Equal(LuauExecutionBudgetKind.InterruptCount, exception.BudgetKind);
+        Assert.Equal(10_000_000, exception.InterruptCountLimit);
+        Assert.Equal(10_000_001, exception.ObservedInterruptCount);
+    }
+
+    [Theory]
+    [InlineData("while true do end")]
+    [InlineData("local function f() end while true do f() end")]
+    public void DefaultCountLimitStopsARunawayScript(string source)
+    {
+        // With the wall clock only as a safety net, the count is what stops a
+        // script that never ends, as it does for a host that sets no wall
+        // clock.
+        using var root = TestBudgets.CreateRoot();
+
+        var exception = Assert.Throws<LuauExecutionBudgetException>(
+            () => root.DoString(source, "@throttle/runaway.luau"));
+
+        Assert.Equal(LuauExecutionBudgetKind.InterruptCount, exception.BudgetKind);
+        Assert.Equal("@throttle/runaway.luau", exception.ChunkName);
+        Assert.Equal(10_000_000, exception.InterruptCountLimit);
+        Assert.Equal(10_000_001, exception.ObservedInterruptCount);
+        using var recovered = root.DoString("return 1");
+        Assert.Equal(1, Assert.Single(recovered).Read<int>());
     }
 
     [Fact]

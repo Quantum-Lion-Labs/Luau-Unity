@@ -97,6 +97,11 @@ then registration sequence. Registering, disposing, enabling, or disabling a
 token during dispatch takes effect on the next dispatch. Re-entrant or
 overlapping dispatch is rejected.
 
+Set the per-invocation limits for the phase, as above. `InvocationOptions`
+defaults to `LuauExecutionOptions.Default`, which allows each call 250 ms and
+10,000,000 interrupt safepoints. Those limits are sized for one-time work, not
+for a call that runs every frame.
+
 The aggregate budget is an admission budget: once exhausted, the phase starts
 no more calls and leaves uncalled registrations enabled for the next dispatch.
 One already-admitted call can overshoot the aggregate budget, bounded by that

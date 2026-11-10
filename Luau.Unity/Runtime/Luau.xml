@@ -947,8 +947,20 @@
         </member>
         <member name="P:Luau.LuauExecutionOptions.Default">
             <summary>
-            Gets the finite execution policy used by ordinary script states.
+            Gets the finite execution policy used by ordinary script states: a
+            <see cref="P:Luau.LuauExecutionOptions.WallClockLimit"/> of 250 milliseconds, an
+            <see cref="P:Luau.LuauExecutionOptions.InterruptCountLimit"/> of 10,000,000 interrupt safepoints,
+            and a <see cref="P:Luau.LuauExecutionOptions.MaxResultCount"/> of 64. A new instance created with
+            <c>new LuauExecutionOptions()</c> starts from the same values.
             </summary>
+            <remarks>
+            The wall clock is the limit that normally stops a long-running script
+            under this profile. The interrupt-count limit is set high enough that
+            ordinary one-time work, such as filling a large grid or sorting a few
+            thousand entries with a comparison function, does not reach it. It
+            still stops a runaway script when a host removes the wall-clock limit,
+            for example while a debugger is attached.
+            </remarks>
         </member>
         <member name="P:Luau.LuauExecutionOptions.Unbounded">
             <summary>
@@ -968,10 +980,19 @@
         </member>
         <member name="P:Luau.LuauExecutionOptions.InterruptCountLimit">
             <summary>
-            Gets the maximum number of interrupt callbacks permitted for an
+            Gets the maximum number of interrupt safepoints permitted for an
             operation, or <see langword="null"/> when no interrupt-count budget is
-            configured.
+            configured. Every call, every return, every loop iteration, and each
+            step of a Lua pattern match is one safepoint. A limit of N lets exactly
+            N safepoints run and stops the operation at safepoint N + 1. The
+            <see cref="P:Luau.LuauExecutionOptions.Default"/> profile allows 10,000,000.
             </summary>
+            <remarks>
+            Unlike <see cref="P:Luau.LuauExecutionOptions.WallClockLimit"/>, this limit bounds the same amount
+            of script work on every machine, and time the process spends paused or
+            descheduled does not consume it. It does not bound time spent inside a
+            single host or library call.
+            </remarks>
             <exception cref="T:System.ArgumentOutOfRangeException">
             The assigned count is zero or negative.
             </exception>

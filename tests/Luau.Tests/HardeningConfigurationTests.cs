@@ -16,6 +16,80 @@ public sealed class HardeningConfigurationTests
         Assert.Throws<LuauExecutionBudgetException>(() => state.DoString("while true do end"));
     }
 
+    // One-time work a script commonly does in setup. Each needs more than
+    // 100,000 interrupt safepoints, the previous default count limit, which
+    // stopped all of them. The second element is what the script returns.
+    public static TheoryData<string, double> OrdinaryOneTimeWork => new()
+    {
+        {
+            // 150,000 back-edges plus the return.
+            "local n = 0 for i = 1, 150000 do n = n + i end return n",
+            150_000d * 150_001 / 2
+        },
+        {
+            // 160,400 back-edges plus the return.
+            """
+            local grid = {}
+            for y = 1, 400 do
+                local row = {}
+                for x = 1, 400 do
+                    row[x] = x * y
+                end
+                grid[y] = row
+            end
+            return grid[400][400]
+            """,
+            160_000d
+        },
+        {
+            // About 206,000 safepoints, 188,000 of them in the sort: each
+            // comparison is a call that makes two more calls.
+            """
+            local function distance(entity)
+                local dx, dy = entity.x - 1000, entity.y - 1000
+                return dx * dx + dy * dy
+            end
+            local entities = {}
+            for i = 1, 3000 do
+                entities[i] = { x = (i * 7919) % 4001, y = (i * 104729) % 3989 }
+            end
+            table.sort(entities, function(a, b) return distance(a) < distance(b) end)
+            local ordered = 0
+            for i = 2, #entities do
+                if distance(entities[i - 1]) <= distance(entities[i]) then
+                    ordered += 1
+                end
+            end
+            return ordered
+            """,
+            2_999d
+        },
+    };
+
+    [Theory]
+    [MemberData(nameof(OrdinaryOneTimeWork))]
+    public void DefaultBudgetsLeaveRoomForOrdinaryOneTimeWork(string source, double expected)
+    {
+        // Every default except the wall clock, which becomes a safety net
+        // (see TestBudgets): the count limit is the one under test, and a busy
+        // runner can take longer than 250 ms for work that takes a few
+        // milliseconds on an idle one.
+        using var root = TestBudgets.CreateRoot();
+        root.OpenBaseLibrary();
+        root.OpenTableLibrary();
+
+        using (var results = root.DoString(source))
+        {
+            Assert.Equal(expected, Assert.Single(results).Read<double>());
+        }
+
+        // The work does not fit the old default, so this test fails with it.
+        var exception = Assert.Throws<LuauExecutionBudgetException>(() => root.DoString(
+            source,
+            executionOptions: LuauExecutionOptions.Unbounded with { InterruptCountLimit = 100_000 }));
+        Assert.Equal(LuauExecutionBudgetKind.InterruptCount, exception.BudgetKind);
+    }
+
     [Fact]
     public void NewOptionsAndNamedDefaultsUseTheSameFinitePolicy()
     {
@@ -28,7 +102,7 @@ public sealed class HardeningConfigurationTests
         Assert.Equal(1024, options.MaxManagedHandleCount);
         Assert.Equal(16L * 1024 * 1024, options.MaxCachedModuleBytes);
         Assert.Equal(TimeSpan.FromMilliseconds(250), execution.WallClockLimit);
-        Assert.Equal(100_000, execution.InterruptCountLimit);
+        Assert.Equal(10_000_000, execution.InterruptCountLimit);
         Assert.Equal(64, execution.MaxResultCount);
         Assert.Equal(execution, options.DefaultExecutionOptions);
         Assert.Equal(LuauBytecodePolicy.Reject, options.BytecodePolicy);
