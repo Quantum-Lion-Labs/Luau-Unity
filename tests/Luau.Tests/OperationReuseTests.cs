@@ -941,29 +941,60 @@ public sealed class OperationReuseTests
         Assert.Equal(top, root.GetTop());
     }
 
+    sealed class PublishedCallback
+    {
+        internal PublishedCallback(LuauCallContext context, int life)
+        {
+            Context = context;
+            Life = life;
+        }
+
+        internal LuauCallContext Context { get; }
+        internal int Life { get; }
+    }
+
     [Fact]
     public void TokenRequestsRacingTheEndOfALifeNeverReachTheNextLife()
     {
-        // A worker holds a callback's context and asks for its token while
-        // the callback returns. The request either gets that life's token or
-        // fails as an expired context does; it must never return or create
-        // the token of the next life on the reused instance. Every other life
-        // here runs into its 1 ms deadline, which cancels that life's token,
-        // so a token that crossed over shows up as canceled.
+        // A worker holds a callback's context and asks for its token just as
+        // the callback returns. No callback here reads its own token, so the
+        // request has to create the source, which takes long enough to span
+        // the end of the life. The request must either get that life's token
+        // or fail as an expired context does. If it published into the reused
+        // instance instead, the next life would start with a token source it
+        // never asked for, and the next request would return the same token
+        // for a different life.
+        const int Lives = 2_000;
         using var root = CreateRoot(SafetyNet);
-        LuauCallContext shared = default;
-        var published = 0;
+        PublishedCallback? published = null;
+        var reading = 0;
+        var life = 0;
+        var livesStartedWithASource = 0;
         using var publish = root.CreateFunction("publish", context =>
         {
-            shared = context;
-            Volatile.Write(ref published, 1);
+            if (context.State.Context.GetActiveOperation()!.TokenSource != null)
+            {
+                livesStartedWithASource++;
+            }
+
+            Volatile.Write(ref reading, 0);
+            Volatile.Write(ref published, new PublishedCallback(context, life));
+
+            // Return as the worker starts its request, to put the end of this
+            // life inside the request. Bounded, so a starved worker only makes
+            // the round uninformative.
+            var wait = new SpinWait();
+            var started = Stopwatch.GetTimestamp();
+            while (Volatile.Read(ref reading) == 0 &&
+                   Stopwatch.GetElapsedTime(started) < TimeSpan.FromMilliseconds(2))
+            {
+                wait.SpinOnce(sleep1Threshold: -1);
+            }
         });
         root["publish"] = publish;
-        using var quick = LoadFunction(root, "return function() publish() end");
-        using var spin = LoadFunction(root, "return function() while true do end end");
-        var brief = LuauExecutionOptions.Unbounded with { WallClockLimit = TimeSpan.FromMilliseconds(1) };
+        using var hook = LoadFunction(root, "return function() publish() end");
 
-        var obtained = new List<CancellationToken>();
+        var obtained = new List<(int Life, CancellationToken Token)>();
         var stop = 0;
         Exception? workerFailure = null;
         var worker = new Thread(() =>
@@ -972,14 +1003,16 @@ public sealed class OperationReuseTests
             {
                 while (Volatile.Read(ref stop) == 0)
                 {
-                    if (Volatile.Read(ref published) == 0)
+                    var current = Interlocked.Exchange(ref published, null);
+                    if (current == null)
                     {
                         continue;
                     }
 
+                    Volatile.Write(ref reading, 1);
                     try
                     {
-                        obtained.Add(shared.CancellationToken);
+                        obtained.Add((current.Life, current.Context.CancellationToken));
                     }
                     catch (InvalidOperationException)
                     {
@@ -991,16 +1024,16 @@ public sealed class OperationReuseTests
             {
                 workerFailure = exception;
             }
-        });
+        })
+        {
+            IsBackground = true,
+        };
         worker.Start();
         try
         {
-            for (var round = 0; round < 400; round++)
+            for (life = 0; life < Lives; life++)
             {
-                Volatile.Write(ref published, 0);
-                quick.InvokeVoid();
-                Volatile.Write(ref published, 0);
-                Assert.Throws<LuauExecutionBudgetException>(() => spin.InvokeVoid(brief));
+                hook.InvokeVoid();
             }
         }
         finally
@@ -1010,7 +1043,9 @@ public sealed class OperationReuseTests
         }
 
         Assert.Null(workerFailure);
-        Assert.All(obtained, token => Assert.False(token.IsCancellationRequested));
+        Assert.Equal(0, livesStartedWithASource);
+        Assert.NotEmpty(obtained);
+        Assert.Equal(obtained.Count, obtained.Select(entry => entry.Token).Distinct().Count());
     }
 }
 

@@ -470,8 +470,9 @@ public unsafe partial class LuauState : IDisposable, ILuauReference
         return root!;
     }
 
-    // The root without GetRoot's checks, for a caller that has checked
-    // disposal and enters the native gate next, where access is checked
-    // while no other thread can be inside a host operation.
-    LuauState RootUnchecked => root!;
+    // The root without GetRoot's access check, for a caller that checks
+    // disposal itself and enters the native gate next, where access is
+    // checked while no other thread can be inside a host operation. Null once
+    // a child state has been released.
+    LuauState? RootUnchecked => root;
 }

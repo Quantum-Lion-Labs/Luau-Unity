@@ -173,6 +173,23 @@ public sealed class CapabilityTests
     }
 
     [Fact]
+    public void HandleCreationOnAStateItsValidatorDisposedFailsAsDisposed()
+    {
+        // Target validation is host code and runs before the native gate is
+        // entered. A validator that disposes the state must surface as a
+        // disposed state, not as a null root.
+        using var root = LuauState.Create();
+        var child = root.CreateThread();
+        var descriptor = new LuauObjectDescriptor<CapabilityTarget>(
+            "DisposingValidatorCapabilityTarget",
+            _ => child.Dispose(),
+            [LuauObjectMember<CapabilityTarget>.Method("method", (_, _) => { })]);
+
+        Assert.Throws<ObjectDisposedException>(() => child.CreateHandle(new CapabilityTarget(), descriptor));
+        Assert.Equal(3, root.DoString("return 3").Single().Read<int>());
+    }
+
+    [Fact]
     public void HandleCannotCrossIndependentVmsOrDescriptors()
     {
         using var firstState = LuauState.Create();
