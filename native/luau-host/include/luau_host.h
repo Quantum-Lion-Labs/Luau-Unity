@@ -42,6 +42,20 @@ typedef struct luau_host_state luau_host_state;
  * observers never allocate or invoke Luau code and return a neutral sentinel
  * for an invalid ordinary stack index. */
 
+/* Stack slots. One thread's current frame (the values stack_get_top counts)
+ * holds at most LUAU_HOST_FRAME_SLOT_LIMIT values through this ABI. Before a
+ * protected operation runs, the host reserves the slots its documented success
+ * effect needs and, when it consumes no input, one slot for its error object.
+ * If that reservation would exceed the limit, or the stack cannot grow and no
+ * slot is left for the error object, the host refuses the operation with
+ * STACK_LIMIT. A refusal is not one of the protected failures described below:
+ * the operation does not run, consumes nothing, appends no error object, and
+ * leaves outputs as a failure would. Allocator telemetry reports whether a
+ * failed allocation caused it. Luau itself may leave a larger frame (for
+ * example many returned or yielded values); operations that only consume
+ * values still run on it, and reducing or rearranging the stack never needs a
+ * free slot (see set_top). */
+
 typedef int32_t luau_host_status;
 enum
 {
@@ -57,6 +71,7 @@ enum
     LUAU_HOST_STATUS_YIELDED = 9,
     LUAU_HOST_STATUS_BREAK = 10,
     LUAU_HOST_STATUS_RESOURCE_EXHAUSTED = 11,
+    LUAU_HOST_STATUS_STACK_LIMIT = 12,
 };
 
 typedef int32_t luau_host_allocator_failure;
@@ -102,6 +117,7 @@ enum
     LUAU_HOST_MULTIPLE_RESULTS = -1,
     LUAU_HOST_CALLBACK_YIELD = -1,
     LUAU_HOST_CALLBACK_ERROR = -2,
+    LUAU_HOST_FRAME_SLOT_LIMIT = 8000,
 };
 
 enum
@@ -119,6 +135,7 @@ enum
     LUAU_HOST_FEATURE_DIRECT_CALLBACK_IDENTITY = 1U << 10,
     LUAU_HOST_FEATURE_OBSERVATION_ONLY_GC_INTERRUPT = 1U << 11,
     LUAU_HOST_FEATURE_COROUTINE_SUSPENSION = 1U << 12,
+    LUAU_HOST_FEATURE_STACK_LIMIT = 1U << 13,
 };
 
 enum
@@ -129,7 +146,10 @@ enum
 /* Managed functions return a count of topmost stack values
  * in [0, stack_get_top(state)], LUAU_HOST_CALLBACK_YIELD only after calling host
  * yield (or entering the native break state), or LUAU_HOST_CALLBACK_ERROR after
- * appending a callback failure value above the entry arguments. For callback
+ * leaving a callback failure value on top of a non-empty frame. A failed
+ * callback's arguments are no longer needed, so it may drop them first; that
+ * always leaves room for the failure value, even when the arguments filled the
+ * frame. For callback
  * error, the host immediately raises the topmost value as the Luau error. The
  * host converts every other result to a contained generic Lua error before Luau
  * can consume it. Interrupt polls receive
@@ -323,14 +343,20 @@ LUAU_HOST_API const uint8_t* LUAU_HOST_CALL luau_host_type_name(luau_host_state*
 LUAU_HOST_API int32_t LUAU_HOST_CALL luau_host_object_length(luau_host_state* state, int32_t index);
 LUAU_HOST_API int32_t LUAU_HOST_CALL luau_host_is_yieldable(luau_host_state* state);
 
-/* Protected stack mutations; pseudo-indices are rejected. Success effects:
+/* Stack mutations; pseudo-indices are rejected. Success effects:
  * set_top establishes exactly index values; insert moves top to index (top
  * unchanged); remove deletes index (-1); replace moves top into index (-1);
  * move between distinct same-root threads pops count from from and appends them
  * to to (from==to is neutral); check is neutral and writes its boolean result.
- * On non-argument failure, set_top/insert/remove/check and move restore their
- * entry stacks then append one error to the executing/source thread; replace
- * consumes its top input and appends one error, so its entry count is retained. */
+ * set_top to a top no higher than the current one, insert, remove, replace,
+ * and check need no free slot and cannot fail once their arguments are valid,
+ * including on a frame above LUAU_HOST_FRAME_SLOT_LIMIT (insert uses Luau's
+ * reserve beyond the stack end for its one temporary value). check writes 0 when
+ * the frame limit or a failed allocation (see allocator telemetry) prevents the
+ * reservation. A growing set_top and move are protected: on non-argument
+ * failure they restore their entry stacks then append one error to the
+ * executing/source thread. move needs no free slot on its source unless
+ * growing the destination fails. */
 LUAU_HOST_API luau_host_status LUAU_HOST_CALL luau_host_stack_set_top(luau_host_state* state, int32_t index);
 LUAU_HOST_API luau_host_status LUAU_HOST_CALL luau_host_stack_insert(luau_host_state* state, int32_t index);
 LUAU_HOST_API luau_host_status LUAU_HOST_CALL luau_host_stack_remove(luau_host_state* state, int32_t index);
@@ -421,7 +447,8 @@ LUAU_HOST_API luau_host_status LUAU_HOST_CALL luau_host_push_thread(
  * The table and debug-name bytes are copied, not borrowed. Success consumes
  * upvalue_count values and pushes one closure (net 1-upvalue_count). On protected
  * failure those values are consumed and one error is appended at that boundary;
- * error_object is one. Precondition failure is neutral and leaves it zero. */
+ * error_object is one. Precondition failure and a STACK_LIMIT refusal are
+ * neutral and leave it zero. */
 LUAU_HOST_API luau_host_status LUAU_HOST_CALL luau_host_push_callback(
     luau_host_state* state,
     const luau_host_callback_table* callbacks,
@@ -519,11 +546,12 @@ LUAU_HOST_API int32_t LUAU_HOST_CALL luau_host_is_global(luau_host_state* state,
  * index. Tokens increase monotonically and are never reused in the process.
  * Once all positive int32 values have been issued, create returns
  * RESOURCE_EXHAUSTED and leaves reference at -1. push appends the retained value
- * (+1); release is stack-neutral and invalidates the token. References are
+ * (+1); release is stack-neutral, needs no free slot, cannot fail for a live
+ * token, and invalidates it. References are
  * root-scoped, must be released at most once, and become invalid at root close.
  * Validation is an O(1) live-token lookup and never scans the VM registry free
- * list. Protected failure appends exactly one error without consuming caller
- * values; precondition/stale-token rejection is neutral. */
+ * list. Protected failure of create/push appends exactly one error without
+ * consuming caller values; precondition/stale-token rejection is neutral. */
 LUAU_HOST_API luau_host_status LUAU_HOST_CALL luau_host_reference_create(
     luau_host_state* state,
     int32_t index,

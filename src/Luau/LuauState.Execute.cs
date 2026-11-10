@@ -433,6 +433,13 @@ partial class LuauState
             throw new LuauResultLimitException(chunkName, resultCount, limit);
         }
 
+        // Reading a reference result needs one free slot; a module can return
+        // more values than a host frame holds.
+        if (resultCount > 0 && LuauNativeProtection.IsFrameFull(context, l))
+        {
+            throw new LuauStackLimitException(chunkName, "return its results");
+        }
+
         var results = new LuauValue[resultCount];
         try
         {

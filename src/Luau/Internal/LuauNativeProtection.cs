@@ -15,9 +15,9 @@ internal static unsafe class LuauNativeProtection
     internal const ushort ExpectedAbiMajor = 2;
     internal const ushort MinimumAbiMinor = 0;
     internal const uint ExpectedAbiRecordSize = 112;
-    internal const uint ExpectedFeatureFlags = 0x1fffU;
+    internal const uint ExpectedFeatureFlags = 0x3fffU;
     internal const ulong ExpectedUpstreamRevisionHash = 0x065976b2840123deUL;
-    internal const ulong ExpectedHostBuildFingerprint = 0x36937523f6988475UL;
+    internal const ulong ExpectedHostBuildFingerprint = 0xa97c576544c22427UL;
     internal const int AbiQueryOk = (int)LuauHostStatus.Ok;
     internal const int AbiQueryInvalidArgument = (int)LuauHostStatus.InvalidArgument;
 
@@ -107,6 +107,11 @@ internal static unsafe class LuauNativeProtection
                     chunkName));
         }
 
+        if (status == LuauHostStatus.StackLimit)
+        {
+            throw new LuauStackLimitException(chunkName, operation);
+        }
+
         if (status == LuauHostStatus.InvalidArgument)
         {
             throw new InvalidOperationException(
@@ -126,6 +131,72 @@ internal static unsafe class LuauNativeProtection
         throw new LuauException(
             LuauDiagnosticMessages.WithChunk(nativeMessage!, chunkName),
             chunkName);
+    }
+
+    /// <summary>
+    /// Ensures <paramref name="pointer"/>'s frame has <paramref name="slots"/>
+    /// free values, throwing the same typed failure a protected operation
+    /// would report when the frame limit or memory prevents it.
+    /// </summary>
+    internal static void ReserveSlots(
+        LuauState state,
+        LuauHostState* pointer,
+        int slots,
+        string operation,
+        string? chunkName = null)
+    {
+        Prepare(state.Context);
+        var reserved = 0;
+        var status = luau_host_stack_check(pointer, slots, &reserved);
+        if (status == LuauHostStatus.Ok && reserved != 0)
+        {
+            return;
+        }
+
+        ThrowIfFailed(
+            state,
+            pointer,
+            status == LuauHostStatus.Ok ? LuauHostStatus.StackLimit : status,
+            operation,
+            chunkName);
+    }
+
+    /// <summary>
+    /// Returns whether the frame limit leaves <paramref name="pointer"/>'s
+    /// frame without one free slot. A failed allocation is not reported here;
+    /// the operation that later needs the slot reports it.
+    /// </summary>
+    internal static bool IsFrameFull(LuauVmContext context, LuauHostState* pointer)
+    {
+        Prepare(context);
+        var reserved = 0;
+        var status = luau_host_stack_check(pointer, 1, &reserved);
+        var full = status == LuauHostStatus.Ok &&
+            reserved == 0 &&
+            context.AllocatorFailure == LuauAllocatorFailure.None;
+        Prepare(context);
+        return full;
+    }
+
+    /// <summary>
+    /// Pushes a callback failure token onto <paramref name="thread"/>. When
+    /// that thread's current frame is the failed callback's own, the token
+    /// replaces the frame: the callback's arguments and partial results are
+    /// dead, and dropping them leaves room for the token even when they filled
+    /// the frame. Any other frame may hold live values and is left intact.
+    /// </summary>
+    internal static LuauHostStatus PushCallbackFailure(
+        LuauHostState* thread,
+        IntPtr token,
+        bool replaceCallbackFrame)
+    {
+        if (replaceCallbackFrame && luau_host_stack_get_top(thread) > 0)
+        {
+            // Shrinking needs no free slot, so the host cannot fail it.
+            _ = luau_host_stack_set_top(thread, 0);
+        }
+
+        return luau_host_push_light_userdata(thread, token.ToPointer(), 0);
     }
 
     static bool IsCallbackFailureToken(LuauHostState* pointer, IntPtr token)
@@ -162,6 +233,8 @@ internal static unsafe class LuauNativeProtection
         }
         finally
         {
+            // Popping never needs a free slot, so the host cannot fail it even
+            // on a full frame.
             if (luau_host_stack_get_top(pointer) > 0)
             {
                 _ = luau_host_stack_set_top(pointer, -2);
@@ -226,6 +299,7 @@ internal sealed unsafe class LuauNativeAbiVerifier
         (LuauHostFeature.IntegerValues, "integer values"),
         (LuauHostFeature.Sandbox, "sandbox"),
         (LuauHostFeature.CoroutineSuspension, "coroutine suspension"),
+        (LuauHostFeature.StackLimit, "stack-slot limit"),
     ];
 
     readonly LuauNativeAbiInfoQuery query;

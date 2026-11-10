@@ -50,6 +50,7 @@ namespace Luau.Internal.Interop
         Yielded = 9,
         Break = 10,
         ResourceExhausted = 11,
+        StackLimit = 12,
     }
 
     internal enum LuauHostAllocatorFailure : int
@@ -97,6 +98,7 @@ namespace Luau.Internal.Interop
         DirectCallbackIdentity = 1U << 10,
         ObservationOnlyGcInterrupt = 1U << 11,
         CoroutineSuspension = 1U << 12,
+        StackLimit = 1U << 13,
     }
 
     [Flags]

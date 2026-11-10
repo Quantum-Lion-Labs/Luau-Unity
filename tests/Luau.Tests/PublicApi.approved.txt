@@ -28,6 +28,7 @@ ctor Luau.LuauObjectDescriptor<T> :: Void .ctor(System.String, System.Action`1[T
 ctor Luau.LuauReferenceLimitException :: Void .ctor()
 ctor Luau.LuauResultLimitException :: Void .ctor(System.String, Int32, Int32)
 ctor Luau.LuauScriptContractException :: Void .ctor(System.String, System.String, System.String, System.Exception)
+ctor Luau.LuauStackLimitException :: Void .ctor(System.String)
 ctor Luau.LuauStateOptions :: Void .ctor()
 ctor Luau.LuauSynchronizationContextScheduler :: Void .ctor(System.Threading.SynchronizationContext)
 ctor Luau.LuauTable.Enumerator :: Void .ctor(Luau.LuauTable)
@@ -557,6 +558,7 @@ type sealed class Luau.LuauResultScope : System.Collections.Generic.IEnumerable<
 type sealed class Luau.LuauScriptContractException : Luau.LuauException, System.Runtime.Serialization.ISerializable
 type sealed class Luau.LuauScriptEntrypoint
 type sealed class Luau.LuauScriptInstance : System.IDisposable
+type sealed class Luau.LuauStackLimitException : Luau.LuauException, System.Runtime.Serialization.ISerializable
 type sealed class Luau.LuauStateOptions : System.IEquatable<Luau.LuauStateOptions>
 type sealed class Luau.LuauSynchronizationContextScheduler : Luau.ILuauContinuationScheduler
 type sealed class Luau.LuauTable : System.Collections.Generic.IEnumerable<System.Collections.Generic.KeyValuePair<Luau.LuauValue, Luau.LuauValue>>, System.Collections.IEnumerable, System.IDisposable

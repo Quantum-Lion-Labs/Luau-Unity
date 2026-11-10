@@ -85,6 +85,14 @@ The header documents stack effects and ownership. Native code contains all
 long-jump and C++ exception paths before returning through P/Invoke. Error
 payloads are inspected without forcing allocation in an exhausted VM.
 
+Luau writes a failed operation's error object without a bounds check, so
+`protect()` reserves every slot an operation and its error object need before
+it runs. A call that cannot get them, because the frame already holds
+`LUAU_HOST_FRAME_SLOT_LIMIT` values or the stack cannot grow, returns
+`STACK_LIMIT` and leaves the stack untouched. Operations that only shrink or
+rearrange the stack, and reference release, need no slot and cannot fail. Give
+each new protected operation its consumed-input and reserved-slot counts.
+
 ### 3.3 ABI handshake
 
 The first standalone compile or state creation verifies the native

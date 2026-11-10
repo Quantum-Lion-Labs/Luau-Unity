@@ -147,15 +147,7 @@ public unsafe partial class LuauState
         }
 
         using var access = EnterNativeAccess();
-        var result = 0;
-        LuauNativeProtection.Prepare(context);
-        var status = luau_host_stack_check(l, size, &result);
-        LuauNativeProtection.ThrowIfFailed(this, l, status, "grow the Luau stack");
-
-        if (result == 0)
-        {
-            throw new InvalidOperationException($"The Luau stack cannot grow by {size} slots.");
-        }
+        LuauNativeProtection.ReserveSlots(this, l, size, $"grow the Luau stack by {size} slots");
     }
 
     internal unsafe LuauType GetLuauType(int index)

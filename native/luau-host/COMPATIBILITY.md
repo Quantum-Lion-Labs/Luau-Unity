@@ -21,6 +21,18 @@ active callback. GC interrupt notifications are observation-only. Destructor
 callbacks may only release or enqueue their opaque token and must not call the
 host, block, allocate substantially, access Unity APIs, or unwind.
 
+A thread's current frame holds at most `LUAU_HOST_FRAME_SLOT_LIMIT` (8000,
+Luau's `LUAI_MAXCSTACK`) values through the ABI. Protected operations reserve
+the slots for their result and error object before they run. When that is
+impossible, they return `LUAU_HOST_STATUS_STACK_LIMIT` without touching the
+stack and without an error object; `LUAU_HOST_FEATURE_STACK_LIMIT` advertises
+this contract. Shrinking `set_top`, `insert`, `remove`, `replace`, `check`, and
+reference release need no free slot and cannot fail, so a caller can always
+empty a frame, including one Luau filled past the limit. A managed function
+that returns `LUAU_HOST_CALLBACK_ERROR` may drop its arguments first; the host
+raises the topmost value of the non-empty frame, so a callback whose arguments
+filled its frame can still report a failure.
+
 Host suspension uses Luau's break continuations. `luau_host_suspend` preserves
 arguments on the calling coroutine and stops its waiting `coroutine.resume` or
 `coroutine.wrap` ancestors. `luau_host_resume_target` identifies the borrowed

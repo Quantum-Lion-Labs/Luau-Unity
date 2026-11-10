@@ -47,6 +47,16 @@ The VM memory cap covers allocations the VM makes. It does not cover allocations
 your own callbacks make, or anything you allocate around the VM — if a script can
 call a C# function that builds a big list, that list is on you.
 
+One ceiling is fixed by the VM rather than by these options: a single Luau stack
+frame holds at most 8000 values. That count includes a called function, its
+arguments, and one slot the runtime keeps free to read results. A script that
+returns or yields that many values, a host call that passes that many
+arguments, or a callback that returns that many fails with
+`LuauStackLimitException`. Under the default `MaxResultCount` of 64, an
+oversized return fails earlier with `LuauResultLimitException`. Either way, the
+values are dropped and the root stays usable. Removing the result limit does not
+remove this ceiling.
+
 `LuauStateOptions.UnboundedResources` deliberately removes the optional ceilings.
 It still bounds diagnostic decoding, and it still leaves persistent bytecode set
 to `Reject`. Per-operation options can tighten a root's limits but never loosen

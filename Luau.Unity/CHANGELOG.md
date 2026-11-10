@@ -31,6 +31,18 @@ API or ABI breaks.
 
 ### Fixed
 
+- A script that returned more values than one Luau stack frame holds (8000)
+  could corrupt native memory and crash the process. For example,
+  `local t = table.create(7999, 1) return 1, 2, 3, 4, table.unpack(t)` made every
+  later call on that root fail with `OutOfMemoryException` and, after about 40
+  calls, aborted the process. The native host now reserves the stack slots each
+  operation and its error object need before it runs, and refuses the operation
+  without touching the stack when it cannot. Returning, yielding, or passing
+  that many values now fails with the new `LuauStackLimitException` (or
+  `LuauResultLimitException` under the default `MaxResultCount`), the values are
+  dropped, and the root stays usable. A managed callback that fails reports its
+  own failure, which Luau `pcall` can catch even when the callback's arguments
+  or results filled its frame.
 - A script can no longer hold the host thread far past its wall-clock limit
   with `table.move` over a huge, mostly empty range. On 0.729,
   `table.move({}, 1, 0x7FFFFFFE, 2, {})` ran for about 30 seconds under a
@@ -45,6 +57,10 @@ API or ABI breaks.
 - Update the managed DLL and all bundled native plugins together. The host
   fingerprint changed with the Luau update, so a mismatched pair fails the
   startup ABI check.
+- The native host ABI adds `LUAU_HOST_STATUS_STACK_LIMIT`,
+  `LUAU_HOST_FRAME_SLOT_LIMIT`, and the required
+  `LUAU_HOST_FEATURE_STACK_LIMIT` capability. The ABI version stays 2.0; the
+  host fingerprint and feature check reject a mismatched plugin.
 
 ## [0.3.1] - 2026-09-05
 

@@ -87,6 +87,9 @@ internal sealed unsafe class LuauCSharpAsyncFunction : LuauFunction, ILuauManage
     {
         if (luau_host_is_yieldable(state) != 0)
         {
+            // The runner injects the failure after this suspension. Tell it
+            // which thread holds the failed callback's frame.
+            operation?.RecordFailedCallbackSuspension((IntPtr)state);
             return luau_host_suspend(state);
         }
 
@@ -95,16 +98,18 @@ internal sealed unsafe class LuauCSharpAsyncFunction : LuauFunction, ILuauManage
             return 0;
         }
 
-        var status = luau_host_push_light_userdata(
+        // This runs inside the failed callback, so the frame is its own.
+        var status = LuauNativeProtection.PushCallbackFailure(
             state,
-            (void*)operation.CallbackFailureToken,
-            0);
+            operation.CallbackFailureToken,
+            replaceCallbackFrame: true);
         if (status != LuauHostStatus.Ok)
         {
-            // The token push itself can fail under stack or memory pressure.
-            // Return an invalid negative result so the native trampoline
-            // unwinds immediately; keep the raw managed cause recorded so the
-            // runner can apply managed failure precedence after native return.
+            // Not expected: Luau keeps free slots in every callback frame,
+            // so the emptied frame has room for the token. If the host refuses
+            // anyway, return an invalid negative result so the native
+            // trampoline unwinds immediately; the managed cause stays recorded
+            // so the runner can apply failure precedence after native return.
             return -3;
         }
 

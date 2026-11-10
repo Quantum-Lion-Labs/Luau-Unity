@@ -476,6 +476,41 @@ namespace Luau.Unity.Tests
             Assert.That(exception.Message, Does.Contain("not found").IgnoreCase);
         }
 
+        [Test]
+        public void OverfullScriptReturnFailsCleanlyAndLeavesTheStateUsable()
+        {
+            const string overfull = "local t = table.create(7999, 1) return 1, 2, 3, 4, table.unpack(t)";
+            using var root = LuauUnity.CreateState(new LuauUnityOptions { Log = _ => { } });
+            using var unbounded = LuauUnity.CreateState(new LuauUnityOptions
+            {
+                StateOptions = LuauStateOptions.Default with
+                {
+                    DefaultExecutionOptions = LuauExecutionOptions.Default with
+                    {
+                        MaxResultCount = null,
+                    },
+                },
+                Log = _ => { },
+            });
+            using var limitedScript = root.CreateSandboxedThread();
+            using var unboundedScript = unbounded.CreateSandboxedThread();
+
+            // Before the fix, each failure leaked a native stack slot until
+            // writes ran past the stack allocation and the process aborted.
+            for (var attempt = 0; attempt < 64; attempt++)
+            {
+                Assert.Throws<LuauResultLimitException>(() =>
+                    limitedScript.DoString(overfull, "@stack-limit/default.luau"));
+                Assert.Throws<LuauStackLimitException>(() =>
+                    unboundedScript.DoString(overfull, "@stack-limit/unbounded.luau"));
+            }
+
+            using var limitedResults = limitedScript.DoString("return 42");
+            using var unboundedResults = unboundedScript.DoString("return 42");
+            Assert.That(limitedResults[0].Read<int>(), Is.EqualTo(42));
+            Assert.That(unboundedResults[0].Read<int>(), Is.EqualTo(42));
+        }
+
         sealed class AcceptArtifactValidator : ILuauBytecodeValidator
         {
             public static AcceptArtifactValidator Instance { get; } = new();

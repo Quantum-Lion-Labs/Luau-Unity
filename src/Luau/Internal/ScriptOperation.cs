@@ -48,6 +48,7 @@ internal sealed class ScriptOperation : IDisposable
     IntPtr pendingCallbackThread;
     string? pendingCallbackName;
     Exception? callbackFailure;
+    IntPtr failedCallbackThread;
     string? callbackFailureName;
     Exception? injectedCallbackFailure;
     string? injectedCallbackFailureName;
@@ -260,6 +261,25 @@ internal sealed class ScriptOperation : IDisposable
         callbackFailureName = callbackName;
         Interlocked.Exchange(ref callbackFailure, exception);
         Volatile.Write(ref yieldReason, (int)ScriptYieldReason.CallbackFailure);
+    }
+
+    /// <summary>
+    /// Records the thread a failed callback suspended on. A pending failure
+    /// can also reach Luau through an interrupt on some other frame, for
+    /// example after a non-yieldable parent rejected this suspension; only
+    /// this thread's suspended frame is the failed callback's own.
+    /// </summary>
+    internal void RecordFailedCallbackSuspension(IntPtr thread)
+    {
+        // Called from reverse P/Invoke paths: a plain store only.
+        failedCallbackThread = thread;
+    }
+
+    internal IntPtr TakeFailedCallbackThread()
+    {
+        var thread = failedCallbackThread;
+        failedCallbackThread = IntPtr.Zero;
+        return thread;
     }
 
     internal void PrepareCallbackFailureInjection()

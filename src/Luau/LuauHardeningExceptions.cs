@@ -390,6 +390,35 @@ public sealed class LuauResultLimitException : LuauException
     }
 }
 
+/// <summary>
+/// Thrown when an operation needs more Luau stack slots than one frame
+/// permits. A Luau stack frame holds at most 8000 values, so returning,
+/// yielding, or passing thousands of values fails this way. The runtime
+/// removes the operation's values before throwing and the state remains
+/// usable.
+/// </summary>
+public sealed class LuauStackLimitException : LuauException
+{
+    /// <summary>Initializes a stack-slot limit failure.</summary>
+    public LuauStackLimitException(string? chunkName)
+        : base(
+            LuauDiagnosticMessages.WithChunk(
+                "The operation needs more Luau stack slots than one frame permits.",
+                chunkName),
+            chunkName)
+    {
+    }
+
+    internal LuauStackLimitException(string? chunkName, string operation)
+        : base(
+            LuauDiagnosticMessages.WithChunk(
+                $"The Luau stack frame has no free slot to {operation}; one frame holds at most 8000 values.",
+                chunkName),
+            chunkName)
+    {
+    }
+}
+
 /// <summary>Identifies which managed string-decoding budget was exceeded.</summary>
 public enum LuauDecodedResultLimitKind
 {
