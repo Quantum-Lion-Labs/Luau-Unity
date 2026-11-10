@@ -537,10 +537,21 @@ internal static class ScriptRunner
         Span<LuauValue> destination,
         int resultCount)
     {
-        var writtenStart = resultCount;
         try
         {
             ValidateDestinationSlots(destination, resultCount);
+        }
+        catch
+        {
+            // Nothing was read, so the results are still on the stack, and
+            // only ReadResults trims it.
+            DiscardResults(operation, operation.ThreadPointer, resultCount);
+            throw;
+        }
+
+        var writtenStart = resultCount;
+        try
+        {
             ReadResults(operation, state, destination, resultCount, ref writtenStart);
         }
         catch

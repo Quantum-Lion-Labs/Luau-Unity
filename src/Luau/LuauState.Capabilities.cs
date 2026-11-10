@@ -58,10 +58,18 @@ public partial class LuauState
 
     internal unsafe LuauObjectHandle CreateHandleCore(object target, LuauObjectDescriptor descriptor)
     {
-        ThrowIfDisposed();
+        // Exports from several threads are serialized by the native gate
+        // below, which also checks that no other operation is running. Check
+        // only disposal before it: the access check outside the gate would
+        // reject a caller that merely overlaps another thread's export.
+        if (IsDisposed)
+        {
+            ThrowHelper.ThrowObjectDisposedException(nameof(LuauState));
+        }
+
         descriptor.ValidateTarget(target);
 
-        var rootState = GetMainThread();
+        var rootState = RootUnchecked;
         var registry = context.ObjectRegistry;
         // Keep identity lookup/reservation and activation inside the root VM's
         // serialization boundary. A concurrent export cannot observe the

@@ -9,6 +9,7 @@ namespace Luau.Tests;
 /// shared watchdog timer. These tests pin the steady-state cost of a hook call
 /// and each hazard that reuse and laziness introduce.
 /// </summary>
+[Collection(AllocationSensitiveCollection.Name)]
 public sealed class OperationReuseTests
 {
     // Generous: the checks themselves take microseconds, but CI runners can
@@ -22,7 +23,8 @@ public sealed class OperationReuseTests
     };
 
     const int WarmupCalls = 2_000;
-    const int MeasuredCalls = 10_000;
+    const int MeasuredWindows = 5;
+    const int CallsPerWindow = 2_000;
 
     // Budget shapes for the allocation tests. Each uses the same machinery as
     // the shipped profiles; the wall-clock limits are long so a stalled runner
@@ -57,6 +59,12 @@ public sealed class OperationReuseTests
         return owner[0].Read<LuauFunction>().Retain();
     }
 
+    // The fewest bytes allocated in any of several windows of calls. A path
+    // that allocates per call allocates in every window, so it still fails an
+    // exact-zero assertion. Taking the minimum discards a window in which a
+    // garbage collection triggered by a parallel test trimmed the shared
+    // ArrayPool: the next rent on this thread then allocates a buffer once,
+    // which says nothing about the cost of a call.
     static long AllocatedBytesPerWindow(Action call)
     {
         for (var i = 0; i < WarmupCalls; i++)
@@ -64,17 +72,23 @@ public sealed class OperationReuseTests
             call();
         }
 
-        var before = GC.GetAllocatedBytesForCurrentThread();
-        for (var i = 0; i < MeasuredCalls; i++)
+        var fewest = long.MaxValue;
+        for (var window = 0; window < MeasuredWindows; window++)
         {
-            call();
+            var before = GC.GetAllocatedBytesForCurrentThread();
+            for (var i = 0; i < CallsPerWindow; i++)
+            {
+                call();
+            }
+
+            fewest = Math.Min(fewest, GC.GetAllocatedBytesForCurrentThread() - before);
         }
 
-        return GC.GetAllocatedBytesForCurrentThread() - before;
+        return fewest;
     }
 
     // Steady-state allocation. GC.GetAllocatedBytesForCurrentThread counts
-    // only this thread, so parallel tests cannot disturb it.
+    // only this thread, so parallel tests cannot add to it directly.
 
     [Theory]
     [MemberData(nameof(BudgetShapes))]
@@ -178,12 +192,6 @@ public sealed class OperationReuseTests
         }));
     }
 
-    // Loading a chunk encodes its name into two buffers rented from the
-    // shared ArrayPool. The pool drops its cached buffers when a gen-2 GC
-    // trims it, so a window can include a refill (about 112 bytes) when a
-    // parallel test triggers one; per call this is zero.
-    const long PooledBufferRefillAllowance = 512;
-
     [Fact]
     public void ExecutingCachedCompilerOutputAllocatesNothingPerCall()
     {
@@ -191,10 +199,11 @@ public sealed class OperationReuseTests
         var output = LuauCompiler.Compile("return 7"u8);
         var destination = new LuauValue[1];
 
-        var allocated = AllocatedBytesPerWindow(() =>
-            root.ExecuteCompilerOutputInto(output, destination, "@hooks/cached.luau"));
-
-        Assert.InRange(allocated, 0, PooledBufferRefillAllowance);
+        // Loading a chunk encodes its name into buffers rented from the
+        // shared ArrayPool, which is why the measurement takes the fewest
+        // bytes over several windows.
+        Assert.Equal(0, AllocatedBytesPerWindow(() =>
+            root.ExecuteCompilerOutputInto(output, destination, "@hooks/cached.luau")));
         Assert.Equal(7, destination[0].Read<int>());
     }
 
@@ -345,7 +354,16 @@ public sealed class OperationReuseTests
         using var brief = LoadFunction(root, "return function() end");
         // The watchdog is armed for this 1 ms deadline, which passes while the
         // next operation runs on the same instance.
-        brief.InvokeVoid(LuauExecutionOptions.Unbounded with { WallClockLimit = TimeSpan.FromMilliseconds(1) });
+        try
+        {
+            brief.InvokeVoid(LuauExecutionOptions.Unbounded with { WallClockLimit = TimeSpan.FromMilliseconds(1) });
+        }
+        catch (LuauExecutionBudgetException)
+        {
+            // A stalled runner can exhaust a 1 ms budget. The life still ended
+            // and its instance is still reused, which is all this test needs.
+        }
+
         var instance = root.Context.PooledOperation!;
         var endedLife = instance.Generation;
 
@@ -894,4 +912,116 @@ public sealed class OperationReuseTests
 
         public void Dispose() => Stop();
     }
+
+    [Fact]
+    public void RejectedResultDestinationsLeaveNothingOnTheStack()
+    {
+        // A destination slot that already holds a wrapper is rejected before
+        // any result is read. The results must still be removed: left behind,
+        // they would fill the root's frame after a few thousand rejections.
+        using var root = CreateRoot(SafetyNet);
+        using var function = LoadFunction(root, "return function() return {}, 2 end");
+        using var kept = root.DoString("return {}")[0].Read<LuauTable>().Retain();
+        var destination = new LuauValue[2];
+        using var access = root.EnterNativeAccess();
+        var top = root.GetTop();
+
+        for (var attempt = 0; attempt < 9_000; attempt++)
+        {
+            destination[0] = kept;
+            destination[1] = default;
+            Assert.Throws<ArgumentException>(() => function.InvokeInto(default, destination));
+            Assert.Equal(top, root.GetTop());
+        }
+
+        destination[0] = default;
+        Assert.Equal(2, function.InvokeInto(default, destination));
+        Assert.Equal(2, destination[1].Read<int>());
+        destination[0].Read<LuauTable>().Dispose();
+        Assert.Equal(top, root.GetTop());
+    }
+
+    [Fact]
+    public void TokenRequestsRacingTheEndOfALifeNeverReachTheNextLife()
+    {
+        // A worker holds a callback's context and asks for its token while
+        // the callback returns. The request either gets that life's token or
+        // fails as an expired context does; it must never return or create
+        // the token of the next life on the reused instance. Every other life
+        // here runs into its 1 ms deadline, which cancels that life's token,
+        // so a token that crossed over shows up as canceled.
+        using var root = CreateRoot(SafetyNet);
+        LuauCallContext shared = default;
+        var published = 0;
+        using var publish = root.CreateFunction("publish", context =>
+        {
+            shared = context;
+            Volatile.Write(ref published, 1);
+        });
+        root["publish"] = publish;
+        using var quick = LoadFunction(root, "return function() publish() end");
+        using var spin = LoadFunction(root, "return function() while true do end end");
+        var brief = LuauExecutionOptions.Unbounded with { WallClockLimit = TimeSpan.FromMilliseconds(1) };
+
+        var obtained = new List<CancellationToken>();
+        var stop = 0;
+        Exception? workerFailure = null;
+        var worker = new Thread(() =>
+        {
+            try
+            {
+                while (Volatile.Read(ref stop) == 0)
+                {
+                    if (Volatile.Read(ref published) == 0)
+                    {
+                        continue;
+                    }
+
+                    try
+                    {
+                        obtained.Add(shared.CancellationToken);
+                    }
+                    catch (InvalidOperationException)
+                    {
+                        // The callback returned first: an expired context.
+                    }
+                }
+            }
+            catch (Exception exception)
+            {
+                workerFailure = exception;
+            }
+        });
+        worker.Start();
+        try
+        {
+            for (var round = 0; round < 400; round++)
+            {
+                Volatile.Write(ref published, 0);
+                quick.InvokeVoid();
+                Volatile.Write(ref published, 0);
+                Assert.Throws<LuauExecutionBudgetException>(() => spin.InvokeVoid(brief));
+            }
+        }
+        finally
+        {
+            Volatile.Write(ref stop, 1);
+            Assert.True(worker.Join(TestTimeout));
+        }
+
+        Assert.Null(workerFailure);
+        Assert.All(obtained, token => Assert.False(token.IsCancellationRequested));
+    }
+}
+
+/// <summary>
+/// Tests that measure managed allocation run outside the parallel phase.
+/// Other tests force garbage collections, and a gen-2 collection trims the
+/// shared ArrayPool: the next rent on the measuring thread then allocates a
+/// buffer, which is not a cost of the call under test.
+/// </summary>
+[CollectionDefinition(Name, DisableParallelization = true)]
+public sealed class AllocationSensitiveCollection
+{
+    public const string Name = "Allocation-sensitive";
 }

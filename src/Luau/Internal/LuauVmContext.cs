@@ -386,10 +386,41 @@ internal sealed unsafe class LuauVmContext
 
     void RegisterWithWatchdog()
     {
-        var entry = new WeakReference<LuauVmContext>(this);
-        if (Interlocked.CompareExchange(ref watchdogEntry, entry, null) == null)
+        // Publish the entry only once the watchdog has it. Another thread that
+        // saw it earlier would skip registration, publish a deadline, and arm
+        // a timer whose scan could not find this root yet. The watchdog never
+        // takes a context lock while holding its own, so this order is safe.
+        lock (lifecycleGate)
         {
+            if (watchdogEntry != null)
+            {
+                return;
+            }
+
+            var entry = new WeakReference<LuauVmContext>(this);
             LuauDeadlineWatchdog.Register(entry);
+            Volatile.Write(ref watchdogEntry, entry);
+        }
+    }
+
+    /// <summary>
+    /// Returns the callback-visible token of life <paramref name="generation"/>
+    /// of <paramref name="operation"/>, creating it on first use. The life is
+    /// checked and the token read or created under the lifecycle gate, which
+    /// <see cref="EndOperation"/> holds while it ends the life and detaches
+    /// the source. A request that arrives after the life ended fails as an
+    /// expired call context does, even when the instance is already reused.
+    /// </summary>
+    internal CancellationToken GetOperationCancellationToken(ScriptOperation operation, long generation)
+    {
+        lock (lifecycleGate)
+        {
+            if (!ReferenceEquals(activeOperation, operation) || operation.Generation != generation)
+            {
+                throw LuauCallFrame.CreateExpiredException();
+            }
+
+            return operation.GetOrCreateCancellationTokenLocked();
         }
     }
 
@@ -609,6 +640,7 @@ internal sealed unsafe class LuauVmContext
     internal void EndOperation(ScriptOperation operation, long generation)
     {
         IntPtr pointerToClose = IntPtr.Zero;
+        CancellationTokenSource? tokenSource;
 
         lock (nativeGate)
         {
@@ -620,6 +652,8 @@ internal sealed unsafe class LuauVmContext
                 }
 
                 activeOperation = null;
+                // No token request can pass its life check from here on.
+                tokenSource = operation.DetachTokenSourceLocked();
                 if (operation.DeadlineTimestamp != 0)
                 {
                     Volatile.Write(ref watchdogDeadline, 0);
@@ -668,6 +702,10 @@ internal sealed unsafe class LuauVmContext
                 CloseNative(pointerToClose);
             }
         }
+
+        // Outside the gates: disposing unregisters from the lifetime tokens
+        // and can wait for a cancellation callback that needs them.
+        tokenSource?.Dispose();
     }
 
     internal LuauNativeAccess EnterNativeAccess(LuauState state)

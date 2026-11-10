@@ -208,6 +208,16 @@
             allocator diagnostic call.
             </summary>
         </member>
+        <member name="M:Luau.LuauVmContext.GetOperationCancellationToken(Luau.ScriptOperation,System.Int64)">
+            <summary>
+            Returns the callback-visible token of life <paramref name="generation"/>
+            of <paramref name="operation"/>, creating it on first use. The life is
+            checked and the token read or created under the lifecycle gate, which
+            <see cref="M:Luau.LuauVmContext.EndOperation(Luau.ScriptOperation,System.Int64)"/> holds while it ends the life and detaches
+            the source. A request that arrives after the life ended fails as an
+            expired call context does, even when the instance is already reused.
+            </summary>
+        </member>
         <member name="M:Luau.LuauVmContext.PushAmbient(Luau.ScriptOperation)">
             <summary>
             Records <paramref name="operation"/> as the innermost operation of the
@@ -335,6 +345,20 @@
             creating it on first use. It is canceled by caller cancellation,
             wall-clock expiry, and state or root disposal; a token created after
             one of those already happened is returned canceled.
+            </summary>
+        </member>
+        <member name="M:Luau.ScriptOperation.GetOrCreateCancellationTokenLocked">
+            <summary>
+            Reads or creates this life's token. The caller holds the context's
+            lifecycle gate and has checked that this life is the active operation,
+            so the life cannot end, and the instance cannot be reused, in between:
+            a request from one life can neither return nor publish into the next.
+            </summary>
+        </member>
+        <member name="M:Luau.ScriptOperation.DetachTokenSourceLocked">
+            <summary>
+            Takes the token source when the life ends, under the same gate, for
+            the context to dispose once it has left its locks.
             </summary>
         </member>
         <member name="P:Luau.ScriptOperation.TokenSource">

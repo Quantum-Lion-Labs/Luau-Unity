@@ -433,17 +433,27 @@ internal sealed unsafe class ScriptOperation : IDisposable
     /// wall-clock expiry, and state or root disposal; a token created after
     /// one of those already happened is returned canceled.
     /// </summary>
-    internal CancellationToken GetCancellationToken(long expectedGeneration)
-    {
-        if (Volatile.Read(ref generation) != expectedGeneration ||
-            Volatile.Read(ref disposeState) != 0)
-        {
-            throw LuauCallFrame.CreateExpiredException();
-        }
+    internal CancellationToken GetCancellationToken(long expectedGeneration) =>
+        context.GetOperationCancellationToken(this, expectedGeneration);
 
+    /// <summary>
+    /// Reads or creates this life's token. The caller holds the context's
+    /// lifecycle gate and has checked that this life is the active operation,
+    /// so the life cannot end, and the instance cannot be reused, in between:
+    /// a request from one life can neither return nor publish into the next.
+    /// </summary>
+    internal CancellationToken GetOrCreateCancellationTokenLocked()
+    {
         var source = Volatile.Read(ref tokenSource);
         return source != null ? source.Token : CreateCancellationToken();
     }
+
+    /// <summary>
+    /// Takes the token source when the life ends, under the same gate, for
+    /// the context to dispose once it has left its locks.
+    /// </summary>
+    internal CancellationTokenSource? DetachTokenSourceLocked() =>
+        Interlocked.Exchange(ref tokenSource, null);
 
     CancellationToken CreateCancellationToken()
     {
@@ -761,10 +771,6 @@ internal sealed unsafe class ScriptOperation : IDisposable
         // Dispose waits for a running cancellation callback, which may need
         // the context locks; no lock is held here.
         callerCancellationRegistration.Dispose();
-        if (Volatile.Read(ref tokenSource) != null)
-        {
-            Interlocked.Exchange(ref tokenSource, null)?.Dispose();
-        }
 
         if (Volatile.Read(ref coroutineLifecycleArmed) != 0)
         {
