@@ -58,6 +58,31 @@ typedef struct luau_host_state luau_host_state;
  * values still run on it, and reducing or rearranging the stack never needs a
  * free slot (see set_top). */
 
+/* Runnable threads. Luau runs code only on a thread whose native status is OK:
+ * one that is running, has finished, or holds a coroutine function that has
+ * not started. A thread that yielded, is suspended by a host break (including
+ * a coroutine waiting in coroutine.resume/wrap on a broken child), or ended
+ * with an error is not runnable: the interpreter would leave any function
+ * started there at its first safepoint with the call frame and stack broken,
+ * and a later resume would continue from that corrupted state. Every
+ * operation that can run Luau code, directly or through a metamethod or an
+ * import resolved while loading (table_get, table_set, global_get,
+ * global_set, to_display_string, load, open_library, and pcall), therefore
+ * refuses a thread that is not runnable with THREAD_NOT_RUNNABLE. The check
+ * follows argument validation and precedes the slot reservation. Like a
+ * STACK_LIMIT refusal it is not a protected failure: the operation does not
+ * run, consumes nothing, appends no error object, and leaves outputs as a
+ * failure would. thread_status reports the status the check uses. To do the
+ * work anyway, move the operation's inputs to a runnable thread of the same
+ * root with stack_move and run it there; global_push pushes a thread's own
+ * globals table, which another thread can then index. A new thread inherits
+ * its parent's globals, so load and open_library can run on a thread
+ * created from the one that is not runnable. resume and resume_error continue
+ * a suspended thread and are unaffected. Operations that cannot run Luau
+ * code (pushes, raw table access, metatables, references, to_string, collect,
+ * the sandbox operations, and stack mutations) accept any thread.
+ * LUAU_HOST_FEATURE_RUNNABLE_THREAD_GUARD advertises this contract. */
+
 typedef int32_t luau_host_status;
 enum
 {
@@ -74,6 +99,7 @@ enum
     LUAU_HOST_STATUS_BREAK = 10,
     LUAU_HOST_STATUS_RESOURCE_EXHAUSTED = 11,
     LUAU_HOST_STATUS_STACK_LIMIT = 12,
+    LUAU_HOST_STATUS_THREAD_NOT_RUNNABLE = 13,
 };
 
 typedef int32_t luau_host_allocator_failure;
@@ -139,6 +165,7 @@ enum
     LUAU_HOST_FEATURE_COROUTINE_SUSPENSION = 1U << 12,
     LUAU_HOST_FEATURE_STACK_LIMIT = 1U << 13,
     LUAU_HOST_FEATURE_INTERRUPT_THROTTLE = 1U << 14,
+    LUAU_HOST_FEATURE_RUNNABLE_THREAD_GUARD = 1U << 15,
 };
 
 enum

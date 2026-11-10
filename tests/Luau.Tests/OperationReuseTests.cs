@@ -65,7 +65,7 @@ public sealed class OperationReuseTests
     // garbage collection triggered by a parallel test trimmed the shared
     // ArrayPool: the next rent on this thread then allocates a buffer once,
     // which says nothing about the cost of a call.
-    static long AllocatedBytesPerWindow(Action call)
+    internal static long AllocatedBytesPerWindow(Action call)
     {
         for (var i = 0; i < WarmupCalls; i++)
         {

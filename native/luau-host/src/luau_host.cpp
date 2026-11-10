@@ -134,7 +134,8 @@ constexpr uint32_t kRequiredFeatures =
     LUAU_HOST_FEATURE_OBSERVATION_ONLY_GC_INTERRUPT |
     LUAU_HOST_FEATURE_COROUTINE_SUSPENSION |
     LUAU_HOST_FEATURE_STACK_LIMIT |
-    LUAU_HOST_FEATURE_INTERRUPT_THROTTLE;
+    LUAU_HOST_FEATURE_INTERRUPT_THROTTLE |
+    LUAU_HOST_FEATURE_RUNNABLE_THREAD_GUARD;
 
 // Throttled interrupts read the monotonic clock every kClockStrideMin to
 // kClockStrideMax counted safepoints. The stride adapts so that consecutive
@@ -399,6 +400,20 @@ bool validordinaryindex(lua_State* state, int index)
 bool validtableindex(lua_State* state, int index)
 {
     return validordinaryindex(state, index) && lua_type(state, index) == LUA_TTABLE;
+}
+
+// Luau can run code only on a thread whose status is OK. The interpreter
+// checks the thread status at each interrupt safepoint and after each call,
+// and on a thread that yielded, is suspended by a break, or ended with an
+// error it leaves a function started there as if that function had just
+// suspended. luaD_call then returns with the function's call frame and stack
+// still in place, and the next resume continues from that corrupted state.
+// luaD_pcall does not make this a valid place to run code; it only contains
+// errors. Every operation that can reach Luau code, through a call, a
+// metamethod, or an import resolved while loading, checks this first.
+bool runnable(lua_State* state)
+{
+    return lua_status(state) == LUA_OK;
 }
 
 struct ReferenceRecord
@@ -1837,6 +1852,8 @@ luau_host_status LUAU_HOST_CALL luau_host_buffer_create(luau_host_state* state, 
 luau_host_status LUAU_HOST_CALL luau_host_table_get(luau_host_state* state, int32_t index, int32_t* type)
 {
     if (!state || !validordinaryindex(native(state), index)) return LUAU_HOST_STATUS_INVALID_ARGUMENT;
+    // lua_gettable may call an __index metamethod.
+    if (!runnable(native(state))) return LUAU_HOST_STATUS_THREAD_NOT_RUNNABLE;
     IndexContext c = {index, 0};
     luau_host_status s = protect(native(state), opgettable, &c, 1, 0);
     if (s == LUAU_HOST_STATUS_OK && type) *type = c.result;
@@ -1845,7 +1862,10 @@ luau_host_status LUAU_HOST_CALL luau_host_table_get(luau_host_state* state, int3
 
 luau_host_status LUAU_HOST_CALL luau_host_table_set(luau_host_state* state, int32_t index)
 {
-    if (!state || !validordinaryindex(native(state), index)) return LUAU_HOST_STATUS_INVALID_ARGUMENT;
+    if (!state || !validordinaryindex(native(state), index) || lua_gettop(native(state)) < 2)
+        return LUAU_HOST_STATUS_INVALID_ARGUMENT;
+    // lua_settable may call a __newindex metamethod.
+    if (!runnable(native(state))) return LUAU_HOST_STATUS_THREAD_NOT_RUNNABLE;
     IndexContext c = {index, 0};
     return protect(native(state), opsettable, &c, 2, 0);
 }
@@ -1928,6 +1948,8 @@ luau_host_status LUAU_HOST_CALL luau_host_table_set_readonly(luau_host_state* st
 luau_host_status LUAU_HOST_CALL luau_host_global_get(luau_host_state* state, const uint8_t* key, int32_t* type)
 {
     if (!state || !key) return LUAU_HOST_STATUS_INVALID_ARGUMENT;
+    // A globals table may have an __index metamethod.
+    if (!runnable(native(state))) return LUAU_HOST_STATUS_THREAD_NOT_RUNNABLE;
     StringContext c = {reinterpret_cast<const char*>(key), 0, LUA_GLOBALSINDEX, 0, nullptr};
     luau_host_status s = protect(native(state), opgetfield, &c, 0, 1);
     if (s == LUAU_HOST_STATUS_OK && type) *type = c.result;
@@ -1936,7 +1958,9 @@ luau_host_status LUAU_HOST_CALL luau_host_global_get(luau_host_state* state, con
 
 luau_host_status LUAU_HOST_CALL luau_host_global_set(luau_host_state* state, const uint8_t* key)
 {
-    if (!state || !key) return LUAU_HOST_STATUS_INVALID_ARGUMENT;
+    if (!state || !key || lua_gettop(native(state)) < 1) return LUAU_HOST_STATUS_INVALID_ARGUMENT;
+    // A sandboxed thread's globals have a Luau __newindex guard.
+    if (!runnable(native(state))) return LUAU_HOST_STATUS_THREAD_NOT_RUNNABLE;
     StringContext c = {reinterpret_cast<const char*>(key), 0, LUA_GLOBALSINDEX, 0, nullptr};
     return protect(native(state), opsetfield, &c, 1, 0);
 }
@@ -2027,8 +2051,10 @@ luau_host_status LUAU_HOST_CALL luau_host_to_display_string(luau_host_state* sta
     if (length) *length = 0;
     if (!state || !validordinaryindex(native(state), index))
         return LUAU_HOST_STATUS_INVALID_ARGUMENT;
-    StringContext c = {nullptr, 0, index, 0, nullptr};
     // luaL_tolstring may call a __tostring metamethod.
+    if (!runnable(native(state)))
+        return LUAU_HOST_STATUS_THREAD_NOT_RUNNABLE;
+    StringContext c = {nullptr, 0, index, 0, nullptr};
     luau_host_status s = protect(native(state), opdisplaystring, &c, 0, LUA_MINSTACK);
     if (s == LUAU_HOST_STATUS_OK)
     {
@@ -2049,6 +2075,10 @@ luau_host_status LUAU_HOST_CALL luau_host_load(
     if (!state || !chunkName || !bytecode || bytecodeSize == 0 || bytecodeSize > uint64_t(std::numeric_limits<size_t>::max()) ||
         (environment != 0 && !validtableindex(native(state), environment)))
         return LUAU_HOST_STATUS_INVALID_ARGUMENT;
+    // In a safe environment luau_load resolves imports such as a.b.c with
+    // ordinary table reads, which may call __index metamethods.
+    if (!runnable(native(state)))
+        return LUAU_HOST_STATUS_THREAD_NOT_RUNNABLE;
     LoadContext c = {
         reinterpret_cast<const char*>(chunkName),
         reinterpret_cast<const char*>(bytecode),
@@ -2070,7 +2100,7 @@ luau_host_status LUAU_HOST_CALL luau_host_pcall(luau_host_state* state, int32_t 
 
     lua_State* target = native(state);
     const int32_t top = lua_gettop(target);
-    if (argumentCount >= top || lua_status(target) != LUA_OK)
+    if (argumentCount >= top)
         return LUAU_HOST_STATUS_INVALID_ARGUMENT;
 
     if (errorFunction != 0)
@@ -2086,6 +2116,8 @@ luau_host_status LUAU_HOST_CALL luau_host_pcall(luau_host_state* state, int32_t 
         : 0;
     if (required > LUAI_MAXCSTACK - top)
         return LUAU_HOST_STATUS_INVALID_ARGUMENT;
+    if (!runnable(target))
+        return LUAU_HOST_STATUS_THREAD_NOT_RUNNABLE;
 
     PCallContext c = {argumentCount, resultCount, errorFunction, LUA_OK};
     luau_host_status outer = protect(target, oppcall, &c, argumentCount + 1, required);
@@ -2146,6 +2178,10 @@ luau_host_status LUAU_HOST_CALL luau_host_open_library(luau_host_state* state, l
 {
     if (!state || library < LUAU_HOST_LIBRARY_BASE || library > LUAU_HOST_LIBRARY_INTEGER)
         return LUAU_HOST_STATUS_INVALID_ARGUMENT;
+    // Registration reads and writes the thread's globals, which may have
+    // __index or __newindex metamethods.
+    if (!runnable(native(state)))
+        return LUAU_HOST_STATUS_THREAD_NOT_RUNNABLE;
     LibraryContext c = {library, 0};
     luau_host_status s = protect(native(state), opopenlibrary, &c, 0, LUA_MINSTACK);
     if (s == LUAU_HOST_STATUS_OK && resultCount) *resultCount = c.result;

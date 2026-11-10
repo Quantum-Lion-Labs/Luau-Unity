@@ -79,6 +79,19 @@ internal sealed unsafe class LuauVmContext
     int closeCount;
     int interruptInstallCount;
     LuauManagedCallbackRegistration? pendingManagedCallbackNativeReleases;
+    // A runnable thread of this root on which direct host operations run
+    // Luau code their own thread cannot (maintainer guide section 6.7).
+    // Created on first use, retained by a registry reference, and touched
+    // only under the native gate.
+    IntPtr hostOperationThread;
+    int hostOperationThreadReference;
+    int hostOperationThreadDepth;
+
+    // Luau bounds recursion per thread, and some redirected operations run on
+    // a thread created for that one use, so recursion through them (Luau code
+    // the operation reaches calls back into a host function that starts
+    // another) is not counted anywhere. Real nesting is one or two deep.
+    const int MaximumHostOperationThreadDepth = 16;
 
     LuauHostMemoryInfo finalMemoryInfo;
     bool hasFinalMemoryInfo;
@@ -258,6 +271,95 @@ internal sealed unsafe class LuauVmContext
         }
 
         return info;
+    }
+
+    /// <summary>
+    /// Returns a runnable thread of this root for a direct host operation
+    /// whose own thread cannot run Luau code. The caller holds native access.
+    /// The handle is borrowed: the root's registry keeps the thread alive
+    /// until the root closes or a later call replaces it.
+    /// </summary>
+    internal LuauHostState* AcquireHostOperationThread(LuauState requester, string operation)
+    {
+        if (hostOperationThreadDepth >= MaximumHostOperationThreadDepth)
+        {
+            throw new InvalidOperationException(
+                $"Cannot {operation}: direct host operations on a thread that cannot run Luau code are nested " +
+                $"more than {MaximumHostOperationThreadDepth} deep. Luau code reached by one of them keeps " +
+                "starting another.");
+        }
+
+        var thread = GetOrCreateHostOperationThread(requester, operation);
+        // Counted only once the thread is in hand: every caller pairs this
+        // with ReleaseHostOperationThread in a finally block.
+        hostOperationThreadDepth++;
+        return thread;
+    }
+
+    /// <summary>Ends the use begun by <see cref="AcquireHostOperationThread"/>.</summary>
+    internal void ReleaseHostOperationThread()
+    {
+        hostOperationThreadDepth--;
+    }
+
+    LuauHostState* GetOrCreateHostOperationThread(LuauState requester, string operation)
+    {
+        var current = (LuauHostState*)hostOperationThread;
+        // Code that ran on the thread can hand it to the host (for example a
+        // metamethod returning coroutine.running()), and a host call can then
+        // leave it suspended. Replace it rather than run code there. A nested
+        // use finds it running, which is fine.
+        if (current != null && luau_host_thread_status(current) == LuauHostStatus.Ok)
+        {
+            return current;
+        }
+
+        return CreateHostOperationThread(requester, operation);
+    }
+
+    LuauHostState* CreateHostOperationThread(LuauState requester, string operation)
+    {
+        // Create it from the root so that it always shares the root's
+        // globals; nothing here depends on them, but code a metamethod runs
+        // there may.
+        var root = (LuauHostState*)mainPointer;
+        LuauHostState* created = null;
+        LuauNativeProtection.Prepare(this);
+        var status = luau_host_thread_create(root, &created);
+        if (status != LuauHostStatus.Ok)
+        {
+            // Reads and pops the error object, then throws.
+            LuauNativeProtection.ThrowIfFailed(requester, root, status, operation);
+            throw new LuauException($"The Luau host could not create a thread to {operation}.");
+        }
+
+        var reference = 0;
+        try
+        {
+            LuauNativeProtection.Prepare(this);
+            status = luau_host_reference_create(root, -1, &reference);
+            if (status != LuauHostStatus.Ok)
+            {
+                LuauNativeProtection.ThrowIfFailed(requester, root, status, operation);
+                throw new LuauException($"The Luau host could not retain a thread to {operation}.");
+            }
+        }
+        finally
+        {
+            // Pops the created thread; shrinking needs no slot and cannot fail.
+            _ = luau_host_stack_set_top(root, -2);
+        }
+
+        var previous = hostOperationThreadReference;
+        hostOperationThread = (IntPtr)created;
+        hostOperationThreadReference = reference;
+        if (previous > 0)
+        {
+            // Release needs no slot and cannot fail for a live token.
+            _ = luau_host_reference_release(root, previous);
+        }
+
+        return created;
     }
 
     internal static long ToDiagnosticByteCount(ulong value)

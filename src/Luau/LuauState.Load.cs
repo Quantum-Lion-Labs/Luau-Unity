@@ -134,6 +134,16 @@ public unsafe partial class LuauState
                     (ulong)bytecode.Length,
                     0,
                     &loadStatus);
+                if (protectedStatus == LuauHostStatus.ThreadNotRunnable)
+                {
+                    // Loading resolves imports, which can run metamethods.
+                    protectedStatus = LoadOnThreadSharingGlobals(
+                        namePointer,
+                        bytecodePointer,
+                        (ulong)bytecode.Length,
+                        &loadStatus,
+                        "load bytecode");
+                }
             }
             LuauNativeProtection.ThrowIfFailed(
                 this,

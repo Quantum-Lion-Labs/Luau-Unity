@@ -74,6 +74,22 @@ public sealed unsafe class NativeAbiHandshakeTests
     }
 
     [Fact]
+    public void RootCreationRejectsAPluginWithoutTheRunnableThreadGuard()
+    {
+        // The runtime moves a direct host operation to a runnable thread only
+        // when the host refuses it. A plugin that would run it on a suspended
+        // thread instead must be rejected before any state exists.
+        var info = CreateMatchingInfo();
+        info.feature_flags &= ~(1U << 15);
+        var verifier = CreateVerifier(info);
+
+        var exception = Assert.Throws<PlatformNotSupportedException>(
+            () => LuauState.Create(LuauStateOptions.Default, verifier));
+
+        Assert.Contains("runnable-thread guard", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void RootCreationRejectsHostsWithoutCoroutineSuspension()
     {
         var info = CreateMatchingInfo();

@@ -40,7 +40,8 @@ static uint32_t fixture_feature_flags(void)
         LUAU_HOST_FEATURE_SANDBOX |
         LUAU_HOST_FEATURE_COROUTINE_SUSPENSION |
         LUAU_HOST_FEATURE_STACK_LIMIT |
-        LUAU_HOST_FEATURE_INTERRUPT_THROTTLE;
+        LUAU_HOST_FEATURE_INTERRUPT_THROTTLE |
+        LUAU_HOST_FEATURE_RUNNABLE_THREAD_GUARD;
 }
 
 static luau_host_abi_info fixture_abi_info(void)

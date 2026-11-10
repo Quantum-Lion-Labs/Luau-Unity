@@ -33,6 +33,22 @@ that returns `LUAU_HOST_CALLBACK_ERROR` may drop its arguments first; the host
 raises the topmost value of the non-empty frame, so a callback whose arguments
 filled its frame can still report a failure.
 
+Luau runs code only on a thread whose status is OK. The operations that can run
+Luau code through a call, a metamethod, or an import resolved while loading
+(`table_get`, `table_set`, `global_get`, `global_set`, `to_display_string`,
+`load`, `open_library`, and `pcall`) return
+`LUAU_HOST_STATUS_THREAD_NOT_RUNNABLE` for a thread that yielded, is suspended
+by a host break, or ended with an error, after argument validation and before
+the slot reservation. The refusal runs nothing, consumes nothing, and appends
+no error object; `LUAU_HOST_FEATURE_RUNNABLE_THREAD_GUARD` advertises it. The
+interpreter would otherwise leave a function started there at its first
+safepoint with the thread's frame and stack broken, and the next resume would
+crash. A caller does the same work on a runnable thread of the same root:
+`stack_move` carries the inputs there, `global_push` makes a thread's globals
+reachable from another thread, and a thread created from the refused one
+shares its globals for `load` and `open_library`. `pcall` used to report this
+case as `LUAU_HOST_STATUS_INVALID_ARGUMENT`.
+
 Interrupt delivery can be throttled per root. After
 `luau_host_interrupt_configure`, the host counts EXECUTION safepoints itself,
 enforces the configured count limit exactly (the poll runs at safepoint

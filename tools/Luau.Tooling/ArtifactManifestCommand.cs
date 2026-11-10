@@ -8,10 +8,10 @@ namespace Luau.Tooling;
 
 internal static class ArtifactManifestCommand
 {
-    private const string ApprovedBuildInputSha256 = "e74f59480e8d64debb5389a4041d0d29b3121a8b15a4581dbe74b36068d8d753";
+    private const string ApprovedBuildInputSha256 = "18b140737d0ea90e796b7f2631fa29f2b637a6621062476f93d9657555097827";
     private const ulong ApprovedUpstreamRevisionHash = 0x065976b2840123de;
-    private const ulong ApprovedHostBuildFingerprint = 0xaf55c0083fd24bbf;
-    private const uint ApprovedFeatureFlags = 0x7fff;
+    private const ulong ApprovedHostBuildFingerprint = 0xc587290ac508c830;
+    private const uint ApprovedFeatureFlags = 0xffff;
     // The number of symbols in native/luau-host/exports/luau_host.exports.
     // Adding or removing an export is an ABI change that updates this too.
     private const int ApprovedExportCount = 85;

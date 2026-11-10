@@ -257,7 +257,11 @@ you'd call an API.
 
 Async callbacks work too: arguments are read and results returned only while the
 VM is safely suspended, and the context stays valid across your `await` and
-respects the root's continuation scheduler.
+respects the root's continuation scheduler. While it waits, the callback's
+thread cannot run Luau code, so formatting an argument with
+`ToDisplayString`, indexing a table argument, or reading the thread's globals
+runs any metamethod involved on another thread of the same root. Such a
+metamethod cannot yield.
 
 ## Calling Luau from C#
 

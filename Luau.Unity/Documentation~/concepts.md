@@ -28,6 +28,13 @@ script cannot turn your next call into a continuation of its old code. The
 same applies to a coroutine a script created with `coroutine.create` that has
 not started yet. A thread that finished or failed accepts new calls.
 
+Reading and writing a thread's globals works whatever the thread is doing,
+including while it is yielded or waiting on an async callback. Luau cannot run
+code on such a thread, so when the access reaches Luau code (a sandboxed
+thread's write guard, or a metamethod on its globals), that code runs on
+another thread of the same root and the suspended thread's pending
+continuation is left untouched.
+
 **Sandboxed thread** — a cheap script environment running inside a root. Threads
 share the root's globals and host functions, but each one gets its own writable
 global table, so a variable one script declares is invisible to the next. This

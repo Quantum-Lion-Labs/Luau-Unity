@@ -1,3 +1,4 @@
+using Luau.Internal.Interop;
 using static Luau.Internal.Interop.NativeMethods;
 
 namespace Luau;
@@ -10,6 +11,13 @@ public unsafe partial class LuauState
     /// VM's shared cached child wrapper; dispose it only after all holders are
     /// finished. The setter only borrows its value for this call.
     /// </summary>
+    /// <remarks>
+    /// Works whatever this thread is doing, including while it has yielded or
+    /// waits on an async callback. Luau code the access reaches, such as a
+    /// sandboxed thread's write guard or an <c>__index</c> metamethod, then
+    /// runs on another thread of the same root and cannot yield; the
+    /// suspended continuation is left untouched.
+    /// </remarks>
     /// <param name="key">A UTF-8 name containing no NUL byte.</param>
     public LuauValue this[ReadOnlySpan<byte> key]
     {
@@ -49,6 +57,13 @@ public unsafe partial class LuauState
     /// VM's shared cached child wrapper; dispose it only after all holders are
     /// finished. The setter only borrows its value for this call.
     /// </summary>
+    /// <remarks>
+    /// Works whatever this thread is doing, including while it has yielded or
+    /// waits on an async callback. Luau code the access reaches, such as a
+    /// sandboxed thread's write guard or an <c>__index</c> metamethod, then
+    /// runs on another thread of the same root and cannot yield; the
+    /// suspended continuation is left untouched.
+    /// </remarks>
     /// <param name="key">A non-null name containing no NUL character.</param>
     public LuauValue this[string key]
     {
@@ -88,7 +103,14 @@ public unsafe partial class LuauState
             var ignoredType = 0;
             LuauNativeProtection.Prepare(context);
             var status = luau_host_global_get(l, name, &ignoredType);
-            LuauNativeProtection.ThrowIfFailed(this, l, status, "read a Luau global");
+            if (status == LuauHostStatus.ThreadNotRunnable)
+            {
+                GetGlobalOnRunnableThread(name, nullTerminatedName.Length - 1, "read a Luau global");
+            }
+            else
+            {
+                LuauNativeProtection.ThrowIfFailed(this, l, status, "read a Luau global");
+            }
         }
 
         var result = Pop();
@@ -114,7 +136,14 @@ public unsafe partial class LuauState
         {
             LuauNativeProtection.Prepare(context);
             var status = luau_host_global_set(l, name);
-            LuauNativeProtection.ThrowIfFailed(this, l, status, "write a Luau global");
+            if (status == LuauHostStatus.ThreadNotRunnable)
+            {
+                SetGlobalOnRunnableThread(name, nullTerminatedName.Length - 1, "write a Luau global");
+            }
+            else
+            {
+                LuauNativeProtection.ThrowIfFailed(this, l, status, "write a Luau global");
+            }
         }
 
         hostOperation.Complete(

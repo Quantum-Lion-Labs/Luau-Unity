@@ -140,7 +140,15 @@ public unsafe sealed class LuauTable : ILuauReference, ILuauCallbackBorrowedRefe
             var ignoredType = 0;
             LuauNativeProtection.Prepare(state.Context);
             var status = luau_host_table_get(pointer, -2, &ignoredType);
-            LuauNativeProtection.ThrowIfFailed(state, pointer, status, "read a Luau table value");
+            if (status == Luau.Internal.Interop.LuauHostStatus.ThreadNotRunnable)
+            {
+                // The root is suspended by a pending async callback.
+                state.TableGetOnRunnableThread("read a Luau table value");
+            }
+            else
+            {
+                LuauNativeProtection.ThrowIfFailed(state, pointer, status, "read a Luau table value");
+            }
             var result = state.ToValue(-1);
             try
             {
@@ -167,7 +175,14 @@ public unsafe sealed class LuauTable : ILuauReference, ILuauCallbackBorrowedRefe
 
             LuauNativeProtection.Prepare(state.Context);
             var status = luau_host_table_set(pointer, -3);
-            LuauNativeProtection.ThrowIfFailed(state, pointer, status, "write a Luau table value");
+            if (status == Luau.Internal.Interop.LuauHostStatus.ThreadNotRunnable)
+            {
+                state.TableSetOnRunnableThread("write a Luau table value");
+            }
+            else
+            {
+                LuauNativeProtection.ThrowIfFailed(state, pointer, status, "write a Luau table value");
+            }
             hostOperation.CompleteAndRestore(
                 "A direct host table write cannot yield or suspend the Luau thread.");
         }

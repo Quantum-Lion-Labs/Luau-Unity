@@ -321,6 +321,11 @@ internal sealed unsafe class ScriptOperation : IDisposable
     internal void MarkAsyncCallbackSuspended()
     {
         Volatile.Write(ref asyncCallbackPhase, (int)AsyncCallbackPhase.Suspended);
+        // The runner has acted on the suspension. While the callback runs,
+        // its direct host operations can run Luau code (a metamethod or
+        // __tostring), and an interrupt poll there must report only new
+        // work; a stale reason would stop that code as a hard stop.
+        Volatile.Write(ref yieldReason, (int)ScriptYieldReason.None);
     }
 
     internal void FinishAsyncCallback()
