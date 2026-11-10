@@ -1,3 +1,4 @@
+using System.Runtime.ExceptionServices;
 using System.Text;
 using Luau.Internal.Interop;
 using static Luau.Internal.Interop.NativeMethods;
@@ -343,14 +344,19 @@ internal static class ScriptRunner
                         continue;
                     }
 
+                    var callbackEntryTop = -1;
                     try
                     {
                         var callback = pending.AsynchronousCallback;
                         var invocation = await LuauContinuationDispatcher.InvokeAsync(
                             scheduler,
-                            () => callback(
-                                GetCallbackState(operation),
-                                operation.CancellationToken)).ConfigureAwait(false);
+                            () =>
+                            {
+                                callbackEntryTop = GetTop(operation, GetResumeTarget(operation, state));
+                                return callback(
+                                    GetCallbackState(operation),
+                                    operation.CancellationToken);
+                            }).ConfigureAwait(false);
                         argumentCount = await invocation.ConfigureAwait(false);
                     }
                     catch (Exception exception)
@@ -380,6 +386,13 @@ internal static class ScriptRunner
                         }
                     }
 
+                    if (resumeWithError)
+                    {
+                        await LuauContinuationDispatcher.InvokeAsync(
+                            scheduler,
+                            () => DiscardCallbackResults(operation, state, callbackEntryTop)).ConfigureAwait(false);
+                    }
+
                     operation.FinishAsyncCallback();
                     continue;
                 default:
@@ -388,6 +401,23 @@ internal static class ScriptRunner
                         () => Abort(operation, state)).ConfigureAwait(false);
                     throw new LuauException("Unknown Luau yield reason.", operation.ChunkName);
             }
+        }
+    }
+
+    // A failed callback's partial results are never returned. Dropping them
+    // leaves room to inject its failure even when they filled the frame.
+    static unsafe void DiscardCallbackResults(ScriptOperation operation, IntPtr state, int entryTop)
+    {
+        if (entryTop < 0)
+        {
+            return;
+        }
+
+        using var access = operation.Context.EnterOperationNativeAccess(operation);
+        var target = luau_host_resume_target((LuauHostState*)state);
+        if (luau_host_stack_get_top(target) > entryTop)
+        {
+            RequireStackSetTopSuccess(luau_host_stack_set_top(target, entryTop));
         }
     }
 
@@ -443,11 +473,41 @@ internal static class ScriptRunner
 
         if (operation.Options.MaxResultCount is { } limit && resultCount > limit)
         {
-            SetTop(operation, state, baseTop);
+            DiscardResultsAbove(operation, state, baseTop);
             throw new LuauResultLimitException(operation.ChunkName, resultCount, limit);
         }
 
+        // Luau can return or yield more values than a host frame holds.
+        // Reading a reference result needs one free slot, so reject a full
+        // frame before decoding any result rather than partway through.
+        if (resultCount > 0 && IsFrameFull(operation, state))
+        {
+            DiscardResultsAbove(operation, state, baseTop);
+            throw new LuauStackLimitException(operation.ChunkName, "return its results");
+        }
+
         return resultCount;
+    }
+
+    static unsafe bool IsFrameFull(ScriptOperation operation, IntPtr state)
+    {
+        using var access = operation.Context.EnterOperationNativeAccess(operation);
+        return LuauNativeProtection.IsFrameFull(operation.Context, (LuauHostState*)state);
+    }
+
+    // Shrinking the stack cannot fail natively. If it ever does, reset the
+    // thread rather than leave rejected values behind.
+    static void DiscardResultsAbove(ScriptOperation operation, IntPtr state, int baseTop)
+    {
+        try
+        {
+            SetTop(operation, state, baseTop);
+        }
+        catch
+        {
+            Abort(operation, state);
+            throw;
+        }
     }
 
     static void ThrowIfUninjectedCallbackFailure(ScriptOperation operation, IntPtr state)
@@ -640,6 +700,12 @@ internal static class ScriptRunner
             target,
             operation.CallbackFailureToken.ToPointer(),
             0);
+        if (pushStatus == LuauHostStatus.Ok)
+        {
+            return luau_host_resume_error((LuauHostState*)state, (LuauHostState*)from);
+        }
+
+        ExceptionDispatchInfo failure;
         try
         {
             LuauNativeProtection.ThrowIfFailed(
@@ -648,14 +714,24 @@ internal static class ScriptRunner
                 pushStatus,
                 "inject a managed callback failure",
                 operation.ChunkName);
+            failure = ExceptionDispatchInfo.Capture(new LuauException(
+                "Managed callback failure injection failed without a reported cause.",
+                operation.ChunkName));
         }
-        catch
+        catch (Exception pushFailure)
         {
-            Abort(operation, state);
-            throw;
+            // The callback failure never reached Luau, for example because the
+            // callback frame is full. Below a hard stop it still outranks the
+            // failure to inject it.
+            var callbackFailure = operation.GetHardStopException() == null
+                ? operation.TakeInjectedCallbackFailure()
+                : null;
+            failure = ExceptionDispatchInfo.Capture(callbackFailure ?? pushFailure);
         }
 
-        return luau_host_resume_error((LuauHostState*)state, (LuauHostState*)from);
+        Abort(operation, state);
+        failure.Throw();
+        return default;
     }
 
     static unsafe bool IsCallbackFailureToken(ScriptOperation operation, IntPtr state)

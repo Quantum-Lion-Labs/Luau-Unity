@@ -123,6 +123,20 @@
             owns Luau's setjmp/longjmp boundary; managed callers only receive statuses.
             </summary>
         </member>
+        <member name="M:Luau.LuauNativeProtection.ReserveSlots(Luau.LuauState,Luau.Internal.Interop.LuauHostState*,System.Int32,System.String,System.String)">
+            <summary>
+            Ensures <paramref name="pointer"/>'s frame has <paramref name="slots"/>
+            free values, throwing the same typed failure a protected operation
+            would report when the frame limit or memory prevents it.
+            </summary>
+        </member>
+        <member name="M:Luau.LuauNativeProtection.IsFrameFull(Luau.LuauVmContext,Luau.Internal.Interop.LuauHostState*)">
+            <summary>
+            Returns whether the frame limit leaves <paramref name="pointer"/>'s
+            frame without one free slot. A failed allocation is not reported here;
+            the operation that later needs the slot reports it.
+            </summary>
+        </member>
         <member name="T:Luau.LuauNativeAbiVerifier">
             <summary>
             Performs the process-wide host ABI handshake. The test-visible descriptor
@@ -949,6 +963,18 @@
         </member>
         <member name="P:Luau.LuauResultLimitException.Limit">
             <summary>Gets the configured maximum result count.</summary>
+        </member>
+        <member name="T:Luau.LuauStackLimitException">
+            <summary>
+            Thrown when an operation needs more Luau stack slots than one frame
+            permits. A Luau stack frame holds at most 8000 values, so returning,
+            yielding, or passing thousands of values fails this way. The runtime
+            removes the operation's values before throwing and the state remains
+            usable.
+            </summary>
+        </member>
+        <member name="M:Luau.LuauStackLimitException.#ctor(System.String)">
+            <summary>Initializes a stack-slot limit failure.</summary>
         </member>
         <member name="T:Luau.LuauDecodedResultLimitKind">
             <summary>Identifies which managed string-decoding budget was exceeded.</summary>

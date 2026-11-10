@@ -1,0 +1,274 @@
+namespace Luau.Tests;
+
+/// <summary>
+/// A Luau frame visible to the host holds at most 8000 values (LUAI_MAXCSTACK).
+/// Scripts and hosts can exceed that by returning, yielding, or passing
+/// thousands of values. Each such operation must fail on its own with a typed
+/// exception, write nothing past the native stack, and leave the root usable.
+/// </summary>
+public sealed class StackSlotLimitTests
+{
+    // 8003 values: four literals plus 7999 unpacked array entries. The VM can
+    // build this frame itself, but it exceeds the host's per-frame limit.
+    const string OverfullReturn = "local t = table.create(7999, 1) return 1, 2, 3, 4, table.unpack(t)";
+    const int OverfullCount = 8003;
+
+    // Enough repetitions to walk far past Luau's five-slot EXTRA_STACK reserve
+    // if any failed operation leaked one value onto the stack.
+    const int Repetitions = 64;
+
+    static readonly LuauExecutionOptions UnboundedExecution = LuauExecutionOptions.Unbounded;
+
+    static LuauState CreateRoot(LuauExecutionOptions? execution = null)
+    {
+        var root = execution == null
+            ? LuauState.Create()
+            : LuauState.Create(new LuauStateOptions { DefaultExecutionOptions = execution });
+        root.OpenBaseLibrary();
+        root.OpenTableLibrary();
+        root.OpenCoroutineLibrary();
+        return root;
+    }
+
+    static void AssertRootUsable(LuauState root)
+    {
+        using var results = root.DoString("return 42", "@stack-limit/recovery.luau");
+        Assert.Equal(42, Assert.Single(results).Read<int>());
+    }
+
+    [Fact]
+    public void OverfullRootReturnHitsTheResultLimitUnderDefaultLimits()
+    {
+        using var root = CreateRoot();
+
+        for (var attempt = 0; attempt < Repetitions; attempt++)
+        {
+            var exception = Assert.Throws<LuauResultLimitException>(
+                () => root.DoString(OverfullReturn, "@stack-limit/default.luau"));
+            Assert.Equal(OverfullCount, exception.ActualCount);
+            Assert.Equal(LuauExecutionOptions.Default.MaxResultCount, exception.Limit);
+            AssertRootUsable(root);
+        }
+    }
+
+    [Theory]
+    [InlineData(OverfullReturn)]
+    [InlineData("local t = table.create(7999, {}) return t, table.unpack(t)")]
+    [InlineData("local t = table.create(7999, 'x') return 'x', table.unpack(t)")]
+    public void OverfullRootReturnFailsCleanlyWithoutAResultLimit(string source)
+    {
+        using var root = CreateRoot(UnboundedExecution);
+
+        for (var attempt = 0; attempt < Repetitions; attempt++)
+        {
+            var exception = Assert.Throws<LuauStackLimitException>(
+                () => root.DoString(source, "@stack-limit/unbounded.luau"));
+            Assert.Equal("@stack-limit/unbounded.luau", exception.ChunkName);
+            AssertRootUsable(root);
+        }
+    }
+
+    [Fact]
+    public void ResultsThatLeaveOneFreeSlotAreStillReturned()
+    {
+        using var root = CreateRoot(UnboundedExecution);
+
+        using var results = root.DoString("return table.unpack(table.create(7999, 7))");
+
+        Assert.Equal(7999, results.Count);
+        Assert.Equal(7, results[0].Read<int>());
+        Assert.Equal(7, results[7998].Read<int>());
+        AssertRootUsable(root);
+    }
+
+    [Fact]
+    public void OverfullChildThreadReturnFailsCleanlyAndBothThreadsRecover()
+    {
+        using var root = CreateRoot(UnboundedExecution);
+        using var child = root.CreateThread();
+
+        for (var attempt = 0; attempt < Repetitions; attempt++)
+        {
+            Assert.Throws<LuauStackLimitException>(
+                () => child.DoString(OverfullReturn, "@stack-limit/child.luau"));
+        }
+
+        using (var childResults = child.DoString("return 'child'"))
+        {
+            Assert.Equal("child", Assert.Single(childResults).Read<string>());
+        }
+
+        AssertRootUsable(root);
+    }
+
+    [Fact]
+    public void OverfullCoroutineYieldAndResumeResultsFailCleanly()
+    {
+        using var root = CreateRoot(UnboundedExecution);
+
+        using (var yielder = root.CreateThread())
+        {
+            Assert.Throws<LuauStackLimitException>(() => yielder.DoString(
+                "local t = table.create(7999, 1) coroutine.yield(1, 2, table.unpack(t)) return 'unreachable'",
+                "@stack-limit/yield.luau"));
+        }
+
+        using var coroutine = root.CreateThread();
+        using (var first = coroutine.DoString(
+            "local n = coroutine.yield('ready') local t = table.create(7999, 2) return n, n, table.unpack(t)"))
+        {
+            Assert.Equal("ready", Assert.Single(first).Read<string>());
+        }
+
+        Assert.Throws<LuauStackLimitException>(() => coroutine.Resume([8001]));
+        AssertRootUsable(root);
+    }
+
+    [Fact]
+    public void ResumeWithMoreArgumentsThanAFrameHoldsIsRejectedAndCanBeRetried()
+    {
+        using var root = CreateRoot(UnboundedExecution);
+        using var coroutine = root.CreateThread();
+        using (var first = coroutine.DoString("local a, b = coroutine.yield('ready') return a + b"))
+        {
+            Assert.Equal("ready", Assert.Single(first).Read<string>());
+        }
+
+        var tooMany = new LuauValue[9000];
+        for (var attempt = 0; attempt < Repetitions; attempt++)
+        {
+            Assert.Throws<LuauStackLimitException>(() => coroutine.Resume(tooMany));
+        }
+
+        using var resumed = coroutine.Resume([20, 22]);
+        Assert.Equal(42, Assert.Single(resumed).Read<int>());
+        AssertRootUsable(root);
+    }
+
+    [Fact]
+    public void InvokeWithOverfullResultsOrArgumentsFailsCleanly()
+    {
+        using var root = CreateRoot(UnboundedExecution);
+        using var factory = root.DoString(
+            "return function(...) " +
+            "local count = select('#', ...) " +
+            "if count == 1 then local t = table.create(7999, 0) return 1, 2, table.unpack(t) end " +
+            "return count, ... end");
+        var function = factory[0].Read<LuauFunction>();
+
+        for (var attempt = 0; attempt < Repetitions; attempt++)
+        {
+            Assert.Throws<LuauStackLimitException>(() => function.Invoke([1]));
+        }
+
+        var tooManyArguments = new LuauValue[9000];
+        tooManyArguments[0] = 1;
+        for (var attempt = 0; attempt < Repetitions; attempt++)
+        {
+            Assert.Throws<LuauStackLimitException>(() => function.Invoke(tooManyArguments));
+        }
+
+        using (var results = function.Invoke([2, "a", "b"]))
+        {
+            Assert.Equal(4, results.Count);
+            Assert.Equal(3, results[0].Read<int>());
+            Assert.Equal("b", results[3].Read<string>());
+        }
+
+        AssertRootUsable(root);
+    }
+
+    [Fact]
+    public void HostCallbackReturningMoreValuesThanAFrameHoldsFailsCleanly()
+    {
+        using var root = CreateRoot(UnboundedExecution);
+        root["many"] = root.CreateFunction("many", context =>
+        {
+            for (var index = 0; index < 9000; index++)
+            {
+                context.Return(index);
+            }
+        });
+
+        for (var attempt = 0; attempt < Repetitions; attempt++)
+        {
+            var exception = Assert.Throws<LuauManagedCallbackException>(
+                () => root.DoString("return many()", "@stack-limit/callback.luau"));
+            Assert.Equal("many", exception.CallbackName);
+            Assert.IsType<LuauStackLimitException>(exception.InnerException);
+            AssertRootUsable(root);
+        }
+
+        using var caught = root.DoString("local ok = pcall(many) return ok");
+        Assert.False(Assert.Single(caught).Read<bool>());
+        AssertRootUsable(root);
+    }
+
+    [Fact]
+    public async Task AsyncHostCallbackReturningMoreValuesThanAFrameHoldsFailsCleanly()
+    {
+        using var root = CreateRoot(UnboundedExecution);
+        root["many"] = root.CreateAsyncFunction("many", async context =>
+        {
+            await Task.Yield();
+            for (var index = 0; index < 9000; index++)
+            {
+                context.Return(index);
+            }
+        });
+
+        for (var attempt = 0; attempt < 8; attempt++)
+        {
+            var exception = await Assert.ThrowsAsync<LuauManagedCallbackException>(
+                () => root.DoStringAsync("return many()", "@stack-limit/async-callback.luau").AsTask());
+            Assert.IsType<LuauStackLimitException>(exception.InnerException);
+        }
+
+        using var results = await root.DoStringAsync("return 42");
+        Assert.Equal(42, Assert.Single(results).Read<int>());
+    }
+
+    [Fact]
+    public void RequiredModuleReturningAnOverfullFrameFailsCleanly()
+    {
+        using var root = CreateRoot(UnboundedExecution);
+        root.OpenRequireLibrary(new LuauModuleMap(new Dictionary<string, byte[]>
+        {
+            ["overfull"] = System.Text.Encoding.UTF8.GetBytes(OverfullReturn),
+        }));
+
+        for (var attempt = 0; attempt < Repetitions; attempt++)
+        {
+            var exception = Assert.Throws<LuauManagedCallbackException>(
+                () => root.DoString("return require('overfull')", "@stack-limit/require.luau"));
+            Assert.IsType<LuauStackLimitException>(exception.InnerException);
+            AssertRootUsable(root);
+        }
+    }
+
+    [Fact]
+    public void ScriptPassingAFullFrameToACallbackCanStillFailCleanly()
+    {
+        using var root = CreateRoot(UnboundedExecution);
+        var observed = 0;
+        root["count"] = root.CreateFunction("count", context =>
+        {
+            observed = context.ArgumentCount;
+            context.Return(context.ArgumentCount);
+        });
+
+        // The callback frame already holds 7999 arguments; one return value
+        // still fits, so this succeeds.
+        using (var results = root.DoString("return count(table.unpack(table.create(7999, 0)))"))
+        {
+            Assert.Equal(7999, Assert.Single(results).Read<int>());
+            Assert.Equal(7999, observed);
+        }
+
+        // A full 8000-argument frame cannot hold the return value.
+        var exception = Assert.Throws<LuauManagedCallbackException>(
+            () => root.DoString("local t = table.create(7999, 0) return count(0, table.unpack(t))"));
+        Assert.IsType<LuauStackLimitException>(exception.InnerException);
+        AssertRootUsable(root);
+    }
+}

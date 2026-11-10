@@ -70,6 +70,19 @@ public sealed unsafe class NativeAbiHandshakeTests
         Assert.Contains("coroutine suspension", exception.Message, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void RootCreationRejectsHostsWithoutStackSlotLimitReporting()
+    {
+        var info = CreateMatchingInfo();
+        info.feature_flags &= ~(1U << 13);
+        var verifier = CreateVerifier(info);
+
+        var exception = Assert.Throws<PlatformNotSupportedException>(
+            () => LuauState.Create(LuauStateOptions.Default, verifier));
+
+        Assert.Contains("stack-slot limit", exception.Message, StringComparison.Ordinal);
+    }
+
     [Theory]
     [InlineData("integer")]
     [InlineData("class")]

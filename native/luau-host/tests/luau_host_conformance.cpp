@@ -277,6 +277,7 @@ void test_abi_query()
     REQUIRE((info.feature_flags & LUAU_HOST_FEATURE_OPAQUE_REFERENCE_TOKENS) != 0);
     REQUIRE((info.feature_flags & LUAU_HOST_FEATURE_DIRECT_CALLBACK_IDENTITY) != 0);
     REQUIRE((info.feature_flags & LUAU_HOST_FEATURE_OBSERVATION_ONLY_GC_INTERRUPT) != 0);
+    REQUIRE((info.feature_flags & LUAU_HOST_FEATURE_STACK_LIMIT) != 0);
 
     constexpr uint32_t fixedPrefixSize = static_cast<uint32_t>(offsetof(luau_host_abi_info, compile_options_size));
     alignas(luau_host_abi_info) std::array<uint8_t, sizeof(luau_host_abi_info) + 16> storage = {};
@@ -1850,6 +1851,311 @@ void test_multi_root_interrupt_uninstall_preserves_other_root()
     luau_host_interrupt_uninstall(firstChild);
 }
 
+// One host-visible frame holds at most this many values (LUAI_MAXCSTACK).
+constexpr int32_t kFrameSlotLimit = LUAU_HOST_FRAME_SLOT_LIMIT;
+
+// Each refused call is repeated well past Luau's five-slot EXTRA_STACK reserve.
+// Before the host reserved error-object slots, every refusal appended one
+// unchecked error object, so this loop wrote past the stack allocation.
+constexpr int kRefusalRepetitions = 32;
+
+// 8003 values: the VM can build this frame, but it exceeds the frame limit.
+constexpr const char* kOverfullReturn = "local t = table.create(7999, 1) return 1, 2, 3, 4, table.unpack(t)";
+
+void require_stack_limit(luau_host_state* state, luau_host_status status, int32_t expectedTop)
+{
+    REQUIRE(status == LUAU_HOST_STATUS_STACK_LIMIT);
+    REQUIRE(luau_host_stack_get_top(state) == expectedTop);
+}
+
+// Every protected operation that consumes nothing, or that grows the frame,
+// must refuse a full frame without touching it.
+void require_full_frame_refusals(luau_host_state* state, int32_t tableIndex, int32_t reference, const CompiledBuffer& bytecode)
+{
+    const int32_t top = luau_host_stack_get_top(state);
+    luau_host_callback_table callbacks = callback_table();
+    callbacks.managed_function = managed_callback;
+    luau_host_callback_table destructorCallbacks = callback_table();
+    destructorCallbacks.userdata_destructor = userdata_destructor;
+
+    for (int attempt = 0; attempt < kRefusalRepetitions; ++attempt)
+    {
+        require_stack_limit(state, luau_host_push_nil(state), top);
+        require_stack_limit(state, luau_host_push_boolean(state, 1), top);
+        require_stack_limit(state, luau_host_push_integer(state, 1), top);
+        require_stack_limit(state, luau_host_push_number(state, 1.0), top);
+        require_stack_limit(state, luau_host_push_vector(state, 1.0f, 2.0f, 3.0f), top);
+        require_stack_limit(state, luau_host_push_string(state, bytes("x"), 1), top);
+        require_stack_limit(state, luau_host_push_light_userdata(state, nullptr, 0), top);
+        require_stack_limit(state, luau_host_push_value(state, tableIndex), top);
+        int32_t isMainThread = 0;
+        require_stack_limit(state, luau_host_push_thread(state, &isMainThread), top);
+
+        int32_t ownerTransferred = 123;
+        int32_t errorObject = 123;
+        require_stack_limit(
+            state,
+            luau_host_push_callback(state, &callbacks, nullptr, 0, 0, &ownerTransferred, &errorObject),
+            top);
+        REQUIRE(ownerTransferred == 0);
+        REQUIRE(errorObject == 0);
+
+        void* payload = reinterpret_cast<void*>(static_cast<uintptr_t>(1));
+        require_stack_limit(state, luau_host_userdata_create(state, 8, 0, &payload), top);
+        REQUIRE(payload == nullptr);
+        payload = reinterpret_cast<void*>(static_cast<uintptr_t>(1));
+        require_stack_limit(state, luau_host_userdata_create_with_destructor(state, 8, &destructorCallbacks, &payload), top);
+        REQUIRE(payload == nullptr);
+        payload = reinterpret_cast<void*>(static_cast<uintptr_t>(1));
+        require_stack_limit(state, luau_host_buffer_create(state, 8, &payload), top);
+        REQUIRE(payload == nullptr);
+
+        int32_t result = 123;
+        require_stack_limit(state, luau_host_table_create(state, 0, 0), top);
+        require_stack_limit(state, luau_host_table_clone(state, tableIndex), top);
+        require_stack_limit(state, luau_host_table_clear(state, tableIndex), top);
+        require_stack_limit(state, luau_host_table_set_readonly(state, tableIndex, 0), top);
+        require_stack_limit(state, luau_host_metatable_get(state, tableIndex, &result), top);
+        require_stack_limit(state, luau_host_global_get(state, bytes("print"), &result), top);
+        require_stack_limit(state, luau_host_global_push(state), top);
+
+        int32_t newReference = 123;
+        require_stack_limit(state, luau_host_reference_create(state, tableIndex, &newReference), top);
+        REQUIRE(newReference <= 0);
+        require_stack_limit(state, luau_host_reference_push(state, reference, &result), top);
+
+        const uint8_t* text = bytes("unchanged");
+        uint64_t length = 123;
+        require_stack_limit(state, luau_host_to_string(state, tableIndex, &text, &length), top);
+        REQUIRE(text == nullptr);
+        REQUIRE(length == 0);
+        require_stack_limit(state, luau_host_to_display_string(state, tableIndex, &text, &length), top);
+
+        luau_host_status loadStatus = LUAU_HOST_STATUS_INVALID_ARGUMENT;
+        require_stack_limit(
+            state,
+            luau_host_load(state, bytes("@full-frame"), bytecode.value.data, bytecode.value.size, 0, &loadStatus),
+            top);
+        REQUIRE(loadStatus == LUAU_HOST_STATUS_INVALID_ARGUMENT);
+
+        luau_host_state* child = reinterpret_cast<luau_host_state*>(static_cast<uintptr_t>(1));
+        require_stack_limit(state, luau_host_thread_create(state, &child), top);
+        REQUIRE(child == nullptr);
+
+        require_stack_limit(state, luau_host_collect(state), top);
+        require_stack_limit(state, luau_host_open_library(state, LUAU_HOST_LIBRARY_MATH, &result), top);
+        require_stack_limit(state, luau_host_sandbox_thread(state), top);
+
+        // Neutral observers and preconditions stay neutral on a full frame.
+        int32_t canGrow = 123;
+        REQUIRE(luau_host_stack_check(state, 1, &canGrow) == LUAU_HOST_STATUS_OK);
+        REQUIRE(canGrow == 0);
+        REQUIRE(luau_host_stack_set_top(state, std::max(top, kFrameSlotLimit) + 1) == LUAU_HOST_STATUS_INVALID_ARGUMENT);
+        REQUIRE(luau_host_stack_get_top(state) == top);
+    }
+}
+
+// Shrinking and rearranging never need a free slot, so a full frame can always
+// be emptied. Leaves the frame at baseTop.
+void require_full_frame_recovers(luau_host_state* state, int32_t baseTop)
+{
+    int32_t top = luau_host_stack_get_top(state);
+    REQUIRE(top > baseTop + 4);
+    REQUIRE(luau_host_stack_insert(state, baseTop + 1) == LUAU_HOST_STATUS_OK);
+    REQUIRE(luau_host_stack_get_top(state) == top);
+    REQUIRE(luau_host_stack_replace(state, baseTop + 1) == LUAU_HOST_STATUS_OK);
+    REQUIRE(luau_host_stack_get_top(state) == --top);
+    REQUIRE(luau_host_stack_remove(state, baseTop + 1) == LUAU_HOST_STATUS_OK);
+    REQUIRE(luau_host_stack_get_top(state) == --top);
+    REQUIRE(luau_host_stack_set_top(state, -2) == LUAU_HOST_STATUS_OK);
+    REQUIRE(luau_host_stack_get_top(state) == --top);
+    REQUIRE(luau_host_stack_set_top(state, top) == LUAU_HOST_STATUS_OK);
+    REQUIRE(luau_host_stack_get_top(state) == top);
+    REQUIRE(luau_host_stack_set_top(state, baseTop) == LUAU_HOST_STATUS_OK);
+    REQUIRE(luau_host_stack_get_top(state) == baseTop);
+}
+
+void require_reusable(luau_host_state* state, const char* chunkName)
+{
+    const int32_t top = luau_host_stack_get_top(state);
+    REQUIRE(compile_and_load(state, "return 42", chunkName) == LUAU_HOST_STATUS_OK);
+    REQUIRE(luau_host_pcall(state, 0, 1, 0) == LUAU_HOST_STATUS_OK);
+    REQUIRE(luau_host_stack_get_top(state) == top + 1);
+    int32_t isNumber = 0;
+    REQUIRE(luau_host_to_number(state, -1, &isNumber) == 42.0);
+    REQUIRE(isNumber != 0);
+    REQUIRE(luau_host_stack_set_top(state, top) == LUAU_HOST_STATUS_OK);
+}
+
+luau_host_status fillingCallbackStatus = LUAU_HOST_STATUS_OK;
+int32_t fillingCallbackTop = 0;
+int32_t fillingCallbackTopAfterRefusals = 0;
+
+int32_t LUAU_HOST_CALL filling_callback(luau_host_state* state)
+{
+    const int32_t entryTop = luau_host_stack_get_top(state);
+    luau_host_status status = LUAU_HOST_STATUS_OK;
+    while ((status = luau_host_push_integer(state, 1)) == LUAU_HOST_STATUS_OK)
+    {
+    }
+
+    fillingCallbackStatus = status;
+    fillingCallbackTop = luau_host_stack_get_top(state);
+    for (int attempt = 0; attempt < kRefusalRepetitions; ++attempt)
+        (void)luau_host_push_nil(state);
+    fillingCallbackTopAfterRefusals = luau_host_stack_get_top(state);
+    return fillingCallbackTop - entryTop;
+}
+
+void test_stack_slot_limit_refusals_and_recovery()
+{
+    const CompiledBuffer bytecode = compile_source("return 1");
+
+    // A frame the host fills itself: exactly kFrameSlotLimit values fit.
+    {
+        Root root = create_root();
+        luau_host_state* child = nullptr;
+        REQUIRE(luau_host_thread_create(root.state, &child) == LUAU_HOST_STATUS_OK);
+        REQUIRE(luau_host_table_create(root.state, 0, 0) == LUAU_HOST_STATUS_OK);
+        int32_t reference = 0;
+        REQUIRE(luau_host_reference_create(root.state, 2, &reference) == LUAU_HOST_STATUS_OK);
+        for (int32_t value = 3; value <= kFrameSlotLimit; ++value)
+            REQUIRE(luau_host_push_integer(root.state, value) == LUAU_HOST_STATUS_OK);
+        REQUIRE(luau_host_stack_get_top(root.state) == kFrameSlotLimit);
+
+        require_full_frame_refusals(root.state, 2, reference, bytecode);
+
+        // Consuming operations need no new slot and still run on a full frame.
+        REQUIRE(luau_host_global_set(root.state, bytes("filled")) == LUAU_HOST_STATUS_OK);
+        REQUIRE(luau_host_stack_get_top(root.state) == kFrameSlotLimit - 1);
+        REQUIRE(luau_host_push_string(root.state, bytes("key"), 3) == LUAU_HOST_STATUS_OK);
+        REQUIRE(luau_host_table_raw_get(root.state, 2, nullptr) == LUAU_HOST_STATUS_OK);
+        REQUIRE(luau_host_stack_get_top(root.state) == kFrameSlotLimit);
+
+        // Values can move out of a full frame; moving more in is rejected.
+        REQUIRE(luau_host_stack_move(root.state, child, 1) == LUAU_HOST_STATUS_OK);
+        REQUIRE(luau_host_stack_get_top(root.state) == kFrameSlotLimit - 1);
+        REQUIRE(luau_host_stack_move(child, root.state, 1) == LUAU_HOST_STATUS_OK);
+        REQUIRE(luau_host_stack_get_top(root.state) == kFrameSlotLimit);
+        REQUIRE(luau_host_push_integer(child, 1) == LUAU_HOST_STATUS_OK);
+        REQUIRE(luau_host_stack_move(child, root.state, 1) == LUAU_HOST_STATUS_INVALID_ARGUMENT);
+        REQUIRE(luau_host_stack_get_top(root.state) == kFrameSlotLimit);
+        REQUIRE(luau_host_stack_get_top(child) == 1);
+
+        require_full_frame_recovers(root.state, 2);
+        require_reusable(root.state, "@frame-limit/host-filled");
+        REQUIRE(luau_host_reference_release(root.state, reference) == LUAU_HOST_STATUS_OK);
+    }
+
+    // A frame Luau builds past the limit: every growing operation is refused,
+    // the frame can be emptied, and both the root and a child stay reusable.
+    {
+        Root root = create_root();
+        int32_t ignored = 0;
+        REQUIRE(luau_host_open_library(root.state, LUAU_HOST_LIBRARY_BASE, &ignored) == LUAU_HOST_STATUS_OK);
+        REQUIRE(luau_host_open_library(root.state, LUAU_HOST_LIBRARY_TABLE, &ignored) == LUAU_HOST_STATUS_OK);
+        REQUIRE(luau_host_stack_set_top(root.state, 0) == LUAU_HOST_STATUS_OK);
+
+        REQUIRE(luau_host_table_create(root.state, 0, 0) == LUAU_HOST_STATUS_OK);
+        int32_t reference = 0;
+        REQUIRE(luau_host_reference_create(root.state, 1, &reference) == LUAU_HOST_STATUS_OK);
+        REQUIRE(compile_and_load(root.state, kOverfullReturn, "@frame-limit/root") == LUAU_HOST_STATUS_OK);
+        REQUIRE(luau_host_pcall(root.state, 0, LUAU_HOST_MULTIPLE_RESULTS, 0) == LUAU_HOST_STATUS_OK);
+        REQUIRE(luau_host_stack_get_top(root.state) == 1 + 8003);
+
+        require_full_frame_refusals(root.state, 1, reference, bytecode);
+        REQUIRE(luau_host_reference_release(root.state, reference) == LUAU_HOST_STATUS_OK);
+        REQUIRE(luau_host_stack_get_top(root.state) == 1 + 8003);
+        require_full_frame_recovers(root.state, 0);
+        require_reusable(root.state, "@frame-limit/root-recovered");
+
+        luau_host_state* child = nullptr;
+        REQUIRE(luau_host_thread_create(root.state, &child) == LUAU_HOST_STATUS_OK);
+        REQUIRE(luau_host_table_create(child, 0, 0) == LUAU_HOST_STATUS_OK);
+        REQUIRE(luau_host_reference_create(child, 1, &reference) == LUAU_HOST_STATUS_OK);
+        REQUIRE(compile_and_load(child, kOverfullReturn, "@frame-limit/child") == LUAU_HOST_STATUS_OK);
+        REQUIRE(luau_host_resume(child, root.state, 0) == LUAU_HOST_STATUS_OK);
+        REQUIRE(luau_host_stack_get_top(child) == 1 + 8003);
+
+        require_full_frame_refusals(child, 1, reference, bytecode);
+        REQUIRE(luau_host_reference_release(child, reference) == LUAU_HOST_STATUS_OK);
+        require_full_frame_recovers(child, 0);
+        REQUIRE(luau_host_thread_reset(child) == LUAU_HOST_STATUS_OK);
+        REQUIRE(compile_and_load(child, "return 7", "@frame-limit/child-reused") == LUAU_HOST_STATUS_OK);
+        REQUIRE(luau_host_resume(child, root.state, 0) == LUAU_HOST_STATUS_OK);
+        REQUIRE(luau_host_stack_get_top(child) == 1);
+        int32_t isNumber = 0;
+        REQUIRE(luau_host_to_number(child, -1, &isNumber) == 7.0);
+        REQUIRE(isNumber != 0);
+        require_reusable(root.state, "@frame-limit/root-after-child");
+    }
+
+    // A managed callback that keeps returning values is refused at the frame
+    // limit without growing its frame, and can still return what fit.
+    {
+        Root root = create_root();
+        luau_host_callback_table callbacks = callback_table();
+        callbacks.managed_function = filling_callback;
+        REQUIRE(luau_host_push_callback(root.state, &callbacks, nullptr, 0, 0, nullptr, nullptr) == LUAU_HOST_STATUS_OK);
+        REQUIRE(luau_host_pcall(root.state, 0, LUAU_HOST_MULTIPLE_RESULTS, 0) == LUAU_HOST_STATUS_OK);
+        REQUIRE(fillingCallbackStatus == LUAU_HOST_STATUS_STACK_LIMIT);
+        REQUIRE(fillingCallbackTop == kFrameSlotLimit);
+        REQUIRE(fillingCallbackTopAfterRefusals == kFrameSlotLimit);
+        REQUIRE(luau_host_stack_get_top(root.state) == kFrameSlotLimit);
+        require_full_frame_recovers(root.state, 0);
+        require_reusable(root.state, "@frame-limit/callback");
+    }
+}
+
+// When the stack cannot grow, a failed operation still reports its allocation
+// failure in the normal shape while a slot for the error object remains, and
+// is refused without touching the stack once none does.
+void test_stack_growth_failure_without_an_error_slot()
+{
+    luau_host_state_options options = {};
+    options.struct_size = sizeof(options);
+    options.version = LUAU_HOST_STATE_OPTIONS_VERSION;
+    options.flags = LUAU_HOST_STATE_OPTION_TRACK_MEMORY;
+    Root probe = create_root(&options);
+    luau_host_memory_info baseline = {};
+    baseline.struct_size = sizeof(baseline);
+    REQUIRE(luau_host_memory_get(probe.state, &baseline) == LUAU_HOST_STATUS_OK);
+
+    // Room for a few hundred stack slots, far below the frame limit.
+    options.memory_limit_bytes = baseline.current_bytes + UINT64_C(16) * 1024;
+    Root root = create_root(&options);
+
+    luau_host_status status = LUAU_HOST_STATUS_OK;
+    int32_t pushed = 0;
+    while ((status = luau_host_push_integer(root.state, pushed)) == LUAU_HOST_STATUS_OK)
+        ++pushed;
+
+    REQUIRE(pushed < kFrameSlotLimit);
+    REQUIRE(status == LUAU_HOST_STATUS_MEMORY_QUOTA);
+    REQUIRE(luau_host_stack_get_top(root.state) == pushed + 1);
+    REQUIRE(string_at(root.state, -1) == "not enough memory");
+
+    // The unconsumed error object took the last physical slot. Nothing is left
+    // for another error object, so every further attempt is refused.
+    for (int attempt = 0; attempt < kRefusalRepetitions; ++attempt)
+    {
+        require_stack_limit(root.state, luau_host_push_nil(root.state), pushed + 1);
+        int32_t reference = 123;
+        require_stack_limit(root.state, luau_host_reference_create(root.state, 1, &reference), pushed + 1);
+    }
+
+    luau_host_memory_info failed = {};
+    failed.struct_size = sizeof(failed);
+    REQUIRE(luau_host_memory_get(root.state, &failed) == LUAU_HOST_STATUS_OK);
+    REQUIRE(failed.failure == LUAU_HOST_ALLOCATOR_FAILURE_QUOTA);
+
+    REQUIRE(luau_host_stack_set_top(root.state, -2) == LUAU_HOST_STATUS_OK);
+    REQUIRE(luau_host_stack_set_top(root.state, 0) == LUAU_HOST_STATUS_OK);
+    REQUIRE(luau_host_memory_reset_failure(root.state) == LUAU_HOST_STATUS_OK);
+    REQUIRE(luau_host_push_integer(root.state, 1) == LUAU_HOST_STATUS_OK);
+    REQUIRE(luau_host_stack_get_top(root.state) == 1);
+}
+
 using TestFunction = void (*)();
 
 int run_test(const char* name, TestFunction test)
@@ -1906,6 +2212,8 @@ int main()
     failures += run_test(
         "multi-root interrupt uninstall ownership",
         test_multi_root_interrupt_uninstall_preserves_other_root);
+    failures += run_test("stack slot limit refusals and recovery", test_stack_slot_limit_refusals_and_recovery);
+    failures += run_test("stack growth failure without an error slot", test_stack_growth_failure_without_an_error_slot);
 
     if (failures != 0)
         std::cerr << failures << " conformance test group(s) failed\n";

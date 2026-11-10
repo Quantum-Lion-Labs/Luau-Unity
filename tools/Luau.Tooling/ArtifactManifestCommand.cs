@@ -8,10 +8,10 @@ namespace Luau.Tooling;
 
 internal static class ArtifactManifestCommand
 {
-    private const string ApprovedBuildInputSha256 = "739968a72dd3fb3775a7f19767cfd73b5c951582c7c386c3c15fe3d212e8a300";
+    private const string ApprovedBuildInputSha256 = "9b17a009970a9b975391fd4525a45a6c5e7ea71fb7440fdaa64534c8e7b87f70";
     private const ulong ApprovedUpstreamRevisionHash = 0x065976b2840123de;
-    private const ulong ApprovedHostBuildFingerprint = 0x36937523f6988475;
-    private const uint ApprovedFeatureFlags = 0x1fff;
+    private const ulong ApprovedHostBuildFingerprint = 0x48457339a8d7e7a0;
+    private const uint ApprovedFeatureFlags = 0x3fff;
 
     internal sealed record BinaryIdentity(
         uint RecordSize,
