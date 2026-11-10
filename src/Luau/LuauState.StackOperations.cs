@@ -200,6 +200,15 @@ public unsafe partial class LuauState
     }
 
     /// <summary>
+    /// Reads the value at <paramref name="index"/> while the caller already
+    /// holds its operation's native access, as the result path does.
+    /// </summary>
+    internal unsafe LuauValue ToValueUnderOperationAccess(int index)
+    {
+        return ToValueCore(index, (LuauHostType)luau_host_type(l, index), borrowedFrame: null);
+    }
+
+    /// <summary>
     /// Internal fixture for exercising native tag policy without enabling
     /// upstream class/object libraries in production states.
     /// </summary>
@@ -562,19 +571,19 @@ public unsafe partial class LuauState
                 PushNil();
                 break;
             case LuauType.Boolean:
-                PushBoolean(value.Read<bool>());
+                PushBoolean(value.BooleanPayload);
                 break;
             case LuauType.LightUserData:
                 PushLightUserData((void*)value.LightUserDataPointer);
                 break;
             case LuauType.Number:
-                PushNumber(value.Read<double>());
+                PushNumber(value.NumberPayload);
                 break;
             case LuauType.Integer:
-                PushInteger(value.Read<long>());
+                PushInteger(value.IntegerPayload);
                 break;
             case LuauType.Vector:
-                PushVector(value.Read<Vector3>());
+                PushVector(value.VectorPayload);
                 break;
             case LuauType.String:
                 PushString(value.Read<string>());

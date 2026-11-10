@@ -163,6 +163,14 @@ public readonly struct LuauValue : IEquatable<LuauValue>
         ? value.PointerValue
         : throw new InvalidOperationException($"Cannot read {type} as light userdata.");
 
+    // Unchecked payload accessors for code that has already switched on
+    // Type. Read<T> goes through a boxing helper for primitives, which costs
+    // an allocation on every argument push.
+    internal bool BooleanPayload => value.BooleanValue;
+    internal double NumberPayload => value.NumberValue;
+    internal long IntegerPayload => value.IntegerValue;
+    internal Vector3 VectorPayload => value.VectorValue;
+
     LuauValue(
         LuauType type,
         ValueUnion value,

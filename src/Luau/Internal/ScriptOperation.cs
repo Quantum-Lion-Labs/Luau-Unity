@@ -35,18 +35,46 @@ internal enum ScriptHardStopReason
     WallClock,
 }
 
+/// <summary>
+/// Root-level execution state for one operation. A root reuses one
+/// synchronous instance for consecutive operations, so an instance has many
+/// lives; <see cref="Generation"/> identifies the current one. Anything that
+/// can still hold the instance after its life ends (a cancellation
+/// registration, the deadline watchdog, an ambient marker, a callback's lazy
+/// token) must compare the generation, never the reference alone.
+/// </summary>
 internal sealed unsafe class ScriptOperation : IDisposable
 {
-    static readonly TimeSpan MaximumTimerDelay = TimeSpan.FromMilliseconds(int.MaxValue - 1d);
     static long nextCallbackFailureToken;
-    readonly CancellationToken callerCancellationToken;
-    readonly CancellationTokenSource linkedCancellationSource;
-    readonly CancellationTokenSource? deadlineCancellationSource;
-    readonly long startedTimestamp;
-    readonly ScriptOperation? previousAmbient;
+    readonly LuauVmContext context;
 
-    Timer? deadlineTimer;
+    long generation;
+    LuauState? state;
+    string? chunkName;
+    LuauExecutionOptions options = LuauExecutionOptions.Unbounded;
+    bool isAsync;
+    ScriptOperationMode mode;
+    IntPtr threadPointer;
+    IntPtr fromPointer;
+    IntPtr callbackFailureToken;
+    CancellationToken callerCancellationToken;
+    CancellationToken lifetimeToken;
+    CancellationToken disposalToken;
+    long startedTimestamp;
+    long deadlineTimestamp;
+
+    // Ambient bookkeeping, owned by LuauVmContext.PushAmbient/PopAmbient.
+    ScriptOperation? previousThreadAmbient;
+    long previousThreadAmbientGeneration;
+    bool pushedThreadAmbient;
+    AmbientOperationMarker? asyncAmbientMarker;
+    AmbientOperationMarker? previousAsyncAmbientMarker;
+
+    // The callback-visible token exists only once something asks for it.
+    CancellationTokenSource? tokenSource;
     CancellationTokenRegistration callerCancellationRegistration;
+    int deadlineSignaled;
+
     LuauManagedCallbackRegistration? pendingCallback;
     IntPtr pendingCallbackThread;
     string? pendingCallbackName;
@@ -59,89 +87,155 @@ internal sealed unsafe class ScriptOperation : IDisposable
     int yieldReason;
     int asyncCallbackPhase;
     int hardStopReason;
-    int disposeState;
+    int disposeState = 1;
     int coroutineLifecycleArmed;
     int coroutineCompletion;
     long interruptCount;
     long decodedBytes;
 
-    internal unsafe ScriptOperation(
-        LuauVmContext context,
+    internal ScriptOperation(LuauVmContext context)
+    {
+        this.context = context;
+    }
+
+    /// <summary>
+    /// Starts a new life. Called by <see cref="LuauVmContext.BeginOperation"/>
+    /// under the root gates, before the operation is published, so nothing
+    /// else can observe the fields while they change.
+    /// </summary>
+    internal void Activate(
+        long generation,
         LuauState state,
         string? chunkName,
         LuauExecutionOptions options,
         CancellationToken cancellationToken,
+        CancellationToken lifetimeToken,
+        CancellationToken disposalToken,
         bool isAsync,
-        ScriptOperationMode mode,
-        ScriptOperation? previousAmbient)
+        ScriptOperationMode mode)
     {
-        Context = context;
-        State = state;
-        ChunkName = string.IsNullOrEmpty(chunkName) ? null : chunkName;
-        Options = options;
-        IsAsync = isAsync;
-        Mode = mode;
-        ThreadPointer = (IntPtr)state.PointerUnsafe;
-        FromPointer = state.From == null ? IntPtr.Zero : (IntPtr)state.From.PointerUnsafe;
+        // Publish the new generation first: a late signal from the previous
+        // life compares against it and is dropped.
+        Volatile.Write(ref this.generation, generation);
+        this.state = state;
+        this.chunkName = string.IsNullOrEmpty(chunkName) ? null : chunkName;
+        this.options = options;
+        this.isAsync = isAsync;
+        this.mode = mode;
+        threadPointer = (IntPtr)state.PointerUnsafe;
+        fromPointer = state.From == null ? IntPtr.Zero : (IntPtr)state.From.PointerUnsafe;
         callerCancellationToken = cancellationToken;
-        this.previousAmbient = previousAmbient;
+        this.lifetimeToken = lifetimeToken;
+        this.disposalToken = disposalToken;
         startedTimestamp = Stopwatch.GetTimestamp();
+        deadlineTimestamp = options.WallClockLimit is { } limit
+            ? ComputeDeadlineTimestamp(startedTimestamp, limit)
+            : 0;
 
-        CancellationTokenSource? deadlineSource = null;
-        Timer? timer = null;
-        try
-        {
-            if (options.WallClockLimit is { } wallClockLimit)
-            {
-                deadlineSource = new CancellationTokenSource();
-                timer = new Timer(
-                    static operation => ((ScriptOperation)operation!).SignalDeadline(),
-                    this,
-                    Timeout.InfiniteTimeSpan,
-                    Timeout.InfiniteTimeSpan);
-                deadlineCancellationSource = deadlineSource;
-                deadlineTimer = timer;
-                timer.Change(GetTimerDelay(wallClockLimit), Timeout.InfiniteTimeSpan);
-            }
-            else
-            {
-                deadlineCancellationSource = null;
-            }
-
-            linkedCancellationSource = deadlineSource == null
-                ? CancellationTokenSource.CreateLinkedTokenSource(
-                    cancellationToken,
-                    state.LifetimeToken,
-                    context.DisposalToken)
-                : CancellationTokenSource.CreateLinkedTokenSource(
-                    cancellationToken,
-                    state.LifetimeToken,
-                    context.DisposalToken,
-                    deadlineSource.Token);
-        }
-        catch
-        {
-            timer?.Dispose();
-            deadlineSource?.Dispose();
-            throw;
-        }
+        previousThreadAmbient = null;
+        previousThreadAmbientGeneration = 0;
+        pushedThreadAmbient = false;
+        asyncAmbientMarker = null;
+        previousAsyncAmbientMarker = null;
+        Volatile.Write(ref tokenSource, null);
+        callerCancellationRegistration = default;
+        Volatile.Write(ref deadlineSignaled, 0);
+        Volatile.Write(ref pendingCallback, null);
+        pendingCallbackThread = IntPtr.Zero;
+        pendingCallbackName = null;
+        Volatile.Write(ref callbackFailure, null);
+        failedCallbackThread = IntPtr.Zero;
+        callbackFailureName = null;
+        Volatile.Write(ref injectedCallbackFailure, null);
+        injectedCallbackFailureName = null;
+        Volatile.Write(ref hardStopException, null);
+        Volatile.Write(ref yieldReason, (int)ScriptYieldReason.None);
+        Volatile.Write(ref asyncCallbackPhase, (int)AsyncCallbackPhase.None);
+        Volatile.Write(ref hardStopReason, (int)ScriptHardStopReason.None);
+        Volatile.Write(ref coroutineLifecycleArmed, 0);
+        Volatile.Write(ref coroutineCompletion, 0);
+        Volatile.Write(ref interruptCount, 0);
+        Volatile.Write(ref decodedBytes, 0);
 
         var token = Interlocked.Increment(ref nextCallbackFailureToken);
-        CallbackFailureToken = (IntPtr)(token == 0 ? 1 : token);
+        callbackFailureToken = (IntPtr)(token == 0 ? 1 : token);
+        Volatile.Write(ref disposeState, 0);
     }
 
-    internal LuauVmContext Context { get; }
-    internal LuauState State { get; }
-    internal string? ChunkName { get; }
-    internal LuauExecutionOptions Options { get; }
-    internal bool IsAsync { get; }
-    internal ScriptOperationMode Mode { get; }
-    internal IntPtr ThreadPointer { get; }
-    internal IntPtr FromPointer { get; }
-    internal IntPtr CallbackFailureToken { get; }
-    internal CancellationToken CancellationToken => linkedCancellationSource.Token;
-    internal ScriptOperation? PreviousAmbient => previousAmbient;
+    /// <summary>
+    /// Ends a life that was never published, so nothing but the context
+    /// holds it; there is no registration or token to release.
+    /// </summary>
+    internal void Deactivate()
+    {
+        Volatile.Write(ref disposeState, 1);
+    }
+
+    /// <summary>
+    /// Drops every reference the finished life held, so a pooled instance
+    /// keeps no state, string, exception, or token alive.
+    /// </summary>
+    internal void ClearForReuse()
+    {
+        state = null;
+        chunkName = null;
+        callerCancellationToken = default;
+        lifetimeToken = default;
+        disposalToken = default;
+        previousThreadAmbient = null;
+        asyncAmbientMarker = null;
+        previousAsyncAmbientMarker = null;
+        Volatile.Write(ref tokenSource, null);
+        callerCancellationRegistration = default;
+        Volatile.Write(ref pendingCallback, null);
+        pendingCallbackName = null;
+        Volatile.Write(ref callbackFailure, null);
+        callbackFailureName = null;
+        Volatile.Write(ref injectedCallbackFailure, null);
+        injectedCallbackFailureName = null;
+        Volatile.Write(ref hardStopException, null);
+    }
+
+    internal LuauVmContext Context => context;
+    internal long Generation => Volatile.Read(ref generation);
+    internal LuauState State => state!;
+    internal string? ChunkName => chunkName;
+    internal LuauExecutionOptions Options => options;
+    internal bool IsAsync => isAsync;
+    internal ScriptOperationMode Mode => mode;
+    internal IntPtr ThreadPointer => threadPointer;
+    internal IntPtr FromPointer => fromPointer;
+    internal IntPtr CallbackFailureToken => callbackFailureToken;
     internal long InterruptCount => Interlocked.Read(ref interruptCount);
+
+    /// <summary>
+    /// The <see cref="Stopwatch"/> timestamp at which the wall-clock limit has
+    /// certainly passed, or zero without one. The watchdog schedules by it;
+    /// the limit itself is still decided by <see cref="IsPastWallClockLimit"/>.
+    /// </summary>
+    internal long DeadlineTimestamp => deadlineTimestamp;
+
+    /// <summary>Whether the caller supplied a token that can be canceled.</summary>
+    internal bool HasCancelableCallerToken => callerCancellationToken.CanBeCanceled;
+
+    internal ScriptOperation? PreviousThreadAmbient => previousThreadAmbient;
+    internal long PreviousThreadAmbientGeneration => previousThreadAmbientGeneration;
+    internal bool PushedThreadAmbient => pushedThreadAmbient;
+    internal AmbientOperationMarker? AsyncAmbientMarker => asyncAmbientMarker;
+    internal AmbientOperationMarker? PreviousAsyncAmbientMarker => previousAsyncAmbientMarker;
+
+    internal void SaveThreadAmbient(ScriptOperation? previous, long previousGeneration)
+    {
+        previousThreadAmbient = previous;
+        previousThreadAmbientGeneration = previousGeneration;
+        pushedThreadAmbient = true;
+    }
+
+    internal void SaveAsyncAmbient(AmbientOperationMarker marker, AmbientOperationMarker? previous)
+    {
+        asyncAmbientMarker = marker;
+        previousAsyncAmbientMarker = previous;
+    }
 
     internal void ReserveDecodedBytes(ulong byteCount)
     {
@@ -304,22 +398,103 @@ internal sealed unsafe class ScriptOperation : IDisposable
         }
 
         callerCancellationRegistration = callerCancellationToken.Register(
-            static operation => ((ScriptOperation)operation!).RequestInterruptAttention(),
+            static operation => ((ScriptOperation)operation!).OnCallerCanceled(),
             this);
     }
 
-    void RequestInterruptAttention()
+    void OnCallerCanceled()
     {
         try
         {
-            Context.RequestInterruptAttention(this);
+            // The registration is disposed before this life ends, and an
+            // instance is reused only after that, so this is still the life
+            // that registered. Ask for a poll before canceling the
+            // callback-visible token: its registrations are host code, and one
+            // that blocks on the VM must not delay the stop it waits for.
+            var life = Volatile.Read(ref generation);
+            context.RequestInterruptAttention(this, life);
+            var source = Volatile.Read(ref tokenSource);
+            if (source != null && Volatile.Read(ref generation) == life)
+            {
+                source.Cancel();
+            }
         }
         catch
         {
-            // Cancellation and timer callbacks must not fail. Disposal or the
-            // end of the operation already won the race.
+            // Cancellation callbacks must not fail. Disposal or the end of the
+            // operation already won the race, or a host registration threw;
+            // the caller token is canceled either way and the poll observes it.
         }
     }
+
+    /// <summary>
+    /// Returns the callback-visible token of life <paramref name="expectedGeneration"/>,
+    /// creating it on first use. It is canceled by caller cancellation,
+    /// wall-clock expiry, and state or root disposal; a token created after
+    /// one of those already happened is returned canceled.
+    /// </summary>
+    internal CancellationToken GetCancellationToken(long expectedGeneration)
+    {
+        if (Volatile.Read(ref generation) != expectedGeneration ||
+            Volatile.Read(ref disposeState) != 0)
+        {
+            throw LuauCallFrame.CreateExpiredException();
+        }
+
+        var source = Volatile.Read(ref tokenSource);
+        return source != null ? source.Token : CreateCancellationToken();
+    }
+
+    CancellationToken CreateCancellationToken()
+    {
+        // Disposal is linked: both tokens are canceled before their sources are
+        // disposed, and linking an already canceled token cancels at once.
+        var created = CancellationTokenSource.CreateLinkedTokenSource(lifetimeToken, disposalToken);
+        var existing = Interlocked.CompareExchange(ref tokenSource, created, null);
+        if (existing != null)
+        {
+            created.Dispose();
+            return existing.Token;
+        }
+
+        // Caller cancellation and the deadline cancel the published source
+        // themselves (OnCallerCanceled, LuauVmContext.SignalWatchdogDeadline).
+        // Each publishes its own state before reading the source, and this
+        // reads that state after publishing the source, so one of the two
+        // always cancels it. Nothing has registered on the new token yet.
+        if (callerCancellationToken.IsCancellationRequested ||
+            Volatile.Read(ref deadlineSignaled) != 0 ||
+            IsPastWallClockLimit())
+        {
+            try
+            {
+                created.Cancel();
+            }
+            catch
+            {
+            }
+        }
+
+        return created.Token;
+    }
+
+    /// <summary>The callback-visible token source, if this life created one.</summary>
+    internal CancellationTokenSource? TokenSource => Volatile.Read(ref tokenSource);
+
+    /// <summary>
+    /// Records that the watchdog saw the deadline pass; true only for the
+    /// first signal of a life. Set before the token source is read.
+    /// </summary>
+    internal bool TryMarkDeadlineSignaled() =>
+        Interlocked.CompareExchange(ref deadlineSignaled, 1, 0) == 0;
+
+    /// <summary>
+    /// Whether the wall-clock limit has passed. Compares timestamps against
+    /// <see cref="DeadlineTimestamp"/>, which is rounded up so that the
+    /// elapsed time a budget exception reports is never below the limit.
+    /// </summary>
+    internal bool IsPastWallClockLimit() =>
+        deadlineTimestamp != 0 && Stopwatch.GetTimestamp() >= deadlineTimestamp;
 
     /// <summary>
     /// The native interrupt budget for this operation: the count limit and
@@ -400,6 +575,13 @@ internal sealed unsafe class ScriptOperation : IDisposable
 
     internal LuauManagedCallbackException? TakeUninjectedCallbackFailure()
     {
+        // Checked after every successful protected call; skip the exchange
+        // when nothing is recorded.
+        if (Volatile.Read(ref callbackFailure) == null)
+        {
+            return null;
+        }
+
         var failure = Interlocked.Exchange(ref callbackFailure, null);
         return failure == null
             ? null
@@ -408,7 +590,11 @@ internal sealed unsafe class ScriptOperation : IDisposable
 
     internal void ClearInjectedCallbackFailure()
     {
-        Interlocked.Exchange(ref injectedCallbackFailure, null);
+        if (Volatile.Read(ref injectedCallbackFailure) != null)
+        {
+            Interlocked.Exchange(ref injectedCallbackFailure, null);
+        }
+
         injectedCallbackFailureName = null;
     }
 
@@ -495,14 +681,10 @@ internal sealed unsafe class ScriptOperation : IDisposable
             {
                 candidate = ScriptHardStopReason.InterruptCount;
             }
-            else if (Options.WallClockLimit is { } wallClockLimit)
+            else if (deadlineTimestamp != 0 &&
+                (Volatile.Read(ref deadlineSignaled) != 0 || IsPastWallClockLimit()))
             {
-                var elapsed = GetElapsedTime();
-                if (deadlineCancellationSource?.IsCancellationRequested == true ||
-                    elapsed >= wallClockLimit)
-                {
-                    candidate = ScriptHardStopReason.WallClock;
-                }
+                candidate = ScriptHardStopReason.WallClock;
             }
         }
 
@@ -551,64 +733,22 @@ internal sealed unsafe class ScriptOperation : IDisposable
 
     TimeSpan GetElapsedTime()
     {
-        var elapsedTicks = Stopwatch.GetTimestamp() - startedTimestamp;
-        return TimeSpan.FromSeconds((double)elapsedTicks / Stopwatch.Frequency);
+        // Whole TimeSpan ticks, truncated. TimeSpan.FromSeconds(double) rounds
+        // to whole milliseconds on Mono's class library.
+        var elapsed = Stopwatch.GetTimestamp() - startedTimestamp;
+        return TimeSpan.FromTicks((long)(elapsed * TimeSpanTicksPerStopwatchTick));
     }
 
-    void SignalDeadline()
+    static readonly double TimeSpanTicksPerStopwatchTick = (double)TimeSpan.TicksPerSecond / Stopwatch.Frequency;
+
+    static long ComputeDeadlineTimestamp(long started, TimeSpan limit)
     {
-        var deadlineSource = deadlineCancellationSource;
-        if (deadlineSource == null || Volatile.Read(ref disposeState) != 0)
-        {
-            return;
-        }
-
-        var remaining = Options.WallClockLimit!.Value - GetElapsedTime();
-        if (remaining > TimeSpan.Zero)
-        {
-            try
-            {
-                Volatile.Read(ref deadlineTimer)?.Change(
-                    GetTimerDelay(remaining),
-                    Timeout.InfiniteTimeSpan);
-            }
-            catch (ObjectDisposedException)
-            {
-                // Operation disposal won the race with a long-deadline rearm.
-            }
-            return;
-        }
-
-        // Ask for a poll before canceling: registrations on the
-        // callback-visible token are host code, and one that blocks on the VM
-        // must not delay the stop it is waiting for.
-        RequestInterruptAttention();
-
-        try
-        {
-            deadlineSource.Cancel();
-        }
-        catch (ObjectDisposedException)
-        {
-            // Operation disposal won the race with the timer callback.
-        }
-        catch
-        {
-            // Registrations on the callback-visible token are host code. A
-            // throwing cancellation callback cannot escape the timer thread;
-            // the source is already canceled and the runner will observe it.
-        }
-
-        // The native host also reads its own clock, but only every few
-        // safepoints; this request bounds detection by the timer as well. It
-        // repeats the one above in case that poll ran before the cancellation
-        // became visible.
-        RequestInterruptAttention();
-    }
-
-    static TimeSpan GetTimerDelay(TimeSpan remaining)
-    {
-        return remaining <= MaximumTimerDelay ? remaining : MaximumTimerDelay;
+        // Round up and add one Stopwatch tick, so that GetElapsedTime() has
+        // certainly reached the limit at this timestamp and a budget exception
+        // never reports less than the limit. Zero means "no deadline".
+        var limitTicks = Math.Ceiling(limit.Ticks / TimeSpanTicksPerStopwatchTick) + 1d;
+        var remaining = (double)(long.MaxValue - started);
+        return limitTicks >= remaining ? long.MaxValue : started + (long)limitTicks;
     }
 
     public void Dispose()
@@ -621,9 +761,11 @@ internal sealed unsafe class ScriptOperation : IDisposable
         // Dispose waits for a running cancellation callback, which may need
         // the context locks; no lock is held here.
         callerCancellationRegistration.Dispose();
-        Interlocked.Exchange(ref deadlineTimer, null)?.Dispose();
-        linkedCancellationSource.Dispose();
-        deadlineCancellationSource?.Dispose();
+        if (Volatile.Read(ref tokenSource) != null)
+        {
+            Interlocked.Exchange(ref tokenSource, null)?.Dispose();
+        }
+
         if (Volatile.Read(ref coroutineLifecycleArmed) != 0)
         {
             if (Volatile.Read(ref coroutineCompletion) == 1)
@@ -635,6 +777,46 @@ internal sealed unsafe class ScriptOperation : IDisposable
                 State.MarkCoroutineDead();
             }
         }
-        Context.EndOperation(this);
+
+        // Last: once the context ends this life it may hand the instance to
+        // the next operation on this root.
+        Context.EndOperation(this, Volatile.Read(ref generation));
     }
+}
+
+/// <summary>
+/// The value an asynchronous flow carries to identify the operation it runs
+/// in. Immutable, so an execution context captured during one life keeps
+/// naming that life after the operation instance is reused.
+/// </summary>
+internal sealed class AmbientOperationMarker
+{
+    internal AmbientOperationMarker(ScriptOperation operation, long generation)
+    {
+        Operation = operation;
+        Generation = generation;
+    }
+
+    internal ScriptOperation Operation { get; }
+    internal long Generation { get; }
+}
+
+/// <summary>
+/// A callback's handle on its operation's cancellation token. The token is
+/// created only when a callback reads it, so an operation whose callbacks
+/// never ask for one allocates no cancellation machinery.
+/// </summary>
+internal readonly struct LuauOperationCancellation
+{
+    readonly ScriptOperation? operation;
+    readonly long generation;
+
+    internal LuauOperationCancellation(ScriptOperation operation)
+    {
+        this.operation = operation;
+        generation = operation.Generation;
+    }
+
+    internal CancellationToken Token =>
+        operation == null ? default : operation.GetCancellationToken(generation);
 }

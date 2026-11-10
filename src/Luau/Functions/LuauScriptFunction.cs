@@ -9,12 +9,6 @@ internal sealed class LuauScriptFunction(
     int reference,
     LuauCallFrame? borrowedFrame = null) : LuauFunction(state, borrowedFrame), ILuauReference
 {
-    static readonly LuauExecutionOptions ZeroResultExecutionOptions =
-        LuauExecutionOptions.Unbounded with
-        {
-            MaxResultCount = 0,
-        };
-
     int reference = reference;
     public int Reference => Volatile.Read(ref reference);
     LuauReferenceAccess ILuauReference.AcquireReference() => AcquireReference(Reference);
@@ -27,15 +21,14 @@ internal sealed class LuauScriptFunction(
         LuauExecutionOptions? executionOptions,
         string? operationLabel = null)
     {
-        ThrowIfDisposed();
-        var state = State;
+        var state = GetInvocationState();
         using var operation = state.BeginOperation(
             chunkName: operationLabel,
             options: executionOptions,
             cancellationToken: default,
             isAsync: false);
 
-        PushInvocation(state, arguments);
+        PushInvocation(operation, state, arguments);
 
         return ScriptRunner.Run(operation, state, arguments.Length);
     }
@@ -45,15 +38,14 @@ internal sealed class LuauScriptFunction(
         LuauExecutionOptions? executionOptions,
         string? operationLabel)
     {
-        ThrowIfDisposed();
-        var state = State;
+        var state = GetInvocationState();
         using var operation = state.BeginOperation(
             chunkName: operationLabel,
             options: executionOptions,
             cancellationToken: default,
             isAsync: false);
 
-        PushInvocation(state, argument);
+        PushInvocation(operation, state, argument);
 
         return ScriptRunner.Run(operation, state, argumentCount: 1);
     }
@@ -64,15 +56,14 @@ internal sealed class LuauScriptFunction(
         LuauExecutionOptions? executionOptions,
         string? operationLabel = null)
     {
-        ThrowIfDisposed();
-        var state = State;
+        var state = GetInvocationState();
         using var operation = state.BeginOperation(
             chunkName: operationLabel,
             options: executionOptions,
             cancellationToken: default,
             isAsync: false);
 
-        PushInvocation(state, arguments);
+        PushInvocation(operation, state, arguments);
 
         return ScriptRunner.Run(operation, state, arguments.Length, destination);
     }
@@ -83,15 +74,14 @@ internal sealed class LuauScriptFunction(
         LuauExecutionOptions? executionOptions,
         string? operationLabel)
     {
-        ThrowIfDisposed();
-        var state = State;
+        var state = GetInvocationState();
         using var operation = state.BeginOperation(
             chunkName: operationLabel,
             options: executionOptions,
             cancellationToken: default,
             isAsync: false);
 
-        PushInvocation(state, argument);
+        PushInvocation(operation, state, argument);
 
         return ScriptRunner.Run(operation, state, argumentCount: 1, destination);
     }
@@ -101,15 +91,15 @@ internal sealed class LuauScriptFunction(
         LuauExecutionOptions? executionOptions,
         string? operationLabel = null)
     {
-        ThrowIfDisposed();
-        var state = State;
+        var state = GetInvocationState();
         using var operation = state.BeginOperation(
             chunkName: operationLabel,
-            options: RequireZeroResults(executionOptions),
+            options: executionOptions,
             cancellationToken: default,
-            isAsync: false);
+            isAsync: false,
+            requireZeroResults: true);
 
-        PushInvocation(state, arguments);
+        PushInvocation(operation, state, arguments);
 
         ScriptRunner.RunVoid(operation, arguments.Length);
     }
@@ -119,15 +109,15 @@ internal sealed class LuauScriptFunction(
         LuauExecutionOptions? executionOptions,
         string? operationLabel = null)
     {
-        ThrowIfDisposed();
-        var state = State;
+        var state = GetInvocationState();
         using var operation = state.BeginOperation(
             chunkName: operationLabel,
-            options: RequireZeroResults(executionOptions),
+            options: executionOptions,
             cancellationToken: default,
-            isAsync: false);
+            isAsync: false,
+            requireZeroResults: true);
 
-        PushInvocation(state, argument);
+        PushInvocation(operation, state, argument);
 
         ScriptRunner.RunVoid(operation, argumentCount: 1);
     }
@@ -149,15 +139,14 @@ internal sealed class LuauScriptFunction(
         LuauExecutionOptions? executionOptions,
         string? operationLabel = null)
     {
-        ThrowIfDisposed();
-        var state = State;
+        var state = GetInvocationState();
         using var operation = state.BeginOperation(
             chunkName: operationLabel,
             options: executionOptions,
             cancellationToken,
             isAsync: true);
 
-        PushInvocation(state, arguments.Span);
+        PushInvocation(operation, state, arguments.Span);
 
         return await ScriptRunner.RunAsync(operation, state, arguments.Length).ConfigureAwait(false);
     }
@@ -168,15 +157,14 @@ internal sealed class LuauScriptFunction(
         LuauExecutionOptions? executionOptions,
         string? operationLabel)
     {
-        ThrowIfDisposed();
-        var state = State;
+        var state = GetInvocationState();
         using var operation = state.BeginOperation(
             chunkName: operationLabel,
             options: executionOptions,
             cancellationToken,
             isAsync: true);
 
-        PushInvocation(state, argument);
+        PushInvocation(operation, state, argument);
 
         return await ScriptRunner.RunAsync(operation, state, argumentCount: 1).ConfigureAwait(false);
     }
@@ -188,15 +176,14 @@ internal sealed class LuauScriptFunction(
         LuauExecutionOptions? executionOptions,
         string? operationLabel = null)
     {
-        ThrowIfDisposed();
-        var state = State;
+        var state = GetInvocationState();
         using var operation = state.BeginOperation(
             chunkName: operationLabel,
             options: executionOptions,
             cancellationToken,
             isAsync: true);
 
-        PushInvocation(state, arguments.Span);
+        PushInvocation(operation, state, arguments.Span);
 
         return await ScriptRunner.RunAsync(
             operation,
@@ -212,15 +199,14 @@ internal sealed class LuauScriptFunction(
         LuauExecutionOptions? executionOptions,
         string? operationLabel)
     {
-        ThrowIfDisposed();
-        var state = State;
+        var state = GetInvocationState();
         using var operation = state.BeginOperation(
             chunkName: operationLabel,
             options: executionOptions,
             cancellationToken,
             isAsync: true);
 
-        PushInvocation(state, argument);
+        PushInvocation(operation, state, argument);
 
         return await ScriptRunner.RunAsync(
             operation,
@@ -235,15 +221,15 @@ internal sealed class LuauScriptFunction(
         LuauExecutionOptions? executionOptions,
         string? operationLabel = null)
     {
-        ThrowIfDisposed();
-        var state = State;
+        var state = GetInvocationState();
         using var operation = state.BeginOperation(
             chunkName: operationLabel,
-            options: RequireZeroResults(executionOptions),
+            options: executionOptions,
             cancellationToken,
-            isAsync: true);
+            isAsync: true,
+            requireZeroResults: true);
 
-        PushInvocation(state, arguments.Span);
+        PushInvocation(operation, state, arguments.Span);
 
         await ScriptRunner.RunVoidAsync(operation, arguments.Length).ConfigureAwait(false);
     }
@@ -254,29 +240,33 @@ internal sealed class LuauScriptFunction(
         LuauExecutionOptions? executionOptions,
         string? operationLabel = null)
     {
-        ThrowIfDisposed();
-        var state = State;
+        var state = GetInvocationState();
         using var operation = state.BeginOperation(
             chunkName: operationLabel,
-            options: RequireZeroResults(executionOptions),
+            options: executionOptions,
             cancellationToken,
-            isAsync: true);
+            isAsync: true,
+            requireZeroResults: true);
 
-        PushInvocation(state, argument);
+        PushInvocation(operation, state, argument);
 
         await ScriptRunner.RunVoidAsync(operation, argumentCount: 1).ConfigureAwait(false);
     }
 
-    void PushInvocation(LuauState state, ReadOnlySpan<LuauValue> arguments)
+    unsafe void PushInvocation(ScriptOperation operation, LuauState state, ReadOnlySpan<LuauValue> arguments)
     {
-        var baseTop = state.GetTop();
+        using var access = AcquireReferenceForOperation(operation, Reference);
+        var pointer = state.PointerUnsafe;
+        var baseTop = luau_host_stack_get_top(pointer);
         try
         {
-            state.Push(this);
+            PushCallee(state, pointer, access.Reference);
             for (var i = 0; i < arguments.Length; i++)
             {
-                state.Push(arguments[i]);
+                LuauOperationStack.PushArgument(state, pointer, arguments[i]);
             }
+
+            LuauOperationStack.ThrowIfStoppedBeforeEntry(operation);
         }
         catch
         {
@@ -285,13 +275,16 @@ internal sealed class LuauScriptFunction(
         }
     }
 
-    void PushInvocation(LuauState state, LuauValue argument)
+    unsafe void PushInvocation(ScriptOperation operation, LuauState state, LuauValue argument)
     {
-        var baseTop = state.GetTop();
+        using var access = AcquireReferenceForOperation(operation, Reference);
+        var pointer = state.PointerUnsafe;
+        var baseTop = luau_host_stack_get_top(pointer);
         try
         {
-            state.Push(this);
-            state.Push(argument);
+            PushCallee(state, pointer, access.Reference);
+            LuauOperationStack.PushArgument(state, pointer, argument);
+            LuauOperationStack.ThrowIfStoppedBeforeEntry(operation);
         }
         catch
         {
@@ -300,16 +293,18 @@ internal sealed class LuauScriptFunction(
         }
     }
 
-    static LuauExecutionOptions RequireZeroResults(LuauExecutionOptions? executionOptions)
+    // The invocation pushes run right after BeginOperation, which reset the
+    // allocator diagnostics, and run no Luau code, so they need no further
+    // reset; a failed push throws before the next one. A failure is
+    // translated exactly as the general push path translates it.
+    static unsafe void PushCallee(LuauState state, LuauHostState* pointer, int reference)
     {
-        if (executionOptions == null)
+        var ignoredType = 0;
+        var status = luau_host_reference_push(pointer, reference, &ignoredType);
+        if (status != LuauHostStatus.Ok)
         {
-            return ZeroResultExecutionOptions;
+            LuauNativeProtection.ThrowIfFailed(state, pointer, status, "push a managed Luau reference");
         }
-
-        return executionOptions.MaxResultCount == 0
-            ? executionOptions
-            : executionOptions with { MaxResultCount = 0 };
     }
 
     public override string ToString()

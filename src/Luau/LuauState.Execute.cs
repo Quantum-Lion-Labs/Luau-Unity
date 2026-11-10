@@ -524,7 +524,7 @@ partial class LuauState
         EnsureCoroutine();
         var hasFunction = HasInitialCoroutineFunction();
         using var operation = BeginOperation((string?)null, executionOptions, default, isAsync: false);
-        PushResumeArguments(arguments);
+        PushResumeArguments(operation, arguments);
         return ScriptRunner.Run(operation, this, arguments.Length, hasFunction);
     }
 
@@ -554,7 +554,7 @@ partial class LuauState
         EnsureCoroutine();
         var hasFunction = HasInitialCoroutineFunction();
         using var operation = BeginOperation((string?)null, executionOptions, default, isAsync: false);
-        PushResumeArguments(arguments);
+        PushResumeArguments(operation, arguments);
         return ScriptRunner.Run(operation, this, arguments.Length, destination, hasFunction);
     }
 
@@ -570,7 +570,7 @@ partial class LuauState
         EnsureCoroutine();
         var hasFunction = HasInitialCoroutineFunction();
         using var operation = BeginOperation((string?)null, executionOptions, cancellationToken, isAsync: true);
-        PushResumeArguments(arguments.Span);
+        PushResumeArguments(operation, arguments.Span);
 
         return await ScriptRunner.RunAsync(operation, this, arguments.Length, hasFunction).ConfigureAwait(false);
     }
@@ -607,7 +607,7 @@ partial class LuauState
         EnsureCoroutine();
         var hasFunction = HasInitialCoroutineFunction();
         using var operation = BeginOperation((string?)null, executionOptions, cancellationToken, isAsync: true);
-        PushResumeArguments(arguments.Span);
+        PushResumeArguments(operation, arguments.Span);
 
         return await ScriptRunner.RunAsync(
             operation,
@@ -640,7 +640,8 @@ partial class LuauState
         LuauExecutionOptions? options,
         CancellationToken cancellationToken,
         bool isAsync,
-        ScriptOperationMode mode = ScriptOperationMode.TopLevelResume)
+        ScriptOperationMode mode = ScriptOperationMode.TopLevelResume,
+        bool requireZeroResults = false)
     {
         ThrowIfDisposed();
         if (cancellationToken.IsCancellationRequested)
@@ -648,17 +649,69 @@ partial class LuauState
             throw new LuauExecutionCanceledException(chunkName, cancellationToken);
         }
 
-        return context.BeginOperation(this, chunkName, options, cancellationToken, isAsync, mode);
+        return context.BeginOperation(
+            this,
+            chunkName,
+            options,
+            cancellationToken,
+            isAsync,
+            mode,
+            requireZeroResults);
     }
+
+    // A host that executes the same chunk every frame passes the same name
+    // every time, and one execution decodes it several times. Strings are
+    // immutable, so the last decoded name of each encoding is reused.
+    [ThreadStatic] static string? lastDecodedChunkName;
+    [ThreadStatic] static byte[]? lastUtf8ChunkName;
+    [ThreadStatic] static string? lastDecodedUtf8ChunkName;
 
     internal static string? DecodeChunkName(ReadOnlySpan<char> chunkName)
     {
-        return chunkName.IsEmpty ? null : new string(chunkName);
+        if (chunkName.IsEmpty)
+        {
+            return null;
+        }
+
+        var cached = lastDecodedChunkName;
+        if (cached != null && chunkName.SequenceEqual(cached.AsSpan()))
+        {
+            return cached;
+        }
+
+        var decoded = new string(chunkName);
+        if (chunkName.Length <= 256)
+        {
+            lastDecodedChunkName = decoded;
+        }
+
+        return decoded;
     }
 
     internal static string? DecodeChunkName(ReadOnlySpan<byte> utf8ChunkName)
     {
-        return utf8ChunkName.IsEmpty ? null : Encoding.UTF8.GetString(utf8ChunkName);
+        if (utf8ChunkName.IsEmpty)
+        {
+            return null;
+        }
+
+        var cachedBytes = lastUtf8ChunkName;
+        if (cachedBytes != null && utf8ChunkName.SequenceEqual(cachedBytes))
+        {
+            return lastDecodedUtf8ChunkName;
+        }
+
+        var decoded = Encoding.UTF8.GetString(utf8ChunkName);
+        // Bounded in both encodings: chunk names are diagnostics, and a long
+        // one is not worth keeping a copy of.
+        if (utf8ChunkName.Length <= 256)
+        {
+            lastUtf8ChunkName = null;
+            lastDecodedUtf8ChunkName = decoded;
+            lastUtf8ChunkName = utf8ChunkName.ToArray();
+        }
+
+        return decoded;
     }
 
     void EnsureCoroutine()
@@ -671,15 +724,23 @@ partial class LuauState
         }
     }
 
-    void PushResumeArguments(ReadOnlySpan<LuauValue> arguments)
+    unsafe void PushResumeArguments(ScriptOperation operation, ReadOnlySpan<LuauValue> arguments)
     {
-        var baseTop = GetTop();
+        if (arguments.IsEmpty)
+        {
+            return;
+        }
+
+        using var access = context.EnterOperationNativeAccess(operation);
+        var baseTop = luau_host_stack_get_top(l);
         try
         {
             for (var i = 0; i < arguments.Length; i++)
             {
-                Push(arguments[i]);
+                LuauOperationStack.PushArgument(this, l, arguments[i]);
             }
+
+            LuauOperationStack.ThrowIfStoppedBeforeEntry(operation);
         }
         catch
         {

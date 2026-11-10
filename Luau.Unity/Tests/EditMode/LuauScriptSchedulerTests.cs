@@ -54,6 +54,39 @@ namespace Luau.Unity.Tests
         }
 
         [Test]
+        public void SteadyStateDispatchAllocatesNoManagedMemory()
+        {
+            // A phase dispatches every frame; once warm, entering and leaving
+            // the VM for each registration must not produce garbage.
+            using var root = CreateRoot(_ => { });
+            using var instance = CreateInstance(
+                root,
+                "steady",
+                "return { update = function(dt) end }");
+            using var scheduler = new LuauScriptScheduler(root);
+            var phase = scheduler.CreatePhase("steady", CreatePhaseOptions());
+            using var registration = phase.Register(instance.GetRequiredEntrypoint("update"));
+            var argument = LuauValue.FromNumber(1d / 72);
+            for (var i = 0; i < 500; i++)
+            {
+                phase.Dispatch(argument);
+            }
+
+            Assert.That(
+                () =>
+                {
+                    for (var i = 0; i < 200; i++)
+                    {
+                        phase.Dispatch(argument);
+                    }
+                },
+                // Called as a static method: importing its namespace would make
+                // NUnit's Is ambiguous in this file.
+                UnityEngine.TestTools.Constraints.ConstraintExtensions.AllocatingGCMemory(Is.Not));
+            Assert.That(phase.Dispatch(argument).SucceededCount, Is.EqualTo(1));
+        }
+
+        [Test]
         public void DispatchPassesBorrowedArgumentSpan()
         {
             var calls = new List<string>();

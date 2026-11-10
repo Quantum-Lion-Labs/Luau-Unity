@@ -174,13 +174,18 @@ internal static class ScriptRunner
     {
         var state = operation.ThreadPointer;
         var from = operation.FromPointer;
-        var baseTop = GetTop(operation, state) - argumentCount - (hasFunction ? 1 : 0);
+        var baseTop = -1;
         var resumeWithError = false;
+        var firstResume = true;
 
         while (true)
         {
             operation.PrepareResume();
             LuauHostStatus status;
+            // The stack top right after native control returned, or -1. The
+            // checks below change the stack only when they throw, so the
+            // result count can use it without another native round trip.
+            var topAfterResume = -1;
 
             if (resumeWithError)
             {
@@ -188,10 +193,23 @@ internal static class ScriptRunner
                 status = ResumeErrorWithCallbackFailure(operation, state, from);
                 resumeWithError = false;
             }
+            else if (firstResume)
+            {
+                status = Enter(
+                    operation,
+                    state,
+                    from,
+                    argumentCount,
+                    argumentCount + (hasFunction ? 1 : 0),
+                    out baseTop,
+                    out topAfterResume);
+            }
             else
             {
-                status = Resume(operation, state, from, argumentCount);
+                status = Resume(operation, state, from, argumentCount, out topAfterResume);
             }
+
+            firstResume = false;
 
             if (status == LuauHostStatus.Ok)
             {
@@ -199,7 +217,7 @@ internal static class ScriptRunner
                 operation.ClearInjectedCallbackFailure();
                 ThrowIfHardStopped(operation, state);
                 ThrowIfUninjectedCallbackFailure(operation, state);
-                return GetResultCount(operation, state, baseTop);
+                return GetResultCount(operation, state, baseTop, topAfterResume);
             }
 
             if (status != LuauHostStatus.Yielded && status != LuauHostStatus.Break)
@@ -215,7 +233,7 @@ internal static class ScriptRunner
                 case ScriptYieldReason.None:
                     ThrowIfUninjectedCallbackFailure(operation, state);
                     RejectRootYield(operation, state);
-                    var yieldedResultCount = GetResultCount(operation, state, baseTop);
+                    var yieldedResultCount = GetResultCount(operation, state, baseTop, topAfterResume);
                     operation.CompleteCoroutineSuspended();
                     return yieldedResultCount;
                 case ScriptYieldReason.CallbackFailure:
@@ -355,7 +373,7 @@ internal static class ScriptRunner
                             scheduler,
                             () => callback(
                                 GetCallbackState(operation),
-                                operation.CancellationToken)).ConfigureAwait(false);
+                                new LuauOperationCancellation(operation))).ConfigureAwait(false);
                         argumentCount = await invocation.ConfigureAwait(false);
                     }
                     catch (Exception exception)
@@ -442,9 +460,9 @@ internal static class ScriptRunner
             operation.ChunkName);
     }
 
-    static int GetResultCount(ScriptOperation operation, IntPtr state, int baseTop)
+    static int GetResultCount(ScriptOperation operation, IntPtr state, int baseTop, int knownTop = -1)
     {
-        var resultCount = GetTop(operation, state) - baseTop;
+        var resultCount = (knownTop >= 0 ? knownTop : GetTop(operation, state)) - baseTop;
         if (resultCount < 0)
         {
             Abort(operation, state);
@@ -472,7 +490,7 @@ internal static class ScriptRunner
     static unsafe bool IsFrameFull(ScriptOperation operation, IntPtr state)
     {
         using var access = operation.Context.EnterOperationNativeAccess(operation);
-        return LuauNativeProtection.IsFrameFull(operation.Context, (LuauHostState*)state);
+        return operation.Context.IsFrameFullUnderNativeAccess((LuauHostState*)state);
     }
 
     // Shrinking the stack cannot fail natively. If it ever does, reset the
@@ -519,22 +537,15 @@ internal static class ScriptRunner
         Span<LuauValue> destination,
         int resultCount)
     {
-        var remaining = resultCount;
         var writtenStart = resultCount;
         try
         {
             ValidateDestinationSlots(destination, resultCount);
-            for (var i = resultCount - 1; i >= 0; i--)
-            {
-                destination[i] = state.Pop();
-                writtenStart = i;
-                remaining--;
-            }
+            ReadResults(operation, state, destination, resultCount, ref writtenStart);
         }
         catch
         {
             DisposeResultValues(destination.Slice(writtenStart, resultCount - writtenStart));
-            DiscardResults(operation, operation.ThreadPointer, remaining);
             throw;
         }
     }
@@ -545,20 +556,56 @@ internal static class ScriptRunner
         LuauValue[] results,
         int resultCount)
     {
-        var remaining = resultCount;
+        var writtenStart = resultCount;
         try
         {
-            for (var i = resultCount - 1; i >= 0; i--)
-            {
-                results[i] = state.Pop();
-                remaining--;
-            }
+            ReadResults(operation, state, results, resultCount, ref writtenStart);
         }
         catch
         {
             DisposeResultValues(results);
-            DiscardResults(operation, operation.ThreadPointer, remaining);
             throw;
+        }
+    }
+
+    /// <summary>
+    /// Moves the top <paramref name="resultCount"/> values into
+    /// <paramref name="slots"/> under one native access. Values are read in
+    /// the order the per-value pop used to read them, last result first, and
+    /// a hard stop is still checked after each one. The stack is trimmed to
+    /// the results' base whether or not every value was read.
+    /// </summary>
+    static unsafe void ReadResults(
+        ScriptOperation operation,
+        LuauState state,
+        Span<LuauValue> slots,
+        int resultCount,
+        ref int writtenStart)
+    {
+        if (resultCount <= 0)
+        {
+            return;
+        }
+
+        using var access = operation.Context.EnterOperationNativeAccess(operation);
+        var pointer = (LuauHostState*)operation.ThreadPointer;
+        var baseTop = luau_host_stack_get_top(pointer) - resultCount;
+        try
+        {
+            for (var index = resultCount - 1; index >= 0; index--)
+            {
+                slots[index] = state.ToValueUnderOperationAccess(baseTop + 1 + index);
+                writtenStart = index;
+                if (operation.GetHardStopException() is { } hardStop)
+                {
+                    throw hardStop;
+                }
+            }
+        }
+        finally
+        {
+            // Shrinking the stack cannot fail natively.
+            RequireStackSetTopSuccess(luau_host_stack_set_top(pointer, baseTop));
         }
     }
 
@@ -871,5 +918,45 @@ internal static class ScriptRunner
         operation.ArmCoroutineLifecycle();
         return luau_host_resume((LuauHostState*)state, (LuauHostState*)from, argumentCount);
     }
+
+    static unsafe LuauHostStatus Resume(
+        ScriptOperation operation,
+        IntPtr state,
+        IntPtr from,
+        int argumentCount,
+        out int topAfterResume)
+    {
+        using var access = operation.Context.EnterOperationNativeAccess(operation);
+        operation.ArmCoroutineLifecycle();
+        var status = luau_host_resume((LuauHostState*)state, (LuauHostState*)from, argumentCount);
+        topAfterResume = ReadTopAfterResume(state, status);
+        return status;
+    }
+
+    /// <summary>
+    /// The first resume of a synchronous run: records the stack base below
+    /// the callee and its arguments, then resumes, under one native access.
+    /// </summary>
+    static unsafe LuauHostStatus Enter(
+        ScriptOperation operation,
+        IntPtr state,
+        IntPtr from,
+        int argumentCount,
+        int enteredSlots,
+        out int baseTop,
+        out int topAfterResume)
+    {
+        using var access = operation.Context.EnterOperationNativeAccess(operation);
+        baseTop = luau_host_stack_get_top((LuauHostState*)state) - enteredSlots;
+        operation.ArmCoroutineLifecycle();
+        var status = luau_host_resume((LuauHostState*)state, (LuauHostState*)from, argumentCount);
+        topAfterResume = ReadTopAfterResume(state, status);
+        return status;
+    }
+
+    static unsafe int ReadTopAfterResume(IntPtr state, LuauHostStatus status) =>
+        status is LuauHostStatus.Ok or LuauHostStatus.Yielded or LuauHostStatus.Break
+            ? luau_host_stack_get_top((LuauHostState*)state)
+            : -1;
 
 }

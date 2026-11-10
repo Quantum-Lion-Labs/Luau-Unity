@@ -34,7 +34,13 @@ internal sealed unsafe class LuauVmContext
     static readonly ConcurrentDictionary<IntPtr, WeakReference<LuauState>> globalStates = new();
     static readonly ConcurrentDictionary<IntPtr, WeakReference<LuauVmContext>> globalContexts = new();
     static readonly ConcurrentDictionary<int, WeakReference<LuauVmContext>> managedCallbackOwners = new();
-    static readonly AsyncLocal<ScriptOperation?> ambientOperation = new();
+    // The operation the current asynchronous flow runs in. Only flows that
+    // contain an asynchronous operation carry one; see PushAmbient.
+    static readonly AsyncLocal<AmbientOperationMarker?> ambientMarker = new();
+
+    // The innermost synchronous operation running on this thread.
+    [ThreadStatic] static ScriptOperation? threadAmbientOperation;
+    [ThreadStatic] static long threadAmbientGeneration;
     static readonly LuauHostInterruptPoll interruptCallback = Interrupt;
     static readonly IntPtr interruptPointer = Marshal.GetFunctionPointerForDelegate(interruptCallback);
     static long nextGlobalManagedCallbackId;
@@ -56,6 +62,16 @@ internal sealed unsafe class LuauVmContext
     WeakReference<LuauState>? rootEntry;
     WeakReference<LuauVmContext>? globalContextEntry;
     ScriptOperation? activeOperation;
+    // A finished synchronous operation kept for the next one; see EndOperation.
+    ScriptOperation? pooledOperation;
+    long operationGeneration;
+    // The active operation's DeadlineTimestamp, or zero; read by the watchdog.
+    long watchdogDeadline;
+    WeakReference<LuauVmContext>? watchdogEntry;
+    const int OptionsCacheSize = 4;
+    readonly ResolvedOptions?[] optionsCache = new ResolvedOptions?[OptionsCacheSize];
+    readonly ResolvedOptions?[] zeroResultOptionsCache = new ResolvedOptions?[OptionsCacheSize];
+    int optionsCacheCursor;
     int lifecycleState;
     int rootSandboxed;
     int bytecodeLoadDepth;
@@ -79,6 +95,8 @@ internal sealed unsafe class LuauVmContext
 
     internal bool IsDisposed => Volatile.Read(ref lifecycleState) != 0;
     internal bool IsDisposalRequested => Volatile.Read(ref lifecycleState) != 0;
+    internal bool IsClosed => Volatile.Read(ref lifecycleState) == 2;
+    internal long WatchdogDeadline => Volatile.Read(ref watchdogDeadline);
     internal CancellationToken DisposalToken => disposalCancellationSource.Token;
     internal bool IsRootSandboxed => Volatile.Read(ref rootSandboxed) != 0;
     internal bool IsLoadingBytecode => Volatile.Read(ref bytecodeLoadDepth) != 0;
@@ -153,14 +171,7 @@ internal sealed unsafe class LuauVmContext
         {
             lock (nativeGate)
             {
-                return ReadMemoryInfo().failure switch
-                {
-                    LuauHostAllocatorFailure.None => LuauAllocatorFailure.None,
-                    LuauHostAllocatorFailure.Quota => LuauAllocatorFailure.QuotaExceeded,
-                    LuauHostAllocatorFailure.System => LuauAllocatorFailure.SystemOutOfMemory,
-                    var failure => throw new LuauException(
-                        $"The Luau host returned unknown allocator failure {failure}.")
-                };
+                return ReadAllocatorFailureLocked();
             }
         }
     }
@@ -185,13 +196,47 @@ internal sealed unsafe class LuauVmContext
                 return;
             }
 
-            var status = luau_host_memory_reset_failure((LuauHostState*)mainPointer);
-            if (status != LuauHostStatus.Ok)
-            {
-                throw new LuauException(
-                    $"The Luau host could not reset allocator diagnostics (status {(int)status}).");
-            }
+            ResetAllocatorFailureLocked();
         }
+    }
+
+    void ResetAllocatorFailureLocked()
+    {
+        var status = luau_host_memory_reset_failure((LuauHostState*)mainPointer);
+        if (status != LuauHostStatus.Ok)
+        {
+            throw new LuauException(
+                $"The Luau host could not reset allocator diagnostics (status {(int)status}).");
+        }
+    }
+
+    /// <summary>
+    /// <see cref="LuauNativeProtection.IsFrameFull"/> for a caller that holds
+    /// the native gate on an open root, without re-entering the gate for each
+    /// allocator diagnostic call.
+    /// </summary>
+    internal bool IsFrameFullUnderNativeAccess(LuauHostState* pointer)
+    {
+        ResetAllocatorFailureLocked();
+        var reserved = 0;
+        var status = luau_host_stack_check(pointer, 1, &reserved);
+        var full = status == LuauHostStatus.Ok &&
+            reserved == 0 &&
+            ReadAllocatorFailureLocked() == LuauAllocatorFailure.None;
+        ResetAllocatorFailureLocked();
+        return full;
+    }
+
+    LuauAllocatorFailure ReadAllocatorFailureLocked()
+    {
+        return ReadMemoryInfo().failure switch
+        {
+            LuauHostAllocatorFailure.None => LuauAllocatorFailure.None,
+            LuauHostAllocatorFailure.Quota => LuauAllocatorFailure.QuotaExceeded,
+            LuauHostAllocatorFailure.System => LuauAllocatorFailure.SystemOutOfMemory,
+            var failure => throw new LuauException(
+                $"The Luau host returned unknown allocator failure {failure}.")
+        };
     }
 
     LuauHostMemoryInfo ReadMemoryInfo()
@@ -226,11 +271,10 @@ internal sealed unsafe class LuauVmContext
         LuauExecutionOptions? options,
         CancellationToken cancellationToken,
         bool isAsync,
-        ScriptOperationMode mode)
+        ScriptOperationMode mode,
+        bool requireZeroResults = false)
     {
-        var effectiveOptions = LuauExecutionOptions.ResolveForOperation(
-            Options.DefaultExecutionOptions,
-            options);
+        var effectiveOptions = ResolveOperationOptions(options, requireZeroResults);
         if (effectiveOptions.ContinuationScheduler is { } scheduler && !scheduler.CheckAccess())
         {
             throw new InvalidOperationException(
@@ -238,7 +282,16 @@ internal sealed unsafe class LuauVmContext
                 "Dispatch the call to the VM owner thread before compiling, pushing arguments, or resuming it.");
         }
 
+        if (effectiveOptions.WallClockLimit.HasValue && Volatile.Read(ref watchdogEntry) == null)
+        {
+            RegisterWithWatchdog();
+        }
+
+        // Read before the gates, as the operation constructor used to: a child
+        // disposed concurrently fails here with ObjectDisposedException.
+        var lifetimeToken = state.LifetimeToken;
         ScriptOperation operation;
+        long deadline;
         lock (nativeGate)
         {
             lock (lifecycleGate)
@@ -253,37 +306,57 @@ internal sealed unsafe class LuauVmContext
                     ThrowHelper.ThrowInvalidOperationException("The Luau VM is already executing.");
                 }
 
-                operation = new ScriptOperation(
-                    this,
+                // Asynchronous operations are never reused: execution contexts
+                // captured during one can reference it indefinitely.
+                operation = isAsync ? new ScriptOperation(this) : TakePooledOperation();
+                operation.Activate(
+                    ++operationGeneration,
                     state,
                     chunkName,
                     effectiveOptions,
                     cancellationToken,
+                    lifetimeToken,
+                    disposalCancellationSource.Token,
                     isAsync,
-                    mode,
-                    ambientOperation.Value);
+                    mode);
 
                 try
                 {
-                    ResetAllocatorFailure();
+                    // The native gate is held and the root is open.
+                    ResetAllocatorFailureLocked();
                     ConfigureInterruptBudget(operation);
+                    // Last: it writes nothing when it fails.
+                    PushAmbient(operation);
                 }
                 catch
                 {
-                    // Not yet published or registered, so disposing only
-                    // releases the operation's own timer and sources.
-                    operation.Dispose();
+                    // Not yet published or registered: nothing else can hold
+                    // this life, so the instance can simply be kept.
+                    AbandonUnpublishedOperationLocked(operation);
                     throw;
                 }
 
                 activeOperation = operation;
-                ambientOperation.Value = operation;
+                deadline = operation.DeadlineTimestamp;
+                if (deadline != 0)
+                {
+                    // A full fence: see LuauDeadlineWatchdog.EnsureArmed.
+                    Interlocked.Exchange(ref watchdogDeadline, deadline);
+                }
             }
         }
 
         try
         {
-            operation.RegisterCallerCancellationSignal();
+            if (deadline != 0)
+            {
+                LuauDeadlineWatchdog.EnsureArmed(deadline);
+            }
+
+            if (operation.HasCancelableCallerToken)
+            {
+                operation.RegisterCallerCancellationSignal();
+            }
         }
         catch
         {
@@ -292,6 +365,153 @@ internal sealed unsafe class LuauVmContext
         }
 
         return operation;
+    }
+
+    ScriptOperation TakePooledOperation()
+    {
+        var pooled = pooledOperation;
+        pooledOperation = null;
+        return pooled ?? new ScriptOperation(this);
+    }
+
+    void AbandonUnpublishedOperationLocked(ScriptOperation operation)
+    {
+        operation.Deactivate();
+        if (!operation.IsAsync)
+        {
+            operation.ClearForReuse();
+            pooledOperation = operation;
+        }
+    }
+
+    void RegisterWithWatchdog()
+    {
+        var entry = new WeakReference<LuauVmContext>(this);
+        if (Interlocked.CompareExchange(ref watchdogEntry, entry, null) == null)
+        {
+            LuauDeadlineWatchdog.Register(entry);
+        }
+    }
+
+    /// <summary>
+    /// Records <paramref name="operation"/> as the innermost operation of the
+    /// current flow, for <see cref="ThrowIfNativeAccessDenied"/>. A
+    /// synchronous operation begins and ends on one thread, so a
+    /// thread-static slot identifies it without touching the execution
+    /// context. An asynchronous operation can continue on any thread, so it
+    /// uses an <see cref="AsyncLocal{T}"/> marker, as does a synchronous
+    /// operation that starts inside a flow that already carries one: there
+    /// the marker, not the thread, says which operation is innermost.
+    /// </summary>
+    void PushAmbient(ScriptOperation operation)
+    {
+        var currentMarker = ambientMarker.Value;
+        if (operation.IsAsync || currentMarker != null)
+        {
+            var marker = new AmbientOperationMarker(operation, operation.Generation);
+            ambientMarker.Value = marker;
+            operation.SaveAsyncAmbient(marker, currentMarker);
+        }
+
+        if (!operation.IsAsync)
+        {
+            operation.SaveThreadAmbient(threadAmbientOperation, threadAmbientGeneration);
+            threadAmbientOperation = operation;
+            threadAmbientGeneration = operation.Generation;
+        }
+    }
+
+    /// <summary>
+    /// Undoes <see cref="PushAmbient"/>; false when the slots no longer name
+    /// this life, in which case they are left alone as before.
+    /// </summary>
+    static bool PopAmbient(ScriptOperation operation, long generation)
+    {
+        var restored = true;
+        if (operation.AsyncAmbientMarker is { } marker)
+        {
+            if (ReferenceEquals(ambientMarker.Value, marker))
+            {
+                ambientMarker.Value = operation.PreviousAsyncAmbientMarker;
+            }
+            else
+            {
+                restored = false;
+            }
+        }
+
+        if (operation.PushedThreadAmbient)
+        {
+            if (ReferenceEquals(threadAmbientOperation, operation) &&
+                threadAmbientGeneration == generation)
+            {
+                threadAmbientOperation = operation.PreviousThreadAmbient;
+                threadAmbientGeneration = operation.PreviousThreadAmbientGeneration;
+            }
+            else
+            {
+                restored = false;
+            }
+        }
+
+        return restored;
+    }
+
+    static bool IsAmbient(ScriptOperation active)
+    {
+        var generation = active.Generation;
+        var marker = ambientMarker.Value;
+        if (marker != null)
+        {
+            return ReferenceEquals(marker.Operation, active) && marker.Generation == generation;
+        }
+
+        return ReferenceEquals(threadAmbientOperation, active) && threadAmbientGeneration == generation;
+    }
+
+    /// <summary>
+    /// Merges per-operation options into the state defaults. Options records
+    /// are immutable, so a merge is reused for the same instance:
+    /// <see cref="LuauFunction.InvokeVoid(LuauExecutionOptions?)"/> merges
+    /// even without options, and the Unity scheduler passes one instance per
+    /// phase on every call. A few entries per kind cover several phases on
+    /// one root; a miss only costs the merge it replaces.
+    /// </summary>
+    LuauExecutionOptions ResolveOperationOptions(LuauExecutionOptions? requested, bool requireZeroResults)
+    {
+        if (!requireZeroResults && requested == null)
+        {
+            return Options.DefaultExecutionOptions;
+        }
+
+        var cache = requireZeroResults ? zeroResultOptionsCache : optionsCache;
+        for (var index = 0; index < cache.Length; index++)
+        {
+            var cached = Volatile.Read(ref cache[index]);
+            if (cached != null && ReferenceEquals(cached.Requested, requested))
+            {
+                return cached.Effective;
+            }
+        }
+
+        var effective = LuauExecutionOptions.ResolveForOperation(
+            Options.DefaultExecutionOptions,
+            requireZeroResults ? LuauExecutionOptions.RequireZeroResults(requested) : requested);
+        var slot = (int)((uint)Interlocked.Increment(ref optionsCacheCursor) % (uint)cache.Length);
+        Volatile.Write(ref cache[slot], new ResolvedOptions(requested, effective));
+        return effective;
+    }
+
+    sealed class ResolvedOptions
+    {
+        internal ResolvedOptions(LuauExecutionOptions? requested, LuauExecutionOptions effective)
+        {
+            Requested = requested;
+            Effective = effective;
+        }
+
+        internal LuauExecutionOptions? Requested { get; }
+        internal LuauExecutionOptions Effective { get; }
     }
 
     /// <summary>
@@ -316,17 +536,18 @@ internal sealed unsafe class LuauVmContext
     }
 
     /// <summary>
-    /// Makes the next interrupt safepoint poll <paramref name="operation"/>
-    /// from any thread. The request is dropped once the operation is no
-    /// longer active; holding the lifecycle gate keeps the root open for
+    /// Makes the next interrupt safepoint poll life <paramref name="generation"/>
+    /// of <paramref name="operation"/> from any thread. The request is dropped
+    /// once that life is no longer active, including when the instance has
+    /// since been reused; holding the lifecycle gate keeps the root open for
     /// the native call, since close begins only after the active operation
     /// ends or disposal takes this gate.
     /// </summary>
-    internal void RequestInterruptAttention(ScriptOperation operation)
+    internal void RequestInterruptAttention(ScriptOperation operation, long generation)
     {
         lock (lifecycleGate)
         {
-            if (ReferenceEquals(activeOperation, operation))
+            if (ReferenceEquals(activeOperation, operation) && operation.Generation == generation)
             {
                 RequestActiveInterruptAttentionLocked();
             }
@@ -353,7 +574,39 @@ internal sealed unsafe class LuauVmContext
         }
     }
 
-    internal void EndOperation(ScriptOperation operation)
+    /// <summary>
+    /// Called by <see cref="LuauDeadlineWatchdog"/> when this root's published
+    /// deadline has passed. Signals the active life at most once, and only if
+    /// its own wall-clock limit has passed: requests the poll first, then
+    /// returns the callback-visible token source for the watchdog to cancel
+    /// outside every lock, since its registrations are host code.
+    /// </summary>
+    internal CancellationTokenSource? SignalWatchdogDeadline()
+    {
+        lock (lifecycleGate)
+        {
+            var active = activeOperation;
+            if (active == null || active.DeadlineTimestamp == 0 || !active.IsPastWallClockLimit())
+            {
+                return null;
+            }
+
+            // Later scans skip this root until its next operation.
+            Interlocked.CompareExchange(ref watchdogDeadline, 0, active.DeadlineTimestamp);
+            if (!active.TryMarkDeadlineSignaled())
+            {
+                return null;
+            }
+
+            RequestActiveInterruptAttentionLocked();
+            // Read after marking: a source created later sees the mark and
+            // cancels itself. Under the gate the life cannot change, so this
+            // is null or this life's source.
+            return active.TokenSource;
+        }
+    }
+
+    internal void EndOperation(ScriptOperation operation, long generation)
     {
         IntPtr pointerToClose = IntPtr.Zero;
 
@@ -361,32 +614,52 @@ internal sealed unsafe class LuauVmContext
         {
             lock (lifecycleGate)
             {
-                if (!ReferenceEquals(activeOperation, operation))
+                if (!ReferenceEquals(activeOperation, operation) || operation.Generation != generation)
                 {
                     return;
                 }
 
                 activeOperation = null;
-                if (ReferenceEquals(ambientOperation.Value, operation))
+                if (operation.DeadlineTimestamp != 0)
                 {
-                    ambientOperation.Value = operation.PreviousAmbient;
+                    Volatile.Write(ref watchdogDeadline, 0);
                 }
 
-                if (lifecycleState == 0 && mainPointer != IntPtr.Zero)
+                var ambientRestored = PopAmbient(operation, generation);
+
+                if (deferredReferences.Count != 0)
                 {
-                    foreach (var reference in deferredReferences)
+                    if (lifecycleState == 0 && mainPointer != IntPtr.Zero)
                     {
-                        luau_host_reference_release((LuauHostState*)mainPointer, reference);
-                        Interlocked.Increment(ref releasedReferenceCount);
+                        foreach (var reference in deferredReferences)
+                        {
+                            luau_host_reference_release((LuauHostState*)mainPointer, reference);
+                            Interlocked.Increment(ref releasedReferenceCount);
+                        }
                     }
-                }
 
-                deferredReferences.Clear();
+                    deferredReferences.Clear();
+                }
 
                 if (lifecycleState == 1 && mainPointer != IntPtr.Zero)
                 {
                     pointerToClose = mainPointer;
                     mainPointer = IntPtr.Zero;
+                }
+
+                // Reuse only a synchronous life that nothing can still name:
+                // no caller registration, no marker in a captured execution
+                // context, no ambient slot left pointing at it, and a root
+                // that will run again. Its cancellation registration and
+                // token source were disposed before this call.
+                if (lifecycleState == 0 &&
+                    !operation.IsAsync &&
+                    !operation.HasCancelableCallerToken &&
+                    operation.AsyncAmbientMarker == null &&
+                    ambientRestored)
+                {
+                    operation.ClearForReuse();
+                    pooledOperation = operation;
                 }
             }
 
@@ -424,12 +697,13 @@ internal sealed unsafe class LuauVmContext
         Monitor.Enter(nativeGate);
         try
         {
-            lock (lifecycleGate)
+            // The active operation and the native root change only while the
+            // native gate is held (BeginOperation, EndOperation, DisposeRoot),
+            // so holding it is enough to read both.
+            if (!ReferenceEquals(Volatile.Read(ref activeOperation), operation) ||
+                Volatile.Read(ref mainPointer) == IntPtr.Zero)
             {
-                if (!ReferenceEquals(activeOperation, operation) || mainPointer == IntPtr.Zero)
-                {
-                    ThrowHelper.ThrowObjectDisposedException(nameof(LuauState));
-                }
+                ThrowHelper.ThrowObjectDisposedException(nameof(LuauState));
             }
 
             return new LuauNativeAccess(this, nativeGate);
@@ -443,21 +717,27 @@ internal sealed unsafe class LuauVmContext
 
     internal void ThrowIfNativeAccessDenied()
     {
-        var active = Volatile.Read(ref activeOperation);
-        var scheduler = active?.Options.ContinuationScheduler
-            ?? Options.DefaultExecutionOptions.ContinuationScheduler;
+        // Every operation's scheduler is the state's: per-operation options
+        // cannot replace it (LuauExecutionOptions.ResolveForOperation).
+        var scheduler = Options.DefaultExecutionOptions.ContinuationScheduler;
         if (scheduler != null && !scheduler.CheckAccess())
         {
             throw new InvalidOperationException(
                 "The Luau VM can only be accessed from its configured continuation scheduler.");
         }
 
-        if (active != null && !ReferenceEquals(ambientOperation.Value, active))
+        var active = Volatile.Read(ref activeOperation);
+        if (active == null)
+        {
+            return;
+        }
+
+        if (!IsAmbient(active))
         {
             ThrowHelper.ThrowInvalidOperationException("The Luau VM is executing on another operation.");
         }
 
-        active?.ThrowIfAsyncCallbackAccessUnsafe();
+        active.ThrowIfAsyncCallbackAccessUnsafe();
     }
 
     internal ScriptOperation? GetActiveOperation()
@@ -465,9 +745,21 @@ internal sealed unsafe class LuauVmContext
         return Volatile.Read(ref activeOperation);
     }
 
+    /// <summary>The finished synchronous operation kept for reuse, for tests.</summary>
+    internal ScriptOperation? PooledOperation
+    {
+        get
+        {
+            lock (lifecycleGate)
+            {
+                return pooledOperation;
+            }
+        }
+    }
+
     internal int RegisterManagedCallback(
         string? name,
-        Func<LuauState, CancellationToken, int> callback)
+        Func<LuauState, LuauOperationCancellation, int> callback)
     {
         lock (lifecycleGate)
         {
@@ -484,7 +776,7 @@ internal sealed unsafe class LuauVmContext
 
     internal int RegisterManagedCallback(
         string? name,
-        Func<LuauState, CancellationToken, ValueTask<int>> callback)
+        Func<LuauState, LuauOperationCancellation, ValueTask<int>> callback)
     {
         lock (lifecycleGate)
         {
@@ -604,6 +896,15 @@ internal sealed unsafe class LuauVmContext
 
     internal void DrainManagedCallbackNativeReleases()
     {
+        // Finalizers and native destructors push onto this list from any
+        // thread; skip the gate when there is nothing to drain. A release
+        // queued just after this read is drained by the next native access,
+        // as it would be if it had arrived just after the drain.
+        if (Volatile.Read(ref pendingManagedCallbackNativeReleases) == null)
+        {
+            return;
+        }
+
         lock (lifecycleGate)
         {
             DrainManagedCallbackNativeReleasesLocked();

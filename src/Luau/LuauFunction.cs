@@ -84,6 +84,25 @@ public abstract class LuauFunction : IDisposable, ILuauCallbackBorrowedReference
     private protected LuauState OwningState => state!;
 
     /// <summary>
+    /// Resolves the state an invocation begins its operation on, like
+    /// <see cref="State"/> but without its lock: the invocation acquires this
+    /// function's reference under the lock before using it
+    /// (<see cref="AcquireReferenceForOperation"/>), which rejects a function
+    /// disposed in between.
+    /// </summary>
+    private protected LuauState GetInvocationState()
+    {
+        borrowedFrame?.EnsureBorrowedActive();
+        var currentState = Volatile.Read(ref state);
+        if (Volatile.Read(ref disposeState) != 0 || currentState == null || currentState.IsDisposed)
+        {
+            ThrowHelper.ThrowObjectDisposedException(nameof(LuauFunction));
+        }
+
+        return ResolvePublicState(currentState!);
+    }
+
+    /// <summary>
     /// Invokes a script closure synchronously on its owning VM root.
     /// Managed callback functions are host capabilities and cannot be invoked
     /// directly by managed callers. Dispose the returned scope to release its
@@ -510,6 +529,43 @@ public abstract class LuauFunction : IDisposable, ILuauCallbackBorrowedReference
             }
 
             return new LuauReferenceAccess(referenceState, reference, lifetimeGate, nativeAccess);
+        }
+        catch
+        {
+            Monitor.Exit(lifetimeGate);
+            nativeAccess.Dispose();
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// Acquires this function's reference to push it as the callee of
+    /// <paramref name="operation"/>, which the caller has just begun on this
+    /// function's root. Holding the operation's native access replaces the
+    /// per-call scheduler and ambient checks of <see cref="AcquireReference"/>.
+    /// </summary>
+    private protected LuauReferenceAccess AcquireReferenceForOperation(ScriptOperation operation, int reference)
+    {
+        borrowedFrame?.EnsureBorrowedActive();
+        var currentState = Volatile.Read(ref state);
+        if (currentState == null || currentState.IsDisposed)
+        {
+            ThrowHelper.ThrowObjectDisposedException(nameof(LuauFunction));
+        }
+
+        var nativeAccess = operation.Context.EnterOperationNativeAccess(operation);
+        Monitor.Enter(lifetimeGate);
+        try
+        {
+            if (disposeState != 0 ||
+                !ReferenceEquals(state, currentState) ||
+                reference < 0 ||
+                currentState!.IsDisposed)
+            {
+                ThrowHelper.ThrowObjectDisposedException(nameof(LuauFunction));
+            }
+
+            return new LuauReferenceAccess(operation.State, reference, lifetimeGate, nativeAccess);
         }
         catch
         {

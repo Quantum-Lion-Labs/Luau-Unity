@@ -6,13 +6,13 @@ namespace Luau;
 internal sealed unsafe class LuauCSharpAsyncFunction : LuauFunction, ILuauManagedCallbackFunction
 {
     static readonly LuauHostManagedFunction callback = Call;
-    readonly Func<LuauState, CancellationToken, ValueTask<int>> csharpDelegate;
+    readonly Func<LuauState, LuauOperationCancellation, ValueTask<int>> csharpDelegate;
     readonly LuauVmContext context;
     int registrationId;
 
     public LuauCSharpAsyncFunction(
         LuauState state,
-        Func<LuauState, CancellationToken, ValueTask<int>> func,
+        Func<LuauState, LuauOperationCancellation, ValueTask<int>> func,
         string? name = null) : base(state)
     {
         csharpDelegate = func;
