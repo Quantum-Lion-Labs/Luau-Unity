@@ -128,6 +128,28 @@ dynamic loader, and `native-artifacts` rejects any requirement newer than glibc
 local tests and copied only into disposable Unity projects, never into the
 package.
 
+The Android plugins come from the `android-arm64` and `android-x64` presets,
+built with the approved NDK r27c (27.2.12479018) for API level 26. They also
+link the C++ runtime statically (`ANDROID_STL=c++_static`, enforced at
+configure time), so their only dynamic dependencies are `libc.so`, `libm.so`,
+and `libdl.so`. A Unity Android player contains `libc++_shared.so` only when
+something else ships it, in practice the GameActivity entry point's
+`libgame.so`; a plugin that needed it would fail with `DllNotFoundException`
+in a player that uses the classic Activity entry point. The static runtime is
+safe because the host exports only its C ABI (see 3.2): no C++ object,
+allocation, or exception crosses it, every C++ exception and VM long jump is
+caught inside the host, and `--exclude-libs` keeps the runtime's symbols out of
+the dynamic table. The integration project uses GameActivity, so its player
+smoke cannot catch a regression here; the dependency audit does.
+
+Each ELF plugin's allowed dynamic dependencies are listed once, in
+`tools/Luau.Tooling/NativeDependencyPolicy.cs`. `native-artifacts` checks every
+shipping build against that list with the pinned `readelf` and confirms the
+tooling's own ELF reader agrees. `package-static` uses that reader to check the
+committed plugins directly, without native tools, so every managed validation
+and release run rejects a plugin that needs anything else. Adding a dependency
+is a compatibility decision, not a build detail.
+
 To refresh plugins after a native source change, dispatch the **Build Luau
 Host** workflow with `refresh-artifacts=true` on the branch. It rebuilds every
 platform and skips the "committed plugin is current" checks. Download each
@@ -505,8 +527,8 @@ dotnet run --project tools/Luau.Tooling -- package-consumer \
   --unity-version 6000.3.xf1
 ```
 
-The static check validates package boundaries and importer metadata without
-launching Unity. The consumer check copies only
+The static check validates package boundaries, importer metadata, and the
+dynamic dependencies of the committed ELF plugins without launching Unity. The consumer check copies only
 `tests/Luau.Unity.PackageConsumerProbe` into a generated disposable Unity
 project, resolves the standalone package, compiles generated host bindings,
 loads the native plugin, and executes a representative script. It is not a
@@ -608,6 +630,12 @@ separate design review rather than an incidental change.
 Check the maintained artifact path and its Unity importer metadata. In the .NET
 harness, verify which Windows artifact `tools/harness` copied to the application
 output. Do not add runtime probing code to the Unity package.
+
+On Android, a `DllNotFoundException` for a plugin that is present in the APK
+usually means a dynamic dependency is missing from the player. List them with
+`readelf -d` and compare them with the policy in section 3.4; `package-static`
+fails on any committed plugin that needs more than the allowed system
+libraries.
 
 ### ABI compatibility rejection
 

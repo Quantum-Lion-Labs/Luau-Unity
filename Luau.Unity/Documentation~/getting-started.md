@@ -8,6 +8,8 @@ thing that changes for the ones you don't trust is how tight you set the limits.
 
 The package is a prebuilt managed runtime plus native plugins for Windows x64 and
 Android ARM64/x86_64. It requires Unity 6000.3.0f1 or newer in the 6000.3 stream.
+On Android it needs API level 26 or newer and works with both the Activity and
+the GameActivity application entry points.
 If a term on this page is unfamiliar,
 [concepts and vocabulary](concepts.md) defines all of them in one place.
 

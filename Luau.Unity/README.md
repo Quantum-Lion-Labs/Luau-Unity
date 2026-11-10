@@ -90,3 +90,8 @@ game-scripting components plus a Luau-only Flappy Bird game — keep its `Core/`
 and delete `Demo Game/` to start your own.
 
 Only Windows x64 and Android ARM64/x86_64 are maintained targets.
+
+The Android plugins require API level 26 or newer and work with both the
+Activity and the GameActivity application entry points. They link the C++
+runtime in and need only Android system libraries, so no other plugin has to
+provide `libc++_shared.so`.

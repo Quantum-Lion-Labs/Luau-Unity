@@ -42,6 +42,16 @@ suspended chain. Ordinary `luau_host_yield` and script yields retain their
 existing script-visible behavior. The host reserves native thread userdata
 and the debug-interrupt hook for these continuation links.
 
+Each plugin's dynamic dependencies are part of this contract. The Android
+plugins require API level 26 and load only `libc.so`, `libm.so`, and `libdl.so`;
+the C++ runtime is linked statically, which is valid because no C++ type,
+allocation, or exception crosses the C ABI. They therefore work with both the
+Activity and the GameActivity application entry points, whether or not the
+player contains `libc++_shared.so`. The Linux plugin loads only `libc.so.6`,
+`libm.so.6`, and the dynamic loader, and requires nothing newer than glibc 2.35.
+`native-artifacts` rejects a shipping build, and `package-static` a committed
+plugin, that needs any other library.
+
 For a native source change, manually dispatch the **Build Luau Host** workflow
 with `refresh-artifacts=true` to generate audited replacement Windows, Android,
 and Linux plugins. Download their shipping outputs and commit them with the
