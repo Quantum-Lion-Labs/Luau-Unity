@@ -6,6 +6,13 @@ public sealed class RuntimeHardeningBehaviorTests
 {
     static readonly TimeSpan TestTimeout = TestBudgets.WaitTimeout;
 
+    // For tests in which the deadline must pass while an async callback is
+    // already waiting on its token. The wall clock starts with the operation,
+    // so a stall before the callback is entered eats into the limit; one
+    // second leaves a loaded runner time to get there. Each such test then
+    // waits that second.
+    static readonly TimeSpan DeadlineAfterCallbackEntry = TimeSpan.FromSeconds(1);
+
     // A wall-clock limit that only a hung test reaches, for tests about
     // cancellation or disposal that still need a deadline to be configured.
     static readonly LuauStateOptions SafetyNetOnly = LuauStateOptions.UnboundedResources with
@@ -265,7 +272,7 @@ public sealed class RuntimeHardeningBehaviorTests
         {
             DefaultExecutionOptions = LuauExecutionOptions.Unbounded with
             {
-                WallClockLimit = TimeSpan.FromMilliseconds(75),
+                WallClockLimit = DeadlineAfterCallbackEntry,
             },
         });
         var callbackEntered = NewSignal();
@@ -474,7 +481,7 @@ public sealed class RuntimeHardeningBehaviorTests
     [Fact]
     public async Task WallClockDeadlineCancelsCooperativeAsyncCallback()
     {
-        var limit = TimeSpan.FromMilliseconds(75);
+        var limit = DeadlineAfterCallbackEntry;
         using var state = LuauState.Create(SafetyNetOnly);
         var entered = NewSignal();
         state["waitForever"] = state.CreateAsyncFunction(
@@ -504,7 +511,7 @@ public sealed class RuntimeHardeningBehaviorTests
     [Fact]
     public async Task CallbackCannotCatchDeadlineCancellationAndTurnItIntoSuccess()
     {
-        var limit = TimeSpan.FromMilliseconds(75);
+        var limit = DeadlineAfterCallbackEntry;
         using var state = LuauState.Create(LuauStateOptions.UnboundedResources with
         {
             DefaultExecutionOptions = LuauExecutionOptions.Unbounded with

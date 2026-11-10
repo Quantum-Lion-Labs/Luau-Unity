@@ -154,25 +154,41 @@ namespace Luau.Unity.Tests
         [Test]
         public void ConfiguredPrintRateLimitDropsCallsBeforeFormattingArguments()
         {
-            var messages = new List<string>();
-            using var root = LuauUnity.CreateState(new LuauUnityOptions
+            // The limiter counts in one-second windows, and the first starts
+            // when the state is created. If a stall carries an attempt across
+            // a window boundary, the third print is legitimately allowed. An
+            // attempt that finishes within half a second of a clock started
+            // before the state cannot have crossed one, so only such an
+            // attempt is judged.
+            for (var attempt = 0; ; attempt++)
             {
-                StateOptions = TestBudgets.StateOptions,
-                MaxPrintMessagesPerSecond = 2,
-                Log = messages.Add,
-            });
-            using var script = root.CreateSandboxedThread();
+                var messages = new List<string>();
+                var sinceBeforeCreation = System.Diagnostics.Stopwatch.StartNew();
+                using var root = LuauUnity.CreateState(new LuauUnityOptions
+                {
+                    StateOptions = TestBudgets.StateOptions,
+                    MaxPrintMessagesPerSecond = 2,
+                    Log = messages.Add,
+                });
+                using var script = root.CreateSandboxedThread();
 
-            using var results = script.DoString(
-                "local calls = 0; " +
-                "local value = setmetatable({}, { " +
-                "__tostring = function() calls += 1; return 'formatted' end }); " +
-                "print('one'); print('two'); print(value); return calls",
-                "@unity/rate-limited-print.luau");
+                using var results = script.DoString(
+                    "local calls = 0; " +
+                    "local value = setmetatable({}, { " +
+                    "__tostring = function() calls += 1; return 'formatted' end }); " +
+                    "print('one'); print('two'); print(value); return calls",
+                    "@unity/rate-limited-print.luau");
 
-            Assert.That(messages, Is.EqualTo(new[] { "one", "two" }));
-            Assert.That(results[0].Read<int>(), Is.Zero,
-                "Suppressed print calls must not invoke argument metamethods.");
+                if (sinceBeforeCreation.Elapsed >= TimeSpan.FromMilliseconds(500) && attempt < 9)
+                {
+                    continue;
+                }
+
+                Assert.That(messages, Is.EqualTo(new[] { "one", "two" }));
+                Assert.That(results[0].Read<int>(), Is.Zero,
+                    "Suppressed print calls must not invoke argument metamethods.");
+                return;
+            }
         }
 
         [Test]

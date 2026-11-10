@@ -3,6 +3,20 @@ namespace Luau.Tests;
 public sealed class HardeningConfigurationTests
 {
     [Fact]
+    public void ParameterlessCreateRunsScriptsUnderTheFiniteDefaults()
+    {
+        // Other tests replace the default wall-clock limit with a safety net
+        // (see TestBudgets). This one keeps the shipped profile and checks it
+        // end to end: a root from the parameterless overload stops a runaway
+        // script. Which default budget stops it first depends on the machine,
+        // so the test does not say; either way it cannot outlast the budget.
+        using var state = LuauState.Create();
+
+        Assert.Equal(LuauStateOptions.Default, state.Options);
+        Assert.Throws<LuauExecutionBudgetException>(() => state.DoString("while true do end"));
+    }
+
+    [Fact]
     public void NewOptionsAndNamedDefaultsUseTheSameFinitePolicy()
     {
         var options = new LuauStateOptions();

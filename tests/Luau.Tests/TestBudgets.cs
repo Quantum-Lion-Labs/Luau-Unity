@@ -34,8 +34,11 @@ internal static class TestBudgets
     /// <summary>
     /// The wall-clock limit of an operation on a root from
     /// <see cref="CreateRoot"/>. It is shorter than <see cref="WaitTimeout"/>,
-    /// so an operation that hangs fails with its budget exception, which names
-    /// the chunk, before the test gives up waiting for it.
+    /// so a script that keeps running, or a callback that honors its
+    /// cancellation token, fails with a budget exception that names the chunk
+    /// before the test gives up waiting. A callback that ignores its token, or
+    /// a blocked owner scheduler, is not bounded by it; those reach
+    /// <see cref="WaitTimeout"/>.
     /// </summary>
     public static readonly TimeSpan WallClockSafetyNet = TimeSpan.FromSeconds(20);
 

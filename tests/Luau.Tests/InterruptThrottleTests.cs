@@ -318,14 +318,22 @@ public sealed class InterruptThrottleTests
         // suspend; the hard stop unwinds it instead.
         using var root = CreateRoot(SafetyNet);
         using var cancellation = new CancellationTokenSource();
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var signal = root.CreateFunction("started", _ => started.TrySetResult());
+        root["started"] = signal;
         var execution = Task.Run(async () =>
         {
             using var _ = await root.DoStringAsync(
                 "local h = string.rep('x', 40) local p = string.rep('x?', 40) .. string.rep('x', 40) " +
-                "return string.find(h, p)",
+                "started() return string.find(h, p)",
                 cancellationToken: cancellation.Token);
         });
-        await Task.Delay(50);
+
+        // Cancel only once the script is running, so the stop cannot be the
+        // already-canceled admission path. The match starts right after the
+        // signal and would run for far longer than this test.
+        await started.Task.WaitAsync(TestTimeout);
+        await Task.Delay(20);
         var stopwatch = Stopwatch.StartNew();
         cancellation.Cancel();
 
