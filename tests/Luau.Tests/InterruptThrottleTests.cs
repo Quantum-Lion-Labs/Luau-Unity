@@ -516,10 +516,11 @@ public sealed class InterruptThrottleTests
     {
         // Disposal cancels the callback-visible token, and its handlers are
         // host code. This one needs the VM, which the executing thread holds
-        // until the script stops; the script has no budget, so only the
-        // disposal request can stop it. The request must not wait for the
-        // handler.
-        var root = CreateRoot();
+        // until the script stops. Within StopBound only the disposal request
+        // can stop the script, and it must not wait for the handler. The
+        // safety net ends the loop later if that ever regresses, so a failing
+        // run does not leave a spinning VM and a blocked disposal behind.
+        var root = CreateRoot(SafetyNet);
         using var entered = new ManualResetEventSlim();
         CancellationTokenRegistration registration = default;
         using var hook = root.CreateFunction("hook", context =>
@@ -530,12 +531,22 @@ public sealed class InterruptThrottleTests
         root["hook"] = hook;
 
         var execution = Task.Run(() => root.DoString("hook() while true do end").Dispose());
-        Assert.True(entered.Wait(TestTimeout));
-        var disposal = Task.Run(root.Dispose);
+        Task? disposal = null;
+        try
+        {
+            Assert.True(entered.Wait(TestTimeout));
+            disposal = Task.Run(root.Dispose);
 
-        await Assert.ThrowsAsync<ObjectDisposedException>(() => execution.WaitAsync(StopBound));
-        await disposal.WaitAsync(StopBound);
-        registration.Dispose();
+            await Assert.ThrowsAsync<ObjectDisposedException>(() => execution.WaitAsync(StopBound));
+            await disposal.WaitAsync(StopBound);
+        }
+        finally
+        {
+            // Let both tasks finish before the test returns, whatever happened.
+            disposal ??= Task.Run(root.Dispose);
+            await Task.WhenAny(Task.WhenAll(execution.ContinueWith(static _ => { }), disposal.ContinueWith(static _ => { })), Task.Delay(TestTimeout));
+            registration.Dispose();
+        }
     }
 
     [Fact]
