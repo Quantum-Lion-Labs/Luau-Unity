@@ -283,6 +283,25 @@ API or ABI breaks.
     reads: `Space`, the left mouse button, and touch. Reading anything else
     fails with, for example, `Input key 'A' is not enabled for this Luau
     runtime. ...`, instead of returning `false`.
+- A process could no longer create references to Luau values once it had
+  created 2,147,483,647 of them, counted across every state and never given
+  back. From then on every `LuauState` in the process, new ones included,
+  threw `LuauReferenceLimitException` whenever a table, function, userdata,
+  buffer, thread, or object handle reached managed code (a result,
+  `CreateTable`, `CreateThread`, `CreateHandle`, `Retain`, a new script
+  instance), and a callback that read a table argument failed with a
+  `LuauManagedCallbackException` saying the argument cannot be read as a
+  `LuauTable`. Every such value takes a reference token whether or not the
+  host keeps it, so on a desktop host code creating and releasing
+  references reached the limit in about 4 minutes, a script calling a host
+  function with a table argument in a loop in about 40 minutes, and 300
+  scripted objects that each read and write one table-valued property per
+  frame at 90 frames per second in about 11 hours. The host now reuses token
+  values once the range is used up: they are still issued in ascending
+  order, and after the last one it continues from 1, passing every value
+  still in use, so a released value is not issued again until about two
+  billion more references have been created. Creation fails only while every
+  value is held at once, which needs more memory than a process has.
 
 ### Compatibility
 

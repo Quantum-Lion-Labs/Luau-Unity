@@ -421,45 +421,24 @@ bool runnable(lua_State* state)
     return lua_status(state) == LUA_OK;
 }
 
-struct ReferenceRecord
-{
-    lua_State* root;
-    int registryReference;
-};
-
-luau_host_internal::MonotonicReferenceTokenAllocator referenceTokenAllocator;
-std::mutex referenceMutex;
-std::unordered_map<int32_t, ReferenceRecord> liveReferences;
+// Every root's reference tokens, in one process-wide table (see
+// reference_tokens.h). A token names a registry reference of its root only.
+luau_host_internal::ReferenceTokenTable referenceTokens;
 
 bool lookupreference(lua_State* state, int32_t token, int* registryReference)
 {
     if (!state || token <= 0 || !registryReference)
         return false;
 
-    lua_State* root = lua_mainthread(state);
-    std::lock_guard<std::mutex> lock(referenceMutex);
-    const auto found = liveReferences.find(token);
-    if (found == liveReferences.end() || found->second.root != root)
-        return false;
-
-    *registryReference = found->second.registryReference;
-    return true;
+    return referenceTokens.find(lua_mainthread(state), token, registryReference);
 }
 
 luau_host_status registerreference(lua_State* state, int registryReference, int32_t* token)
 {
-    const int32_t allocated = referenceTokenAllocator.allocate();
-    if (allocated == 0)
-        return LUAU_HOST_STATUS_RESOURCE_EXHAUSTED;
-
+    int32_t issued = 0;
     try
     {
-        std::lock_guard<std::mutex> lock(referenceMutex);
-        const bool inserted = liveReferences.emplace(
-            allocated,
-            ReferenceRecord{lua_mainthread(state), registryReference}).second;
-        if (!inserted)
-            return LUAU_HOST_STATUS_RESOURCE_EXHAUSTED;
+        issued = referenceTokens.insert(lua_mainthread(state), registryReference);
     }
     catch (const std::bad_alloc&)
     {
@@ -470,30 +449,22 @@ luau_host_status registerreference(lua_State* state, int registryReference, int3
         return LUAU_HOST_STATUS_SYSTEM_OUT_OF_MEMORY;
     }
 
-    *token = allocated;
+    // Only when every value is live at once.
+    if (issued == 0)
+        return LUAU_HOST_STATUS_RESOURCE_EXHAUSTED;
+
+    *token = issued;
     return LUAU_HOST_STATUS_OK;
 }
 
 void erasereference(lua_State* state, int32_t token, int registryReference)
 {
-    std::lock_guard<std::mutex> lock(referenceMutex);
-    const auto found = liveReferences.find(token);
-    if (found != liveReferences.end() &&
-        found->second.root == lua_mainthread(state) &&
-        found->second.registryReference == registryReference)
-        liveReferences.erase(found);
+    referenceTokens.erase(lua_mainthread(state), token, registryReference);
 }
 
 void erasereferencesforroot(lua_State* root)
 {
-    std::lock_guard<std::mutex> lock(referenceMutex);
-    for (auto current = liveReferences.begin(); current != liveReferences.end();)
-    {
-        if (current->second.root == root)
-            current = liveReferences.erase(current);
-        else
-            ++current;
-    }
+    referenceTokens.eraseroot(root);
 }
 
 bool validcallbackframe(lua_State* state)

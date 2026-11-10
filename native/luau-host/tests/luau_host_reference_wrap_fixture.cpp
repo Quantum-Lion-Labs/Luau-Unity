@@ -7,20 +7,13 @@
 
 #include "luau_host_reference_wrap_fixture.h"
 
-#include <new>
-
 extern "C" LUAU_HOST_API void LUAU_HOST_CALL luau_host_test_reference_tokens_seek(int32_t next)
 {
-    if (next <= 0)
-        return;
-
-    std::lock_guard<std::mutex> lock(referenceMutex);
-    // The allocator is trivially destructible and holds only its cursor.
-    new (&referenceTokenAllocator) luau_host_internal::MonotonicReferenceTokenAllocator(uint64_t(next));
+    if (next > 0)
+        referenceTokens.seek(uint32_t(next));
 }
 
 extern "C" LUAU_HOST_API uint64_t LUAU_HOST_CALL luau_host_test_reference_tokens_live(void)
 {
-    std::lock_guard<std::mutex> lock(referenceMutex);
-    return uint64_t(liveReferences.size());
+    return uint64_t(referenceTokens.size());
 }

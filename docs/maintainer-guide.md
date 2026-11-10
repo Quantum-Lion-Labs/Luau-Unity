@@ -359,6 +359,58 @@ every step of work, keep each step within the bound above, keep upstream's
 behavior exactly, add the function to the library's replacements so that the
 open guards it, and add it to the corpus and the interrupt tests.
 
+### 3.6 Reference tokens
+
+Managed code holds Luau tables, functions, userdata, buffers, and threads
+through reference tokens. `luau_host_reference_create` stores the value in its
+root's registry and records the registry reference under a token in one
+process-wide table (`ReferenceTokenTable` in `src/reference_tokens.h`); push
+and release look the token up there, and root close erases every token of
+the root before the VM closes. One mutex serializes all four.
+
+The guarantee is:
+
+- A token is a positive `int32_t` value. It is valid only on the root that
+  created it, from its creation until it is released or the root closes;
+  anywhere else, and afterwards, push and release reject it, and a release
+  erases only the record of its own root and registry reference.
+- Values are issued in ascending order from a cursor. After `INT32_MAX` the
+  cursor continues from 1, and it passes over every value that is live, so a
+  value in use is never issued, and a released value is issued again only
+  after the cursor has gone round the whole range: every other value has been
+  issued once or passed in between, about two billion creations. Until then a
+  stale token is rejected; afterwards it names whatever reference holds the
+  value then, and only on that reference's root.
+- Creation fails with `RESOURCE_EXHAUSTED` only while every value is live at
+  once, which needs more memory than any process has.
+
+Through 0.3.1 values were never reused, and once 2,147,483,647 references had
+been created, creation failed for every root for the rest of the process.
+That took about four minutes of host code creating and releasing references
+in a loop, about 40 minutes of a script calling a host function with a table
+argument, and hours at an ordinary game load, because every table, function,
+buffer, or userdata a callback reads, a result returns, or a host creates
+takes a token.
+
+Managed code may rely on a token only while it holds it. The runtime releases
+each token at most once (every wrapper exchanges its field for -1 under its
+gate before it releases), releases deferred during an operation keep their
+values live until the release reaches the host, and a disposed root's tokens
+are never released, because its close erased them. Nothing keys a cache by
+token, compares tokens, or reports one. A new use of tokens must keep those
+properties: in particular, a second release of the same value after the
+cursor has come round again would release another wrapper's reference.
+
+After the wrap, each creation passes the live values the cursor meets, one
+hash lookup each, so the values the process keeps for its whole life (library
+tables, module caches) cost one lookup each per cycle of two billion
+creations. Before the wrap, and while the cursor meets free values, a creation
+costs what it did. `luau_host_conformance` tests the table itself, with a
+small range, including several threads issuing and releasing at once;
+`luau_host_reference_wrap_conformance` and the managed
+`ReferenceTokenWrapTests` test the host and the runtime across the wrap with
+the reference-wrap fixture (section 12.3).
+
 ## 4. Package interop
 
 The package owns the only interop source. `Luau.Interop` uses the internal
@@ -1051,6 +1103,9 @@ one compatibility unit.
 - Only direct `luau_host_*` declarations cross managed/native.
 - No public API exposes a native handle, pointer, delegate, or stack contract.
 - One root owns every child, reference, callback, module, and operation.
+- A reference token is valid only on its root and only until it is released;
+  its value is issued again only after the cursor has passed every other
+  value.
 - One operation engine owns every failure and stack boundary.
 - Hard stops outrank callback failures; callback failures outrank
   allocator/native failures.
