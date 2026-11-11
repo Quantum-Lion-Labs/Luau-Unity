@@ -575,8 +575,9 @@ LUAU_HOST_API int32_t LUAU_HOST_CALL luau_host_is_global(luau_host_state* state,
  * the tokens live in the process. reference output is required. create is
  * stack-neutral and retains a copy of index. Tokens are issued in ascending
  * order; after INT32_MAX the order continues from 1, passing every value that
- * is live, so a released value is issued again only after every other value
- * has been issued or passed since (about two billion creations). create
+ * is live. Until the range has been used once no value is issued twice; after
+ * that a released value may be issued again by any later create, with no
+ * minimum delay, so a caller must not use a token after releasing it. create
  * returns RESOURCE_EXHAUSTED, leaving reference at 0, only while every
  * positive int32 value is live. push appends the retained value
  * (+1); release is stack-neutral, needs no free slot, cannot fail for a live

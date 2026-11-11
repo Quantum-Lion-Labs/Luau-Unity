@@ -14,12 +14,15 @@ namespace luau_host_internal
 //
 // Values are issued in ascending order from a cursor. After the maximum
 // (INT32_MAX) the cursor continues from 1, and it passes over every value that
-// is live, so a value is issued again only after the cursor has gone round
-// the whole range: between the release of a value and its next issue, every
-// other value is issued once or found live. A stale token held by mistake is
-// therefore rejected (absent, or live for another root) until about two
-// billion further tokens have been issued. Insertion fails only when every
-// value is live at once, which no process has the memory for.
+// is live. So until the range has been used once, which takes 2,147,483,647
+// issues, no value is issued twice and a stale token is always rejected.
+// After that, a value is issued at most once on each pass of the cursor, but
+// there is no minimum delay between its release and its next issue: a
+// reference that lived for most of a pass and is released just before the
+// cursor reaches its value has that value issued again at once. A stale token
+// held by mistake may then name another reference, on its own root only.
+// Insertion fails only when every value is live at once, which needs about
+// two billion references held together.
 //
 // One mutex serializes issue, lookup, and erasure, so a value is in the table
 // at most once, and insert never returns a value that is live.

@@ -1607,14 +1607,26 @@ internal sealed unsafe class LuauVmContext
     // after its 2,147,483,647th.
     static long NextManagedCallbackId()
     {
-        var id = Interlocked.Increment(ref nextGlobalManagedCallbackId);
-        if (id <= 0)
+        // The counter stops at its maximum rather than wrapping, so an
+        // identifier is never issued twice.
+        while (true)
         {
-            throw new InvalidOperationException(
-                "The process exhausted managed Luau callback identifiers.");
-        }
+            var observed = Interlocked.Read(ref nextGlobalManagedCallbackId);
+            if (observed < 0 || observed == long.MaxValue)
+            {
+                throw new InvalidOperationException(
+                    "The process exhausted managed Luau callback identifiers.");
+            }
 
-        return id;
+            var next = observed + 1;
+            if (Interlocked.CompareExchange(
+                    ref nextGlobalManagedCallbackId,
+                    next,
+                    observed) == observed)
+            {
+                return next;
+            }
+        }
     }
 
     bool RemoveManagedCallbackIfUnownedLocked(long id)

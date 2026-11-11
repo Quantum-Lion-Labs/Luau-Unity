@@ -376,13 +376,17 @@ The guarantee is:
   erases only the record of its own root and registry reference.
 - Values are issued in ascending order from a cursor. After `INT32_MAX` the
   cursor continues from 1, and it passes over every value that is live, so a
-  value in use is never issued, and a released value is issued again only
-  after the cursor has gone round the whole range: every other value has been
-  issued once or passed in between, about two billion creations. Until then a
-  stale token is rejected; afterwards it names whatever reference holds the
-  value then, and only on that reference's root.
+  value in use is never issued.
+- Until the range has been used once (2,147,483,647 creations in the process),
+  no value is issued twice, and a stale token is always rejected, as before.
+- After that, a value is issued at most once on each pass of the cursor, but
+  there is no minimum delay between a release and the next issue of that
+  value: a reference that lived for most of a pass and is released just
+  before the cursor reaches its value has it issued again by the next
+  creation. A stale token then names whatever reference holds the value, and
+  only on that reference's root.
 - Creation fails with `RESOURCE_EXHAUSTED` only while every value is live at
-  once, which needs more memory than any process has.
+  once, about two billion references held together.
 
 Through 0.3.1 values were never reused, and once 2,147,483,647 references had
 been created, creation failed for every root for the rest of the process.
@@ -398,8 +402,8 @@ gate before it releases), releases deferred during an operation keep their
 values live until the release reaches the host, and a disposed root's tokens
 are never released, because its close erased them. Nothing keys a cache by
 token, compares tokens, or reports one. A new use of tokens must keep those
-properties: in particular, a second release of the same value after the
-cursor has come round again would release another wrapper's reference.
+properties: in particular, once the range has been used once, a second
+release of the same value can release another wrapper's reference.
 
 After the wrap, each creation passes the live values the cursor meets, one
 hash lookup each, so the values the process keeps for its whole life (library
@@ -1117,8 +1121,8 @@ one compatibility unit.
 - No public API exposes a native handle, pointer, delegate, or stack contract.
 - One root owns every child, reference, callback, module, and operation.
 - A reference token is valid only on its root and only until it is released;
-  its value is issued again only after the cursor has passed every other
-  value.
+  once the token range has been used once, its value may be issued again at
+  any time after that.
 - One operation engine owns every failure and stack boundary.
 - Hard stops outrank callback failures; callback failures outrank
   allocator/native failures.

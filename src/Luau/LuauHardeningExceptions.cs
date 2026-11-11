@@ -487,8 +487,7 @@ public sealed class LuauDecodedResultLimitException : LuauLimitException
 /// every token value is held at once. Tokens are positive 32-bit values shared
 /// by every state in the process. The host issues them in ascending order and,
 /// after the last, continues from the first, passing every value still held,
-/// so this needs about two billion references alive together, more than a
-/// process has memory for.
+/// so this needs about two billion references alive together.
 /// </summary>
 public sealed class LuauReferenceLimitException : LuauException
 {

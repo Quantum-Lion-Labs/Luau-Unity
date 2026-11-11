@@ -299,9 +299,11 @@ API or ABI breaks.
   frame at 90 frames per second in about 11 hours. The host now reuses token
   values once the range is used up: they are still issued in ascending
   order, and after the last one it continues from 1, passing every value
-  still in use, so a released value is not issued again until about two
-  billion more references have been created. Creation fails only while every
-  value is held at once, which needs more memory than a process has.
+  still in use. Nothing changes for a process that creates fewer than
+  2,147,483,647 references: no value is issued twice. Past that point a
+  released value can be issued again at any time, so a token must not be used
+  after it is released; the managed runtime never does. Creation fails only
+  while every value is held at once, about two billion references.
 - A process could register no managed callback after its 2,147,483,647th.
   `CreateFunction`, `CreateAsyncFunction`, `OpenLibrary`, the first handle of
   each capability descriptor on a state, and `OpenRequireLibrary` each take a
