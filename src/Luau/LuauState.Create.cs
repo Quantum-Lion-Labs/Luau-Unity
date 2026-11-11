@@ -173,8 +173,9 @@ unsafe partial class LuauState
     /// <see langword="async"/> methods returning <see cref="Task"/> or
     /// <see cref="ValueTask"/> preserve across each await, and, when the state
     /// has a <see cref="LuauExecutionOptions.ContinuationScheduler"/>, any code
-    /// running on that scheduler. Access from anywhere else throws
-    /// <see cref="InvalidOperationException"/>.
+    /// running on that scheduler. A state with a scheduler accepts access
+    /// only on it, whatever the caller's context. Access from anywhere else
+    /// throws <see cref="InvalidOperationException"/>.
     /// </para>
     /// <para>
     /// An async method whose builder does not carry the execution context

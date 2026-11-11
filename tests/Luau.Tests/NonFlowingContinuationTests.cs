@@ -194,7 +194,7 @@ public sealed class NonFlowingContinuationTests : IDisposable
 
         // The refusal leaves the VM untouched: the operation completes and
         // the root runs the next one.
-        Assert.Equal(ExpectedResults(EntersTheVm(access) ? Access.ArgumentCount : access), nonFlowing.Results);
+        Assert.Equal(EntersTheVm(access) ? DefaultResults : ExpectedResults(access), nonFlowing.Results);
         Assert.Null(nonFlowing.AfterwardsFailure);
     }
 
@@ -214,7 +214,7 @@ public sealed class NonFlowingContinuationTests : IDisposable
             Assert.Equal(
                 scheduled ? AlreadyExecuting : AnotherOperation,
                 Assert.IsType<InvalidOperationException>(nonFlowing.Failure).Message);
-            Assert.Equal(ExpectedResults(Access.ArgumentCount), nonFlowing.Results);
+            Assert.Equal(DefaultResults, nonFlowing.Results);
             Assert.Null(nonFlowing.AfterwardsFailure);
         }
     }
@@ -1109,6 +1109,10 @@ public sealed class NonFlowingContinuationTests : IDisposable
         Access.GlobalRead => 7,
         _ => "done",
     };
+
+    // What `local r = f(41) return r, g, shared.k, type(math)` returns when
+    // the callback changed nothing and returned 1.
+    static readonly object?[] DefaultResults = [1, 7, 5, "nil"];
 
     static object?[] ExpectedResults(Access access) =>
     [

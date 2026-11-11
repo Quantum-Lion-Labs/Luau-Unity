@@ -50,7 +50,6 @@ namespace Luau.Unity.Tests
                 root.Options.DefaultExecutionOptions.ContinuationScheduler,
                 Is.InstanceOf<LuauSynchronizationContextScheduler>());
             using var table = root.CreateTable();
-            root["table"] = table;
             var observation = new Observation();
             using var load = root.CreateAsyncFunction("load", async context =>
             {
@@ -58,9 +57,13 @@ namespace Luau.Unity.Tests
                 await LoadInto(table, observation);
                 context.Return(1);
             });
-            root["load"] = load;
+            // The root's globals are frozen once CreateState returns; a
+            // script's own thread takes its values.
+            using var script = root.CreateSandboxedThread();
+            script["target"] = table;
+            script["load"] = load;
 
-            using (var results = await root.DoStringAsync("return load(), table.loaded"))
+            using (var results = await script.DoStringAsync("return load(), target.loaded"))
             {
                 Assert.That(observation.LostContext, Is.True, "The helper kept the callback's execution context.");
                 Assert.That(observation.ThreadId, Is.EqualTo(ownerThreadId));
@@ -90,12 +93,13 @@ namespace Luau.Unity.Tests
                 await LoadInto(table, observation);
                 context.Return(1);
             });
-            root["load"] = load;
+            using var script = root.CreateSandboxedThread();
+            script["load"] = load;
 
             LuauManagedCallbackException exception = null;
             try
             {
-                using var results = await root.DoStringAsync("return load()");
+                using var results = await script.DoStringAsync("return load()");
             }
             catch (LuauManagedCallbackException caught)
             {

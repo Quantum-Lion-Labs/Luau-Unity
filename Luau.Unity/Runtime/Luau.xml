@@ -2276,8 +2276,9 @@
             <see langword="async"/> methods returning <see cref="T:System.Threading.Tasks.Task"/> or
             <see cref="T:System.Threading.Tasks.ValueTask"/> preserve across each await, and, when the state
             has a <see cref="P:Luau.LuauExecutionOptions.ContinuationScheduler"/>, any code
-            running on that scheduler. Access from anywhere else throws
-            <see cref="T:System.InvalidOperationException"/>.
+            running on that scheduler. A state with a scheduler accepts access
+            only on it, whatever the caller's context. Access from anywhere else
+            throws <see cref="T:System.InvalidOperationException"/>.
             </para>
             <para>
             An async method whose builder does not carry the execution context
