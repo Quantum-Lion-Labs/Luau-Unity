@@ -649,4 +649,117 @@ public sealed class AsyncCallbackWaitTests
             await loop.Run(root.Dispose);
         }
     }
+
+    // A scheduler that runs its queue only when asked, on the thread that
+    // created it, so a host function can run a nested message loop.
+    sealed class PumpedScheduler : ILuauContinuationScheduler
+    {
+        readonly int owner = Environment.CurrentManagedThreadId;
+        readonly System.Collections.Concurrent.ConcurrentQueue<Action> queue = new();
+
+        public bool CheckAccess() => Environment.CurrentManagedThreadId == owner;
+
+        public void Post(Action continuation) => queue.Enqueue(continuation);
+
+        internal int Count => queue.Count;
+
+        // Runs queued work until the queue is empty or limit items have run.
+        internal int Drain(int limit)
+        {
+            var delivered = 0;
+            while (delivered < limit && queue.TryDequeue(out var work))
+            {
+                delivered++;
+                work();
+            }
+
+            return delivered;
+        }
+    }
+
+    [Fact]
+    public void ANestedMessageLoopInsideAnAccessDoesNotSpinOnTheDeferredEndOfTheWait()
+    {
+        // The access's host function completes the callback and then runs the
+        // scheduler's queue until it is empty, as a nested message loop does.
+        // The end of the wait is delivered there, inside the access, where it
+        // cannot run. It must not be posted straight back: the loop would
+        // deliver it again for ever, and the access could never end.
+        //
+        // The runner continues inline in the host function only when the
+        // completing thread has no synchronization context, so the test
+        // removes xunit's for its duration; with one, the continuation goes
+        // to the thread pool and may miss the nested loop.
+        const int DrainLimit = 1000;
+        var testContext = SynchronizationContext.Current;
+        SynchronizationContext.SetSynchronizationContext(null);
+        try
+        {
+            RunNestedMessageLoopScenario(DrainLimit);
+        }
+        finally
+        {
+            SynchronizationContext.SetSynchronizationContext(testContext);
+        }
+    }
+
+    static void RunNestedMessageLoopScenario(int DrainLimit)
+    {
+        var scheduler = new PumpedScheduler();
+        using var root = LuauState.Create(TestBudgets.StateOptions with
+        {
+            DefaultExecutionOptions = TestBudgets.Execution with { ContinuationScheduler = scheduler },
+        });
+        root.OpenBaseLibrary();
+        var source = new TaskCompletionSource();
+        var nestedDeliveries = -1;
+        var leftInQueue = -1;
+        using var probe = root.CreateFunction("probe", _ =>
+        {
+            source.SetResult();
+            nestedDeliveries = scheduler.Drain(DrainLimit);
+            leftInQueue = scheduler.Count;
+        });
+        root["probe"] = LuauValue.FromFunction(probe);
+        using var setup = root.DoString(ProbedTable);
+        using var table = setup[0].Read<LuauTable>().Retain();
+        using var wait = root.CreateAsyncFunction("wait", context =>
+        {
+            context.Return(42);
+            return new ValueTask(source.Task);
+        });
+        root["wait"] = LuauValue.FromFunction(wait);
+
+        var before = root.GetTop();
+        var run = root.DoStringAsync("return wait()").AsTask();
+        // The callback's result is on the stack while it is pending.
+        var pending = root.GetTop();
+        Assert.Equal(99, table["x"].Read<int>());
+        Assert.Equal(pending, root.GetTop());
+
+        // The end of the wait was delivered to the nested loop, which then
+        // came to an end with an empty queue.
+        Assert.InRange(nestedDeliveries, 1, DrainLimit - 1);
+        Assert.Equal(0, leftInQueue);
+
+        // The end of the wait arrives once the access is over.
+        var waited = System.Diagnostics.Stopwatch.StartNew();
+        while (!run.IsCompleted)
+        {
+            Assert.True(waited.Elapsed < TestBudgets.WaitTimeout, "The operation did not finish after the access ended.");
+            if (scheduler.Drain(DrainLimit) == 0)
+            {
+                Thread.Sleep(1);
+            }
+        }
+
+        using (var results = run.GetAwaiter().GetResult())
+        {
+            Assert.Equal(42, Assert.Single(results).Read<int>());
+        }
+
+        Assert.Equal(before, root.GetTop());
+        using var next = root.DoString("return 1 + 1");
+        Assert.Equal(2, Assert.Single(next).Read<int>());
+    }
 }

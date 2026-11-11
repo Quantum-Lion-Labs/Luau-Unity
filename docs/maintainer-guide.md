@@ -837,9 +837,12 @@ one is in progress:
    metamethod calls completes a source that runs its continuations
    synchronously, so the callback, its invoker, and the runner continue there,
    where `CheckAccess()` is true and the reentrant gate does not wait. The
-   step is then posted, and runs once that thread has left the access; a
-   delivery that still finds the thread inside one (a nested message loop)
-   posts it again. Without a scheduler it goes to the thread pool and takes
+   step is then posted, and runs once that thread has left the access. A
+   delivery that still finds the thread inside one (a nested message loop in
+   a host function) does not post it straight back, which would keep a loop
+   that runs until its queue is empty going for ever: a thread-pool thread
+   waits for the gate (`WaitForNativeAccessToEnd`) and posts it then, once.
+   Without a scheduler it goes to the thread pool and takes
    the gate there, which covers the same nesting by the callback's own flow.
    On the usual path, where the runner continues on the scheduler outside any
    access, the step runs inline: it adds no post, and it replaces the hard-stop
@@ -849,6 +852,12 @@ one is in progress:
    thread, queues that continuation to the thread pool instead of running it
    inline. There a callback that completes after an await always reaches the
    step through a post, as it reached the check before.)
+   One case is left to the host, as it was before the scheduler rule
+   existed: without a scheduler, a thread inside an access must not block on
+   the thread that completes the callback. The completing thread runs the
+   runner's continuation and waits for the gate that the blocked thread
+   holds, so neither goes on. A host function must not wait synchronously for
+   work that completes a pending callback of the same root.
 2. Until that step the runner changes nothing of the operation. The
    callback's exception is recorded in the step, under the gate, not where the
    runner caught it: an access still admitted would otherwise take it as its

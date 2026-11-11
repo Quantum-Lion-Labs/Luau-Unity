@@ -863,6 +863,19 @@ internal sealed unsafe class LuauVmContext
     internal bool IsInsideNativeAccess => Monitor.IsEntered(nativeGate);
 
     /// <summary>
+    /// Blocks until no other thread is inside a native access of this root.
+    /// For work that was delivered inside one and must run after it; never
+    /// call it on the thread that is inside the access.
+    /// </summary>
+    internal void WaitForNativeAccessToEnd()
+    {
+        Debug.Assert(!IsInsideNativeAccess, "The thread inside a native access cannot wait for it to end.");
+        lock (nativeGate)
+        {
+        }
+    }
+
+    /// <summary>
     /// Ends <paramref name="operation"/>'s wait for its asynchronous
     /// callback and records the callback's failure, if any, for the runner.
     /// The caller runs on the scheduler, if there is one, outside every

@@ -143,9 +143,23 @@ internal static class LuauContinuationDispatcher
         {
             // A scheduler that runs queued work from inside an access (a
             // nested message loop in a host function) can deliver this there.
+            // Posting it again from here would feed a loop that runs until
+            // its queue is empty for ever, and the access cannot end before
+            // that loop returns. Another thread waits for the access to end
+            // and posts it then, once.
             if (context.IsInsideNativeAccess)
             {
-                Schedule();
+                try
+                {
+                    ThreadPool.UnsafeQueueUserWorkItem(
+                        static work => ((OutsideNativeAccessWork<TState>)work!).ScheduleAfterNativeAccess(),
+                        this);
+                }
+                catch (Exception exception)
+                {
+                    completion.TrySetException(exception);
+                }
+
                 return;
             }
 
@@ -160,6 +174,12 @@ internal static class LuauContinuationDispatcher
                     static work => ((OutsideNativeAccessWork<TState>)work!).Invoke(),
                     this);
             }
+        }
+
+        void ScheduleAfterNativeAccess()
+        {
+            context.WaitForNativeAccessToEnd();
+            Schedule();
         }
 
         void Invoke()

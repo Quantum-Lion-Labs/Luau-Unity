@@ -373,6 +373,13 @@
             that one of them completes inline) is inside it too.
             </summary>
         </member>
+        <member name="M:Luau.LuauVmContext.WaitForNativeAccessToEnd">
+            <summary>
+            Blocks until no other thread is inside a native access of this root.
+            For work that was delivered inside one and must run after it; never
+            call it on the thread that is inside the access.
+            </summary>
+        </member>
         <member name="M:Luau.LuauVmContext.EndAsyncCallbackWait(Luau.ScriptOperation,System.String,System.Exception)">
             <summary>
             Ends <paramref name="operation"/>'s wait for its asynchronous
