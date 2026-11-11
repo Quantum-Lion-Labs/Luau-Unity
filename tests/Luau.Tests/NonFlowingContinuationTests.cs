@@ -266,26 +266,39 @@ public sealed class NonFlowingContinuationTests : IDisposable
     [InlineData(false)]
     public async Task AccessOnTheSchedulerBeforeTheVmHasYieldedIsRefused(bool withMarker)
     {
-        // Work posted while the VM runs is queued before the runner's next
-        // step, so it runs after native resume returned with a callback
-        // queued and before the runner suspends the operation for it.
+        // The window runs from native resume returning with a callback
+        // queued to the runner suspending the operation for it. A runner off
+        // the scheduler posts each of its steps, so work that the script
+        // posts while the VM runs is queued before the runner's next step and
+        // runs in that window. The runner is moved off the loop for certain:
+        // first's task is completed from the test thread, with asynchronous
+        // continuations, only once the loop item that started the operation
+        // has returned, so the runner already awaits it.
         var root = await loop.CreateRootAsync();
         try
         {
             Exception? refusal = null;
             var attempted = false;
-            var results = await loop.RunAsync(() =>
+            var inWindow = false;
+            var secondStarted = false;
+            var secondStartedBeforeAttempt = true;
+            var first = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var run = await loop.Run(() =>
             {
                 var table = root.CreateTable();
-                // Completes on the thread pool, which moves the runner off
-                // the loop for the rest of the operation.
-                root["first"] = root.CreateAsyncFunction("first", async _ => await new ThreadPoolHop());
+                root["first"] = root.CreateAsyncFunction("first", _ => new ValueTask(first.Task));
                 root["post"] = root.CreateFunction("post", _ =>
                 {
                     var context = ExecutionContext.Capture()!;
                     loop.Post(_ =>
                     {
                         attempted = true;
+                        secondStartedBeforeAttempt = secondStarted;
+                        // The proof that this attempt landed in the window: a
+                        // callback is queued and not yet dispatched.
+                        var active = root.Context.GetActiveOperation();
+                        inWindow = active != null &&
+                            Record(active.ThrowIfAsyncCallbackAccessUnsafe) is InvalidOperationException;
                         if (withMarker)
                         {
                             ExecutionContext.Run(context, _ => refusal = Record(() => table["k"] = 1), null);
@@ -298,13 +311,19 @@ public sealed class NonFlowingContinuationTests : IDisposable
                 });
                 root["second"] = root.CreateAsyncFunction("second", context =>
                 {
+                    secondStarted = true;
                     context.Return(4);
                     return default;
                 });
                 return ReadAll(root.DoStringAsync("first() post() return second()"));
             });
 
+            first.TrySetResult();
+            var results = await run.WaitAsync(TestBudgets.WaitTimeout);
+
             Assert.True(attempted);
+            Assert.True(inWindow, "The access did not run between native resume and the callback's dispatch.");
+            Assert.False(secondStartedBeforeAttempt);
             Assert.Equal(
                 withMarker ? BeforeYield : AnotherOperation,
                 Assert.IsType<InvalidOperationException>(refusal).Message);
@@ -940,46 +959,57 @@ public sealed class NonFlowingContinuationTests : IDisposable
     [InlineData(false)]
     public async Task WallClockLimitWhileSuspendedInANonFlowingMethod(bool nonFlowing)
     {
-        var root = await loop.CreateRootAsync();
-        try
+        // The callback waits for the watchdog, not for time, but a runner that
+        // stalls past the limit before the callback starts stops the script
+        // without it, which proves nothing about the callback. Such an attempt
+        // is repeated with a longer limit; the test fails if none starts it.
+        const int Attempts = 5;
+        for (var attempt = 0; attempt < Attempts; attempt++)
         {
-            var stop = new StopObservation();
-            var started = false;
-            var run = await loop.Run(() =>
+            var root = await loop.CreateRootAsync();
+            try
             {
-                var table = root.CreateTable();
-                root["wait"] = root.CreateAsyncFunction("wait", async context =>
+                var stop = new StopObservation();
+                var started = false;
+                var limit = TimeSpan.FromMilliseconds(500 << attempt);
+                var run = await loop.Run(() =>
                 {
-                    started = true;
-                    FlowProbe.Value = "callback";
-                    await (nonFlowing
-                        ? AwaitStopWithoutContext(context, table, stop).AsTask()
-                        : AwaitStopWithContext(context, table, stop));
+                    var table = root.CreateTable();
+                    root["wait"] = root.CreateAsyncFunction("wait", async context =>
+                    {
+                        started = true;
+                        FlowProbe.Value = "callback";
+                        await (nonFlowing
+                            ? AwaitStopWithoutContext(context, table, stop).AsTask()
+                            : AwaitStopWithContext(context, table, stop));
+                    });
+                    return ReadAll(root.DoStringAsync(
+                        "wait()",
+                        executionOptions: LuauExecutionOptions.Unbounded with { WallClockLimit = limit }));
                 });
-                return ReadAll(root.DoStringAsync(
-                    "wait()",
-                    executionOptions: LuauExecutionOptions.Unbounded with { WallClockLimit = TimeSpan.FromMilliseconds(500) }));
-            });
 
-            var exception = await Assert.ThrowsAsync<LuauExecutionBudgetException>(() => run);
-            Assert.Equal(LuauExecutionBudgetKind.WallClock, exception.BudgetKind);
-            // The callback waits for the watchdog, not for time. Only a runner
-            // that stalled past the limit before the callback started skips it.
-            if (started)
-            {
+                var exception = await Assert.ThrowsAsync<LuauExecutionBudgetException>(() => run);
+                Assert.Equal(LuauExecutionBudgetKind.WallClock, exception.BudgetKind);
+                Assert.Equal(2, await loop.Run(() => ReadInt(root, "return 2")));
+                if (!started)
+                {
+                    continue;
+                }
+
                 Assert.Equal(!nonFlowing, stop.KeptContext);
                 Assert.True(stop.TokenCanceled);
                 Assert.Equal(
                     LuauExecutionBudgetKind.WallClock,
                     Assert.IsType<LuauExecutionBudgetException>(stop.Access).BudgetKind);
+                return;
             }
+            finally
+            {
+                await loop.Run(root.Dispose);
+            }
+        }
 
-            Assert.Equal(2, await loop.Run(() => ReadInt(root, "return 2")));
-        }
-        finally
-        {
-            await loop.Run(root.Dispose);
-        }
+        Assert.Fail($"The callback never started before the wall-clock limit in {Attempts} attempts.");
     }
 
     [Theory]
@@ -1338,23 +1368,6 @@ public sealed class NonFlowingContinuationTests : IDisposable
     }
 
     static Task WaitWithoutContext(Task task) => WaitWithoutContextCore(task).AsTask();
-
-    // Resumes the awaiting method on a thread-pool thread, always: unlike an
-    // awaited task, it is never complete when awaited.
-    readonly struct ThreadPoolHop : ICriticalNotifyCompletion
-    {
-        public ThreadPoolHop GetAwaiter() => this;
-
-        public bool IsCompleted => false;
-
-        public void GetResult()
-        {
-        }
-
-        public void OnCompleted(Action continuation) => ThreadPool.QueueUserWorkItem(_ => continuation());
-
-        public void UnsafeOnCompleted(Action continuation) => ThreadPool.UnsafeQueueUserWorkItem(_ => continuation(), null);
-    }
 
     internal static async Task<object?[]> ReadAll(ValueTask<LuauResultScope> execution)
     {
