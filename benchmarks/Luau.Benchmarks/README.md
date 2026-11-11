@@ -28,7 +28,9 @@ dotnet run --project benchmarks/Luau.Benchmarks -c Release -- --filter interrupt
 The `entry-` cases measure the fixed cost of entering and leaving the VM for the
 calls a per-frame script hook makes: `InvokeVoid` under each execution budget
 profile and of a hook whose returned values it discards, invocation with
-results, coroutine resume, execution of cached compiler output, a script
+results, a hook calling a synchronous host function, `InvokeVoidAsync` of a
+hook and of one that awaits an asynchronous host function completing at once,
+coroutine resume, execution of cached compiler output, a script
 entrypoint called with reused options as a Unity script phase does, and direct
 table and global access outside an operation, on the root and on a script's
 sandboxed thread, running or waiting in a yield. Each sample makes 64 calls and

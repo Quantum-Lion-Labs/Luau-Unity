@@ -151,6 +151,10 @@ unsafe partial class LuauState
     /// Creates an asynchronous managed callback capability for Luau code.
     /// Managed callers cannot invoke the returned capability directly.
     /// </summary>
+    /// <remarks>
+    /// The rules for VM access while the callback runs are those of
+    /// <see cref="CreateAsyncFunction(string, Func{LuauCallContext, ValueTask})"/>.
+    /// </remarks>
     public LuauFunction CreateAsyncFunction(Func<LuauCallContext, ValueTask> callback)
     {
         return CreateAsyncFunction(name: null, callback);
@@ -160,6 +164,48 @@ unsafe partial class LuauState
     /// Creates a named asynchronous managed callback capability for Luau code.
     /// Managed callers cannot invoke the returned capability directly.
     /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The callback runs after the script's call has suspended, and the call
+    /// waits for the returned task. Until it completes, the root accepts VM
+    /// access only from the call's own callers: code whose
+    /// <see cref="ExecutionContext"/> flowed from the callback, which ordinary
+    /// <see langword="async"/> methods returning <see cref="Task"/> or
+    /// <see cref="ValueTask"/> preserve across each await, and, when the state
+    /// has a <see cref="LuauExecutionOptions.ContinuationScheduler"/>, code
+    /// running on that scheduler whose context does not belong to another
+    /// operation or to a finished one. A state with a scheduler accepts
+    /// access only on it, whatever the caller's context; a state without one
+    /// accepts the callback's own code on any thread. Access from anywhere
+    /// else throws <see cref="InvalidOperationException"/>.
+    /// </para>
+    /// <para>
+    /// The call resumes only after the returned task has completed and no
+    /// VM access is in progress: when code inside an access completes the
+    /// task (a host function that a metamethod calls sets a result the
+    /// callback awaits), the call continues once that access has returned.
+    /// Luau code that an access runs while the call waits cannot call an
+    /// asynchronous host function, even inside a coroutine it creates; that
+    /// call fails with <see cref="LuauManagedCallbackException"/>, reported to
+    /// the access.
+    /// </para>
+    /// <para>
+    /// An async method whose builder does not carry the execution context
+    /// across an await, such as an <c>async UniTask</c> method, loses it after
+    /// its first await. Code there is recognised only by the scheduler, which
+    /// <c>LuauUnity.CreateState</c> configures by default. Without a scheduler
+    /// its VM access throws <see cref="InvalidOperationException"/> with the
+    /// message "The Luau VM is executing on another operation.", and, unless
+    /// the callback handles it, the script's call fails with
+    /// <see cref="LuauManagedCallbackException"/>. Configure a scheduler, or
+    /// make that access in the callback itself after awaiting the helper.
+    /// </para>
+    /// <para>
+    /// No new top-level operation (an invocation, an execution, or a resume)
+    /// can start on the root while the callback runs, from the callback or
+    /// from elsewhere: it throws <see cref="InvalidOperationException"/>.
+    /// </para>
+    /// </remarks>
     public LuauFunction CreateAsyncFunction(
         string? name,
         Func<LuauCallContext, ValueTask> callback)
