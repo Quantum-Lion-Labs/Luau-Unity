@@ -586,6 +586,84 @@ if(LUAU_HOST_BUILD_TESTS)
 
     add_test(NAME luau_host_library_coverage COMMAND luau_host_library_coverage)
 
+    # The reference-wrap fixture is the host compiled from its own source with
+    # two more exports that position the process reference-token allocator
+    # (tests/luau_host_reference_wrap_fixture.h), so tests reach the end of
+    # the token range without creating two billion references first. The
+    # native tests below and the managed ReferenceTokenWrapTests load it. It
+    # keeps the host's build identity, so the managed handshake accepts it;
+    # it is never installed or copied into the package.
+    if(NOT ANDROID)
+        set(_luau_host_reference_wrap_directory "${CMAKE_CURRENT_BINARY_DIR}/reference-wrap-fixture")
+        add_library(
+            luau_host_reference_wrap
+            SHARED
+            tests/luau_host_reference_wrap_fixture.cpp
+        )
+        target_compile_features(luau_host_reference_wrap PRIVATE cxx_std_17)
+        target_compile_definitions(
+            luau_host_reference_wrap
+            PRIVATE
+                LUAU_HOST_BUILDING_LIBRARY=1
+                "LUAU_HOST_UPSTREAM_REVISION=\"${_luau_host_actual_upstream_revision}\""
+                "LUAU_HOST_BUILD_INPUT_FINGERPRINT=\"${LUAU_HOST_BUILD_INPUT_FINGERPRINT}\""
+                "LUAU_HOST_BUILD_CONFIGURATION=\"${_luau_host_build_configuration}\""
+        )
+        target_include_directories(
+            luau_host_reference_wrap
+            PUBLIC "${LUAU_HOST_ROOT}/include" "${LUAU_HOST_ROOT}/tests"
+        )
+        target_link_libraries(
+            luau_host_reference_wrap
+            PRIVATE
+                Luau.Compiler
+                Luau.VM
+                Luau.VM.Internals
+        )
+        set_target_properties(
+            luau_host_reference_wrap
+            PROPERTIES
+                CXX_VISIBILITY_PRESET hidden
+                VISIBILITY_INLINES_HIDDEN YES
+                WINDOWS_EXPORT_ALL_SYMBOLS OFF
+                RUNTIME_OUTPUT_DIRECTORY "${_luau_host_reference_wrap_directory}"
+                LIBRARY_OUTPUT_DIRECTORY "${_luau_host_reference_wrap_directory}"
+                ARCHIVE_OUTPUT_DIRECTORY "${_luau_host_reference_wrap_directory}"
+        )
+        if(UNIX AND NOT APPLE)
+            target_link_options(
+                luau_host_reference_wrap
+                PRIVATE
+                    "LINKER:--version-script=${LUAU_HOST_ELF_VERSION_SCRIPT}"
+                    "LINKER:--exclude-libs,ALL"
+            )
+        endif()
+
+        add_executable(
+            luau_host_reference_wrap_conformance
+            tests/luau_host_reference_wrap_conformance.cpp
+        )
+        target_compile_features(luau_host_reference_wrap_conformance PRIVATE cxx_std_17)
+        target_link_libraries(luau_host_reference_wrap_conformance PRIVATE luau_host_reference_wrap Threads::Threads)
+        set_target_properties(
+            luau_host_reference_wrap_conformance
+            PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${_luau_host_reference_wrap_directory}"
+        )
+
+        foreach(_luau_host_reference_wrap_target IN ITEMS luau_host_reference_wrap luau_host_reference_wrap_conformance)
+            if(MSVC)
+                target_compile_options("${_luau_host_reference_wrap_target}" PRIVATE /W4 /WX /permissive- /EHsc)
+            else()
+                target_compile_options("${_luau_host_reference_wrap_target}" PRIVATE -Wall -Wextra -Wpedantic -Werror)
+                if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+                    target_compile_options("${_luau_host_reference_wrap_target}" PRIVATE -Wno-nested-anon-types)
+                endif()
+            endif()
+        endforeach()
+
+        add_test(NAME luau_host_reference_wrap_conformance COMMAND luau_host_reference_wrap_conformance)
+    endif()
+
     # Purpose-built malformed ABI libraries exercise the managed handshake
     # without adding mutation hooks or test exports to the production host.
     # Each target compiles the same tiny C fixture with one fixed defect.

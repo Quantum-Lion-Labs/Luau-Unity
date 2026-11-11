@@ -283,6 +283,36 @@ API or ABI breaks.
     reads: `Space`, the left mouse button, and touch. Reading anything else
     fails with, for example, `Input key 'A' is not enabled for this Luau
     runtime. ...`, instead of returning `false`.
+- A process could no longer create references to Luau values once it had
+  created 2,147,483,647 of them, counted across every state and never given
+  back. From then on every `LuauState` in the process, new ones included,
+  threw `LuauReferenceLimitException` whenever a table, function, userdata,
+  buffer, thread, or object handle reached managed code (a result,
+  `CreateTable`, `CreateThread`, `CreateHandle`, `Retain`, a new script
+  instance), and a callback that read a table argument failed with a
+  `LuauManagedCallbackException` saying the argument cannot be read as a
+  `LuauTable`. Every such value takes a reference token whether or not the
+  host keeps it, so on a desktop host code creating and releasing
+  references reached the limit in about 4 minutes, a script calling a host
+  function with a table argument in a loop in about 40 minutes, and 300
+  scripted objects that each read and write one table-valued property per
+  frame at 90 frames per second in about 11 hours. The host now reuses token
+  values once the range is used up: they are still issued in ascending
+  order, and after the last one it continues from 1, passing every value
+  still in use. Nothing changes for a process that creates fewer than
+  2,147,483,647 references: no value is issued twice. Past that point a
+  released value can be issued again at any time, so a token must not be used
+  after it is released; the managed runtime never does. Creation fails only
+  while every value is held at once, about two billion references.
+- A process could register no managed callback after its 2,147,483,647th.
+  `CreateFunction`, `CreateAsyncFunction`, `OpenLibrary`, the first handle of
+  each capability descriptor on a state, and `OpenRequireLibrary` each take a
+  process-wide identifier that was never given back, and once the 32-bit
+  range was used up each of them threw `InvalidOperationException` (`The
+  process exhausted managed Luau callback identifiers.`) on every state.
+  Host code creating and disposing callbacks in a loop reached that in about
+  16 minutes; scripts cannot register callbacks. Identifiers are now 64-bit,
+  and still never reused.
 
 ### Compatibility
 

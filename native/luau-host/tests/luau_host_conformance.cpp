@@ -906,7 +906,7 @@ void test_invalid_table_reference_and_load_boundaries()
     REQUIRE(luau_host_stack_get_top(root.state) == loadTop);
 }
 
-void test_reference_token_staleness_churn_and_exhaustion()
+void test_reference_token_staleness_and_churn()
 {
     Root root = create_root();
     Root otherRoot = create_root();
@@ -934,13 +934,185 @@ void test_reference_token_staleness_churn_and_exhaustion()
         REQUIRE(luau_host_reference_push(root.state, previous, &type) == LUAU_HOST_STATUS_INVALID_ARGUMENT);
         previous = token;
     }
+}
 
-    luau_host_internal::MonotonicReferenceTokenAllocator nearExhaustion(
-        uint64_t(std::numeric_limits<int32_t>::max()) - 1);
-    REQUIRE(nearExhaustion.allocate() == std::numeric_limits<int32_t>::max() - 1);
-    REQUIRE(nearExhaustion.allocate() == std::numeric_limits<int32_t>::max());
-    REQUIRE(nearExhaustion.allocate() == 0);
-    REQUIRE(nearExhaustion.allocate() == 0);
+// The table issues ascending values, continues from 1 after its maximum,
+// passes over live values, and refuses only when every value is live. The
+// host's table is the same class with a maximum of INT32_MAX; a small one
+// reaches every case here.
+void test_reference_token_table_issue_wrap_and_skip()
+{
+    using luau_host_internal::ReferenceTokenTable;
+    static_assert(ReferenceTokenTable::kMaximum == uint32_t(std::numeric_limits<int32_t>::max()));
+
+    int firstRoot = 0;
+    int secondRoot = 0;
+    const void* const a = &firstRoot;
+    const void* const b = &secondRoot;
+    ReferenceTokenTable table(1, 8);
+
+    REQUIRE(table.insert(a, 101) == 1);
+    REQUIRE(table.insert(a, 102) == 2);
+    REQUIRE(table.insert(b, 103) == 3);
+
+    // A released value is not issued again while the cursor is ahead of it.
+    table.erase(a, 2, 102);
+    for (int32_t expected = 4; expected <= 8; ++expected)
+        REQUIRE(table.insert(b, 100 + expected) == expected);
+
+    // After the maximum the cursor continues from 1, passing live values.
+    REQUIRE(table.insert(a, 200) == 2);
+    REQUIRE(table.size() == 8);
+
+    // Every value is live: refused, and nothing changes.
+    REQUIRE(table.insert(a, 300) == 0);
+    REQUIRE(table.insert(b, 300) == 0);
+    REQUIRE(table.size() == 8);
+    int registryReference = 0;
+    REQUIRE(table.find(a, 1, &registryReference) && registryReference == 101);
+    REQUIRE(table.find(a, 2, &registryReference) && registryReference == 200);
+    REQUIRE(table.find(b, 8, &registryReference) && registryReference == 108);
+
+    // One release makes exactly that value available, from the cursor on.
+    table.erase(b, 5, 105);
+    REQUIRE(table.insert(b, 305) == 5);
+    REQUIRE(table.insert(b, 306) == 0);
+
+    // A token is valid only for its root and its registry reference.
+    REQUIRE(!table.find(b, 1, &registryReference));
+    table.erase(b, 1, 101);
+    table.erase(a, 1, 999);
+    REQUIRE(table.find(a, 1, &registryReference) && registryReference == 101);
+    REQUIRE(!table.find(a, 9, &registryReference));
+    REQUIRE(!table.find(a, 0, &registryReference));
+    REQUIRE(!table.find(a, -1, &registryReference));
+
+    // Erasing a root frees its values; they are issued in cursor order.
+    table.eraseroot(b);
+    REQUIRE(table.size() == 2);
+    REQUIRE(table.insert(a, 400) == 6);
+    REQUIRE(table.insert(a, 401) == 7);
+    REQUIRE(table.insert(a, 402) == 8);
+    REQUIRE(table.insert(a, 403) == 3);
+    REQUIRE(table.insert(a, 404) == 4);
+    REQUIRE(table.insert(a, 405) == 5);
+    REQUIRE(table.insert(a, 406) == 0);
+
+    // The cursor stays in range.
+    ReferenceTokenTable edges(0, 3);
+    REQUIRE(edges.insert(a, 1) == 1);
+    edges.seek(3);
+    REQUIRE(edges.insert(a, 3) == 3);
+    REQUIRE(edges.insert(a, 2) == 2);
+    edges.seek(0);
+    REQUIRE(edges.insert(a, 4) == 0);
+    edges.erase(a, 1, 1);
+    edges.seek(4);
+    REQUIRE(edges.insert(a, 5) == 1);
+
+    ReferenceTokenTable top(uint32_t(std::numeric_limits<int32_t>::max()) - 1);
+    REQUIRE(top.insert(a, 1) == std::numeric_limits<int32_t>::max() - 1);
+    REQUIRE(top.insert(a, 2) == std::numeric_limits<int32_t>::max());
+    REQUIRE(top.insert(a, 3) == 1);
+    REQUIRE(top.insert(a, 4) == 2);
+}
+
+// Several threads, each with a root of its own, issue and release tokens in
+// a small range that wraps thousands of times and is sometimes full. A value
+// is never issued while it is live: each value records the thread holding
+// it, and an issue must find it unheld.
+void test_reference_token_table_concurrent_issue_and_release()
+{
+    using luau_host_internal::ReferenceTokenTable;
+    constexpr uint32_t kRange = 64;
+    constexpr int kThreads = 8;
+    constexpr int kHeldLimit = 10;
+    constexpr int kIterations = 100'000;
+
+    ReferenceTokenTable table(1, kRange);
+    std::array<std::atomic<int>, kRange + 1> holder = {};
+    std::array<int, kThreads> roots = {};
+    std::atomic<int> failures{0};
+    std::atomic<uint64_t> refusals{0};
+    std::atomic<uint64_t> wraps{0};
+    std::atomic<int> ready{0};
+
+    std::vector<std::thread> threads;
+    for (int thread = 0; thread < kThreads; ++thread)
+    {
+        threads.emplace_back([&, thread] {
+            const void* const root = &roots[size_t(thread)];
+            std::vector<int32_t> held;
+            uint32_t random = 0x9e3779b9u * uint32_t(thread + 1);
+            int32_t previous = 0;
+
+            ready.fetch_add(1);
+            while (ready.load() != kThreads)
+                std::this_thread::yield();
+
+            for (int iteration = 0; iteration < kIterations; ++iteration)
+            {
+                random ^= random << 13;
+                random ^= random >> 17;
+                random ^= random << 5;
+                const bool issue = held.empty() || (int(held.size()) < kHeldLimit && (random & 1) != 0);
+                if (issue)
+                {
+                    const int32_t token = table.insert(root, thread * 1'000'000 + iteration);
+                    if (token == 0)
+                    {
+                        refusals.fetch_add(1);
+                        continue;
+                    }
+                    if (token < 1 || uint32_t(token) > kRange || holder[size_t(token)].exchange(thread + 1) != 0)
+                        failures.fetch_add(1);
+                    if (token < previous)
+                        wraps.fetch_add(1);
+                    previous = token;
+                    held.push_back(token);
+                }
+                else
+                {
+                    const size_t index = size_t(random >> 8) % held.size();
+                    const int32_t token = held[index];
+                    held[index] = held.back();
+                    held.pop_back();
+
+                    int registryReference = 0;
+                    if (!table.find(root, token, &registryReference))
+                        failures.fetch_add(1);
+                    const void* const other = &roots[size_t((thread + 1) % kThreads)];
+                    int ignored = 0;
+                    if (table.find(other, token, &ignored))
+                        failures.fetch_add(1);
+
+                    // Mark it unheld before it can be issued again.
+                    if (holder[size_t(token)].exchange(0) != thread + 1)
+                        failures.fetch_add(1);
+                    table.erase(root, token, registryReference);
+                }
+            }
+
+            for (const int32_t token : held)
+            {
+                int registryReference = 0;
+                if (!table.find(root, token, &registryReference))
+                    failures.fetch_add(1);
+                holder[size_t(token)].store(0);
+                table.erase(root, token, registryReference);
+            }
+        });
+    }
+
+    for (auto& thread : threads)
+        thread.join();
+
+    REQUIRE(failures.load() == 0);
+    REQUIRE(table.size() == 0);
+    // Not a timing check: the range is smaller than the most the threads
+    // can hold at once, so the cursor must have wrapped.
+    REQUIRE(wraps.load() > 0);
+    (void)refusals.load();
 }
 
 void test_invalid_execution_boundaries()
@@ -3521,9 +3693,13 @@ int main()
     failures += run_test("numeric conversion finite-range validation", test_numeric_conversion_boundaries);
     failures += run_test("invalid observer and stack boundaries", test_invalid_observer_and_stack_boundaries);
     failures += run_test("invalid table, reference, and load boundaries", test_invalid_table_reference_and_load_boundaries);
+    failures += run_test("opaque reference token staleness and churn", test_reference_token_staleness_and_churn);
     failures += run_test(
-        "opaque reference token staleness, churn, and exhaustion",
-        test_reference_token_staleness_churn_and_exhaustion);
+        "reference token table issue, wrap, and live-value skipping",
+        test_reference_token_table_issue_wrap_and_skip);
+    failures += run_test(
+        "reference token table concurrent issue and release",
+        test_reference_token_table_concurrent_issue_and_release);
     failures += run_test("invalid execution and yield boundaries", test_invalid_execution_boundaries);
     failures += run_test("tracked allocator quota telemetry and recovery", test_allocator_quota_and_recovery);
     failures += run_test("failed allocator shrink retains its full charge", test_failed_shrink_retains_allocator_charge);

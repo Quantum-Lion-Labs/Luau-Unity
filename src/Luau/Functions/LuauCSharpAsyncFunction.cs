@@ -8,7 +8,7 @@ internal sealed unsafe class LuauCSharpAsyncFunction : LuauFunction, ILuauManage
     static readonly LuauHostManagedFunction callback = Call;
     readonly Func<LuauState, LuauOperationCancellation, ValueTask<int>> csharpDelegate;
     readonly LuauVmContext context;
-    int registrationId;
+    long registrationId;
 
     public LuauCSharpAsyncFunction(
         LuauState state,
@@ -20,7 +20,7 @@ internal sealed unsafe class LuauCSharpAsyncFunction : LuauFunction, ILuauManage
         registrationId = context.RegisterManagedCallback(name, func);
     }
 
-    int ILuauManagedCallbackFunction.RegistrationId => Volatile.Read(ref registrationId);
+    long ILuauManagedCallbackFunction.RegistrationId => Volatile.Read(ref registrationId);
     LuauHostManagedFunction ILuauManagedCallbackFunction.Callback => callback;
 
     [AOT.MonoPInvokeCallback(typeof(LuauHostManagedFunction))]
@@ -32,9 +32,9 @@ internal sealed unsafe class LuauCSharpAsyncFunction : LuauFunction, ILuauManage
         try
         {
             var nativeRegistrationId = luau_host_callback_registration_id(l);
-            if (nativeRegistrationId == 0 || nativeRegistrationId > int.MaxValue ||
+            if (nativeRegistrationId == 0 || nativeRegistrationId > long.MaxValue ||
                 !LuauVmContext.TryGetManagedCallbackOwner(
-                    (int)nativeRegistrationId,
+                    (long)nativeRegistrationId,
                     out var context,
                     out registration) ||
                 (operation = context.GetActiveOperation()) == null)

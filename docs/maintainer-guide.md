@@ -359,6 +359,62 @@ every step of work, keep each step within the bound above, keep upstream's
 behavior exactly, add the function to the library's replacements so that the
 open guards it, and add it to the corpus and the interrupt tests.
 
+### 3.6 Reference tokens
+
+Managed code holds Luau tables, functions, userdata, buffers, and threads
+through reference tokens. `luau_host_reference_create` stores the value in its
+root's registry and records the registry reference under a token in one
+process-wide table (`ReferenceTokenTable` in `src/reference_tokens.h`); push
+and release look the token up there, and root close erases every token of
+the root before the VM closes. One mutex serializes all four.
+
+The guarantee is:
+
+- A token is a positive `int32_t` value. It is valid only on the root that
+  created it, from its creation until it is released or the root closes;
+  anywhere else, and afterwards, push and release reject it, and a release
+  erases only the record of its own root and registry reference.
+- Values are issued in ascending order from a cursor. After `INT32_MAX` the
+  cursor continues from 1, and it passes over every value that is live, so a
+  value in use is never issued.
+- Until the range has been used once (2,147,483,647 creations in the process),
+  no value is issued twice, and a stale token is always rejected, as before.
+- After that, a value is issued at most once on each pass of the cursor, but
+  there is no minimum delay between a release and the next issue of that
+  value: a reference that lived for most of a pass and is released just
+  before the cursor reaches its value has it issued again by the next
+  creation. A stale token then names whatever reference holds the value, and
+  only on that reference's root.
+- Creation fails with `RESOURCE_EXHAUSTED` only while every value is live at
+  once, about two billion references held together.
+
+Through 0.3.1 values were never reused, and once 2,147,483,647 references had
+been created, creation failed for every root for the rest of the process.
+That took about four minutes of host code creating and releasing references
+in a loop, about 40 minutes of a script calling a host function with a table
+argument, and hours at an ordinary game load, because every table, function,
+buffer, or userdata a callback reads, a result returns, or a host creates
+takes a token.
+
+Managed code may rely on a token only while it holds it. The runtime releases
+each token at most once (every wrapper exchanges its field for -1 under its
+gate before it releases), releases deferred during an operation keep their
+values live until the release reaches the host, and a disposed root's tokens
+are never released, because its close erased them. Nothing keys a cache by
+token, compares tokens, or reports one. A new use of tokens must keep those
+properties: in particular, once the range has been used once, a second
+release of the same value can release another wrapper's reference.
+
+After the wrap, each creation passes the live values the cursor meets, one
+hash lookup each, so the values the process keeps for its whole life (library
+tables, module caches) cost one lookup each per cycle of two billion
+creations. Before the wrap, and while the cursor meets free values, a creation
+costs what it did. `luau_host_conformance` tests the table itself, with a
+small range, including several threads issuing and releasing at once;
+`luau_host_reference_wrap_conformance` and the managed
+`ReferenceTokenWrapTests` test the host and the runtime across the wrap with
+the reference-wrap fixture (section 12.3).
+
 ## 4. Package interop
 
 The package owns the only interop source. `Luau.Interop` uses the internal
@@ -720,6 +776,19 @@ injected only when Luau must observe the error through `pcall`.
 An internal raw callback form exists only for runtime plumbing and focused tests.
 It is not visible to package consumers or generated host libraries.
 
+### 7.3 Registration identifiers
+
+Each managed callback registration (`CreateFunction`, `CreateAsyncFunction`,
+the functions `OpenLibrary` registers, the dispatch functions of a capability
+binding, the `require` function) takes a process-wide 64-bit identifier,
+which the native closure carries as its `registration_id` and the callback
+uses to find its registration. Identifiers are never reused, so a native
+closure that outlives its registration can never reach a later one; at two
+million registrations a second they last 146,000 years. Through 0.3.1 they
+were 32-bit, and the process could register no callback after its
+2,147,483,647th, which host code creating callbacks in a loop reached in
+about 16 minutes.
+
 ## 8. Host API generation
 
 `[LuauLibrary]` on a top-level partial class plus `[LuauMember]` on explicit
@@ -939,6 +1008,21 @@ calls and exact serial/parallel output comparison, and
 `luau_host_library_conformance` and `luau_host_library_coverage` compare the
 replaced library functions with upstream's (section 3.5).
 
+The native tests also build the reference-wrap fixture,
+`luau_host_reference_wrap`: the host compiled from its own source by
+`tests/luau_host_reference_wrap_fixture.cpp`, which adds two test-only exports
+that position the process reference-token allocator and count live tokens
+(`tests/luau_host_reference_wrap_fixture.h`). With it,
+`luau_host_reference_wrap_conformance` and the managed `ReferenceTokenWrapTests`
+reach the end of the token range without creating two billion references
+first. The fixture keeps the host's build identity, so the managed handshake
+accepts it; it is never installed or copied into the package, and the shipped
+source contains none of it. The managed tests load it, with a second copy of
+the runtime, in a load context of their own, and find it through
+`LUAU_HOST_REFERENCE_WRAP_FIXTURE` (which `validate-linux` and the native CI
+jobs set, so a missing fixture fails there), or else in the `linux-x64` or
+`windows-x64` build tree; without either they are skipped.
+
 ### 12.4 Package validation
 
 ```bash
@@ -1036,6 +1120,9 @@ one compatibility unit.
 - Only direct `luau_host_*` declarations cross managed/native.
 - No public API exposes a native handle, pointer, delegate, or stack contract.
 - One root owns every child, reference, callback, module, and operation.
+- A reference token is valid only on its root and only until it is released;
+  once the token range has been used once, its value may be issued again at
+  any time after that.
 - One operation engine owns every failure and stack boundary.
 - Hard stops outrank callback failures; callback failures outrank
   allocator/native failures.

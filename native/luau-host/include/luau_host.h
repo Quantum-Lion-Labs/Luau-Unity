@@ -571,11 +571,15 @@ LUAU_HOST_API luau_host_status LUAU_HOST_CALL luau_host_global_set(
 LUAU_HOST_API luau_host_status LUAU_HOST_CALL luau_host_global_push(luau_host_state* state);
 LUAU_HOST_API int32_t LUAU_HOST_CALL luau_host_is_global(luau_host_state* state, int32_t index);
 
-/* Root-registry references use opaque positive process-unique int32 tokens.
- * reference output is required. create is stack-neutral and retains a copy of
- * index. Tokens increase monotonically and are never reused in the process.
- * Once all positive int32 values have been issued, create returns
- * RESOURCE_EXHAUSTED and leaves reference at -1. push appends the retained value
+/* Root-registry references use opaque positive int32 tokens, unique among
+ * the tokens live in the process. reference output is required. create is
+ * stack-neutral and retains a copy of index. Tokens are issued in ascending
+ * order; after INT32_MAX the order continues from 1, passing every value that
+ * is live. Until the range has been used once no value is issued twice; after
+ * that a released value may be issued again by any later create, with no
+ * minimum delay, so a caller must not use a token after releasing it. create
+ * returns RESOURCE_EXHAUSTED, leaving reference at 0, only while every
+ * positive int32 value is live. push appends the retained value
  * (+1); release is stack-neutral, needs no free slot, cannot fail for a live
  * token, and invalidates it. References are
  * root-scoped, must be released at most once, and become invalid at root close.

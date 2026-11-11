@@ -64,6 +64,8 @@ jobs:
         run: dotnet restore Luau.slnx
 
       - name: Run .NET suite against host
+        env:
+          LUAU_HOST_REFERENCE_WRAP_FIXTURE: ${{ github.workspace }}\native\luau-host\out\build\windows-x64\reference-wrap-fixture\Release\luau_host_reference_wrap.dll
         run: dotnet test Luau.slnx --no-restore --configuration Release "-p:LuauHostNativePath=%GITHUB_WORKSPACE%\native\luau-host\out\install\windows-x64\luau_host.dll"
 
       - name: Run host lifetime and fault soak

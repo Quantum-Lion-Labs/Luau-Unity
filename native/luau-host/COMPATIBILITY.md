@@ -13,9 +13,16 @@ Changing the compiler options, upstream Luau commit, host sources, reference
 token implementation, header, or export allowlist changes that fingerprint
 even when the ABI record layout remains 2.0.
 
-Reference tokens are positive process-unique `int32_t` values allocated
-monotonically and never reused. Exhaustion is permanent for the process and is
-reported as `LUAU_HOST_STATUS_RESOURCE_EXHAUSTED`. Callback registration IDs are
+Reference tokens are positive `int32_t` values, unique among the tokens live
+in the process and valid only on the root that created them. They are issued
+in ascending order; after `INT32_MAX` the order continues from 1, passing every
+value that is live. Until the range has been used once no value is issued
+twice; after that a released value may be issued again by any later creation,
+with no minimum delay. Creation reports
+`LUAU_HOST_STATUS_RESOURCE_EXHAUSTED` only while every positive `int32_t` value
+is live. Through 0.3.1, values were never reused, and creation failed for every
+root for the rest of the process once 2,147,483,647 references had been
+created. Callback registration IDs are
 copied into native closure metadata and observed only during the corresponding
 active callback. GC interrupt notifications are observation-only. Destructor
 callbacks may only release or enqueue their opaque token and must not call the

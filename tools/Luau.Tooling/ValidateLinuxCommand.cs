@@ -25,10 +25,19 @@ internal static class ValidateLinuxCommand
             "linux-x64",
             repository.PathOf("native", "luau-host", "out", "install", "linux-x64", "luau_host.manifest.json"));
         await ProcessRunner.RequireAsync("dotnet", ["restore", "Luau.slnx"], repository.Root);
+        // The reference-wrap tests run against the fixture the preset built,
+        // and fail rather than skip when it is missing.
+        var referenceWrapFixture = repository.PathOf(
+            "native", "luau-host", "out", "build", "linux-x64", "reference-wrap-fixture",
+            "libluau_host_reference_wrap.so");
         await ProcessRunner.RequireAsync(
             "dotnet",
             ["test", "Luau.slnx", "--no-restore", "--configuration", "Release", $"-p:LuauHostNativePath={nativeHost}"],
             repository.Root,
+            environment: new Dictionary<string, string?>
+            {
+                ["LUAU_HOST_REFERENCE_WRAP_FIXTURE"] = referenceWrapFixture,
+            },
             timeout: TimeSpan.FromMinutes(20));
         await ProcessRunner.RequireAsync(
             "dotnet",

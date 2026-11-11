@@ -93,7 +93,7 @@ jobs:
         run: dotnet run --project tools/Luau.Tooling --configuration Release -- native-artifacts --platform linux-x64
 
       - name: Run .NET suite against the stripped shipping host
-        run: dotnet test tests/Luau.Tests/Luau.Tests.csproj --configuration Release "-p:LuauHostNativePath=$GITHUB_WORKSPACE/native/luau-host/out/shipping/linux-x64/libluau_host.so"
+        run: LUAU_HOST_REFERENCE_WRAP_FIXTURE="$GITHUB_WORKSPACE/native/luau-host/out/build/linux-x64-shipping/reference-wrap-fixture/libluau_host_reference_wrap.so" dotnet test tests/Luau.Tests/Luau.Tests.csproj --configuration Release "-p:LuauHostNativePath=$GITHUB_WORKSPACE/native/luau-host/out/shipping/linux-x64/libluau_host.so"
 
       - name: Run host lifetime and fault soak against the shipping host
         run: dotnet run --project tools/Luau.Tooling --configuration Release -- host-soak --configuration Release --iterations 25 --native-host "$GITHUB_WORKSPACE/native/luau-host/out/shipping/linux-x64/libluau_host.so"
