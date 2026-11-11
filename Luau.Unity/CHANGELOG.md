@@ -313,6 +313,28 @@ API or ABI breaks.
   Host code creating and disposing callbacks in a loop reached that in about
   16 minutes; scripts cannot register callbacks. Identifiers are now 64-bit,
   and still never reused.
+- An asynchronous host callback that awaited a helper written as an
+  `async UniTask` method could not use the VM after the helper's first
+  await. `table["loaded"] = true` after `await UniTask.Yield()` threw
+  `InvalidOperationException` (`The Luau VM is executing on another
+  operation.`) and failed the script's call with
+  `LuauManagedCallbackException`, as did reading an argument, returning a
+  value, or reading a global there. A waiting call recognised its callback's
+  code only through the `ExecutionContext`, which UniTask's async method
+  builder, unlike the `Task` and `ValueTask` builders, does not carry across
+  an await. On a state with a continuation scheduler, which
+  `LuauUnity.CreateState` configures by default, a call waiting for an async
+  callback now accepts every VM access made on the scheduler, so such
+  helpers work. As a consequence, other code on the scheduler, such as
+  another component's `Update` on the main thread, can now read and write the
+  root's tables and globals while a script awaits an async callback; Luau
+  code that this reaches counts toward the waiting call's budgets. Starting
+  another call on the root still fails, and nothing changes while the VM runs
+  Luau code. Without a scheduler the execution context is still the only
+  rule and the access is still refused: a host that creates states with
+  `CaptureUnitySynchronizationContext = false` and no scheduler must give
+  them one to await such helpers. See
+  [Exposing C# to Luau](Documentation~/capability-bindings.md#async-callbacks-and-unitask).
 
 ### Compatibility
 

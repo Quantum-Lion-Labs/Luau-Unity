@@ -266,6 +266,55 @@ thread cannot run Luau code, so formatting an argument with
 runs any metamethod involved on another thread of the same root. Such a
 metamethod cannot yield.
 
+### Async callbacks and UniTask
+
+While a script waits for an async callback, its call owns the root: the root
+accepts VM access only from the call's own code, and anything else fails with
+`InvalidOperationException: The Luau VM is executing on another operation.`
+The root recognises the callback's code in two ways:
+
+- by its execution context, which ordinary `async` methods returning `Task` or
+  `ValueTask` carry across every `await`;
+- on a state with a continuation scheduler, by running on that scheduler. A
+  state from `LuauUnity.CreateState` has one, the Unity main thread, unless you
+  turn off `CaptureUnitySynchronizationContext` and supply none.
+
+UniTask's async methods do not carry the execution context across an `await`,
+so code after the first `await` inside an `async UniTask` helper is recognised
+only by the scheduler. On a default state that is enough, and helpers like this
+work:
+
+```csharp
+static async UniTask LoadInto(LuauTable table)
+{
+    await UniTask.Yield();          // resumes on the main thread
+    table["loaded"] = true;
+}
+
+state["load"] = state.CreateAsyncFunction("load", async context =>
+{
+    await LoadInto(table);
+    context.Return(1);
+});
+```
+
+On a state without a scheduler the same `table["loaded"] = true` throws the
+exception above, and the script's call fails with
+`LuauManagedCallbackException`. Give such a state a scheduler, or touch the VM
+only in the callback itself, after the helper returns. Code that leaves the
+main thread (`UniTask.SwitchToThreadPool`, `ConfigureAwait(false)`) cannot use
+the VM in either case: a state with a scheduler accepts access only on it.
+
+Recognising the callback's code by the scheduler means that, while a script
+waits for an async callback, other main-thread code can use the root too: a
+component's `Update` can read and write the root's tables and globals and
+create values. It cannot start another call on the root (`Invoke`, `DoString`,
+`Resume`, or a script phase), which throws `InvalidOperationException: The
+Luau VM is already executing.` Luau code that such access runs, a metamethod
+for example, runs under the waiting call: it counts toward that call's
+interrupt budget, and it stops if that call is canceled, runs out of time, or
+its root is disposed.
+
 ## Calling Luau from C#
 
 The other direction. Read a script closure out of a result and invoke it with

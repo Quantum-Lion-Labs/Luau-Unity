@@ -470,7 +470,8 @@ cleanup, never the primary lifetime protocol.
 
 VM access is serialized per root. Independent roots may execute concurrently.
 When a continuation scheduler is configured, entry and continuation access must
-occur through that scheduler.
+occur through that scheduler, and the scheduler also decides which callers an
+asynchronous operation that waits for a callback accepts (section 6.8).
 
 ## 6. One operation engine
 
@@ -618,6 +619,7 @@ Nothing an operation might use is created up front:
   and the thread's slot otherwise. A flow forked from inside a synchronous
   callback (for example by `Task.Run`) is therefore rejected while that
   operation runs; it used to pass the check and then wait for the VM.
+  Section 6.8 gives the whole rule, including a caller with neither.
 
 `OperationReuseTests` pins the steady-state allocation of each entry point
 and each of these hazards; `entry-*` cases in `benchmarks/Luau.Benchmarks`
@@ -743,6 +745,85 @@ the native conformance suite drives every refusing operation on a yielded,
 broken, waiting, and errored thread in its own process and under the
 sanitizer build. Allocation of the per-frame global paths on a yielded thread
 is pinned in `SuspendedThreadHostOperationAllocationTests`.
+
+### 6.8 How an operation recognises its own callers
+
+While an operation is active, only its own callers may reach the VM. Every
+public access passes `LuauVmContext.ThrowIfNativeAccessDenied`, from
+`ThrowIfDisposed` and again under the native gate in `EnterNativeAccess`,
+which decides:
+
+1. With a continuation scheduler, the caller must be on it
+   (`CheckAccess()`), whether or not an operation is active: "The Luau VM can
+   only be accessed from its configured continuation scheduler."
+2. With no active operation, the caller is allowed.
+3. `IsAmbient` decides whether the caller belongs to the active operation:
+   - A flow that carries an `AsyncLocal` marker belongs to the life the
+     marker names (operation and generation) and to no other. A marker for
+     another operation, of this root or another, or for a finished life of
+     this one, is refused, whatever else holds.
+   - Without a marker, the thread's slot names the synchronous operation
+     running on that thread.
+   - A caller with neither is accepted only when the root has a continuation
+     scheduler (and step 1 passed) and the active operation is waiting for an
+     asynchronous callback (`ScriptOperation.IsWaitingForAsyncCallback`: from
+     `MarkAsyncCallbackSuspended`, after native resume has returned with the
+     callback queued, until the runner observes that the callback completed).
+   Anything else is refused: "The Luau VM is executing on another operation."
+4. `ThrowIfAsyncCallbackAccessUnsafe` still refuses an accepted caller while a
+   callback is queued and the runner has not yet acted on the VM's yield: "A
+   managed async callback cannot access its Luau state until the VM has
+   yielded."
+
+The operation's other rules follow unchanged: `BeginOperation` refuses a new
+top-level operation ("already executing", in the order given in section 6.6),
+wrapper disposal waits for the operation to end, a call context is valid only
+while its callback runs, and hard stops and callback failures follow section
+6.2.
+
+The third case exists because an `AsyncLocal` value follows a continuation
+only if the async method's builder captures the execution context at each
+await. The `Task` and `ValueTask` builders do. UniTask's does not, so code
+after the first await inside an `async UniTask` helper of a callback has no
+marker, although it is the callback's own work. With a scheduler, every VM
+access must already be on it and the operation's own continuations run there,
+and while the operation waits for its callback the VM runs no Luau code for
+it, so an access on the scheduler is serialized with the operation whoever
+makes it. Without a scheduler nothing says which thread or flow owns the
+operation, so the marker stays the rule and such code is refused; a host that
+uses such builders must configure a scheduler, as `LuauUnity.CreateState` does
+by default. Hosts see the refusal as `InvalidOperationException` from the
+access, and as `LuauManagedCallbackException` from the script's call when the
+callback does not handle it.
+
+That case makes one thing possible that was refused before: code on the
+scheduler that is not part of the callback (another component's update on
+Unity's main thread, or a host callback of another root's synchronous
+operation) can read and write the root's tables and globals, create values,
+open libraries, and run any other direct operation while a script's
+asynchronous callback is pending. That is exactly what the callback itself may
+do at the same moment, and it is safe for the same reasons: the operation's
+thread is suspended, each access holds the native gate for its whole duration
+and leaves the stack as it found it, and a direct operation that reaches Luau
+code runs it on the host operation thread (section 6.7) under the pending
+operation, so that operation's hard stops and interrupt budget apply to it, and
+each failure is reported to the code that caused it. Starting a top-level
+operation (`Invoke`, `DoString`, `Resume`, a script phase) still fails, and a
+wrapper that code disposes is released when the operation ends, as during any
+operation, so per-frame work that creates and drops wrappers while a callback
+waits keeps their values in the registry until then. A
+scheduler is expected to run its work one item at a time; with one that runs
+several at once, the native gate still serializes each access, but an access
+that spans several calls (such as `CreateTable` from a collection) can be
+refused partway when the operation resumes.
+
+The new case is checked only after the marker and the thread slot have
+failed, so the per-frame paths (`entry-*` benchmarks) do not reach it.
+`NonFlowingContinuationTests` maps every kind of access in both
+configurations, pins each refusal above with a test that fails without it, and
+runs unrelated work, cancellation, the wall-clock limit, and disposal against
+a pending callback; `LuauNonFlowingContinuationTests` runs the case on a
+default Unity state.
 
 ## 7. Managed callbacks
 
@@ -1131,6 +1212,10 @@ one compatibility unit.
   when it happens.
 - Anything that can outlive an operation life checks its generation, not
   only its reference; an instance is reused only when nothing can name it.
+- While an operation is active, only its own callers reach the VM: a flow
+  whose marker names its life, the thread running it synchronously, or, with
+  a continuation scheduler, code on the scheduler while it waits for an
+  asynchronous callback. A marker that names anything else is refused.
 - The steady-state synchronous call allocates nothing: no per-operation
   timer, token source, options record, or execution-context write.
 - Only `Resume` continues a suspended thread; every other entry rejects a
@@ -1176,6 +1261,12 @@ Do not bypass the handshake.
 One root permits one active operation. Look for reentrant execution, access from
 outside the configured scheduler, or a callback attempting to start top-level
 execution on its own root.
+
+"The Luau VM is executing on another operation." from an async callback's own
+code, on a root without a continuation scheduler, usually means the code runs
+after an await in a method whose builder does not carry the execution context
+(an `async UniTask` helper). Configure a scheduler (section 6.8); do not
+weaken the marker check.
 
 ### A call reports a suspended thread
 

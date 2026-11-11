@@ -35,6 +35,13 @@ thread's write guard, or a metamethod on its globals), that code runs on
 another thread of the same root and the suspended thread's pending
 continuation is left untouched.
 
+**Continuation scheduler** — where a root's asynchronous work continues. A
+state from `LuauUnity.CreateState` uses the Unity main thread, and every access
+to its VM must happen there. While a script waits for an async callback, code
+on the scheduler counts as that callback's own, which is what lets callbacks
+await UniTask helpers; see
+[async callbacks and UniTask](capability-bindings.md#async-callbacks-and-unitask).
+
 **Sandboxed thread** — a cheap script environment running inside a root. Threads
 share the root's globals and host functions, but each one gets its own writable
 global table, so a variable one script declares is invisible to the next. This
