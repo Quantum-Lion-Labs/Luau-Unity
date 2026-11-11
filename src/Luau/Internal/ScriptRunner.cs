@@ -379,6 +379,10 @@ internal static class ScriptRunner
                         resumeWithError = true;
                     }
 
+                    // The wait for the callback ends here, before anything
+                    // below can throw: with a scheduler, a caller without
+                    // the operation's marker is accepted only during it.
+                    operation.FinishAsyncCallback();
                     await LuauContinuationDispatcher.InvokeAsync(
                         scheduler,
                         () => ThrowIfHardStopped(operation, state)).ConfigureAwait(false);
@@ -404,7 +408,6 @@ internal static class ScriptRunner
                         operation.RecordFailedCallbackSuspension(callbackThread);
                     }
 
-                    operation.FinishAsyncCallback();
                     continue;
                 default:
                     await LuauContinuationDispatcher.InvokeAsync(

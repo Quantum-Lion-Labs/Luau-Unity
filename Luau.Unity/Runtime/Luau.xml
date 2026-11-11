@@ -73,9 +73,24 @@
             execution context.
             </summary>
             <remarks>
+            <para>
             Unity hosts should normally use <see cref="T:Luau.LuauSynchronizationContextScheduler"/>
             captured on the Unity main thread. Implementations must deliver each
             successfully posted continuation exactly once.
+            </para>
+            <para>
+            A state with a scheduler accepts VM access only where
+            <see cref="M:Luau.ILuauContinuationScheduler.CheckAccess"/> returns <see langword="true"/>, and runs its
+            own continuations there. While an asynchronous operation waits for an
+            asynchronous host callback, it accepts every access made there, whether
+            or not the caller's <see cref="T:System.Threading.ExecutionContext"/> flowed from the
+            callback: that is how code after an await in an async method that does
+            not carry the context (an <c>async UniTask</c> method, for example) keeps
+            working. Code on the scheduler that is not part of the callback can
+            therefore use the root's tables and globals while a callback is pending.
+            A scheduler is expected to run that work one item at a time, as a
+            single-threaded <see cref="T:System.Threading.SynchronizationContext"/> does.
+            </para>
             </remarks>
         </member>
         <member name="M:Luau.ILuauContinuationScheduler.CheckAccess">
@@ -247,6 +262,28 @@
             this life, in which case they are left alone as before.
             </summary>
         </member>
+        <member name="M:Luau.LuauVmContext.IsAmbient(Luau.ScriptOperation,System.Boolean)">
+            <summary>
+            Whether the caller belongs to <paramref name="active"/>. A flow that
+            carries a marker belongs to the life the marker names and to no other.
+            Without a marker, the thread's slot names the synchronous operation
+            running on it. A caller with neither is accepted in one state only:
+            the root has a continuation scheduler, the caller is on it
+            (<paramref name="onScheduler"/>, checked by the caller), and the
+            active operation is suspended waiting for an asynchronous callback.
+            </summary>
+            <remarks>
+            That last case exists for continuations that lost the
+            <see cref="T:System.Threading.ExecutionContext"/>: an async method whose builder does not
+            capture it at an await (UniTask's, for example) resumes without the
+            marker, though it is the callback's own work. Every VM access and every
+            continuation of the operation already runs on the scheduler, and the
+            operation's thread stays suspended while it waits, so an access on the
+            scheduler is serialized with the operation whoever makes it (maintainer
+            guide section 6.8). It costs nothing on the common paths: they return
+            before it.
+            </remarks>
+        </member>
         <member name="M:Luau.LuauVmContext.ResolveOperationOptions(Luau.LuauExecutionOptions)">
             <summary>
             Merges per-operation options into the state defaults. Without options
@@ -333,6 +370,17 @@
         </member>
         <member name="P:Luau.ScriptOperation.HasCancelableCallerToken">
             <summary>Whether the caller supplied a token that can be canceled.</summary>
+        </member>
+        <member name="P:Luau.ScriptOperation.IsWaitingForAsyncCallback">
+            <summary>
+            Whether the operation is suspended waiting for an asynchronous
+            callback: from <see cref="M:Luau.ScriptOperation.MarkAsyncCallbackSuspended"/>, after the VM
+            has yielded, until the runner observes the callback's completion
+            (<see cref="M:Luau.ScriptOperation.FinishAsyncCallback"/>). The operation's thread stays
+            suspended in that time: Luau code runs only inside a direct operation
+            that an access makes, on another thread of the root. Only asynchronous
+            operations reach it.
+            </summary>
         </member>
         <member name="M:Luau.ScriptOperation.RequestInterruptAttentionFromOwner">
             <summary>
@@ -1041,11 +1089,26 @@
             thread affinity is required.
             </summary>
             <remarks>
+            <para>
             Unity hosts should normally configure a
             <see cref="T:Luau.LuauSynchronizationContextScheduler"/> captured on the Unity
             main thread. This controls Luau's own continuation work; an async host
             callback that accesses thread-affine APIs after one of its own awaits
             must also preserve or explicitly restore the appropriate context.
+            </para>
+            <para>
+            The scheduler also decides which callers an active operation accepts.
+            With one, every VM access must be made on it, and while an
+            asynchronous operation waits for an asynchronous host callback, any
+            access on it is accepted. Without one, an operation recognises its
+            callers only by the thread a synchronous operation runs on and by the
+            <see cref="T:System.Threading.ExecutionContext"/> an asynchronous one flows through. A
+            host whose async callbacks await methods with a builder that does not
+            carry the execution context, such as UniTask's, must configure a
+            scheduler: without one, VM access after such an await throws
+            <see cref="T:System.InvalidOperationException"/> ("The Luau VM is executing on
+            another operation.").
+            </para>
             </remarks>
         </member>
         <member name="P:Luau.LuauExecutionOptions.MaxResultCount">
@@ -2194,12 +2257,45 @@
             Creates an asynchronous managed callback capability for Luau code.
             Managed callers cannot invoke the returned capability directly.
             </summary>
+            <remarks>
+            The rules for VM access while the callback runs are those of
+            <see cref="M:Luau.LuauState.CreateAsyncFunction(System.String,System.Func{Luau.LuauCallContext,System.Threading.Tasks.ValueTask})"/>.
+            </remarks>
         </member>
         <member name="M:Luau.LuauState.CreateAsyncFunction(System.String,System.Func{Luau.LuauCallContext,System.Threading.Tasks.ValueTask})">
             <summary>
             Creates a named asynchronous managed callback capability for Luau code.
             Managed callers cannot invoke the returned capability directly.
             </summary>
+            <remarks>
+            <para>
+            The callback runs after the script's call has suspended, and the call
+            waits for the returned task. Until it completes, the root accepts VM
+            access only from the call's own callers: code whose
+            <see cref="T:System.Threading.ExecutionContext"/> flowed from the callback, which ordinary
+            <see langword="async"/> methods returning <see cref="T:System.Threading.Tasks.Task"/> or
+            <see cref="T:System.Threading.Tasks.ValueTask"/> preserve across each await, and, when the state
+            has a <see cref="P:Luau.LuauExecutionOptions.ContinuationScheduler"/>, any code
+            running on that scheduler. Access from anywhere else throws
+            <see cref="T:System.InvalidOperationException"/>.
+            </para>
+            <para>
+            An async method whose builder does not carry the execution context
+            across an await, such as an <c>async UniTask</c> method, loses it after
+            its first await. Code there is recognised only by the scheduler, which
+            <c>LuauUnity.CreateState</c> configures by default. Without a scheduler
+            its VM access throws <see cref="T:System.InvalidOperationException"/> with the
+            message "The Luau VM is executing on another operation.", and, unless
+            the callback handles it, the script's call fails with
+            <see cref="T:Luau.LuauManagedCallbackException"/>. Configure a scheduler, or
+            make that access in the callback itself after awaiting the helper.
+            </para>
+            <para>
+            No new top-level operation (an invocation, an execution, or a resume)
+            can start on the root while the callback runs, from the callback or
+            from elsewhere: it throws <see cref="T:System.InvalidOperationException"/>.
+            </para>
+            </remarks>
         </member>
         <member name="M:Luau.LuauState.CreateThread">
             <summary>

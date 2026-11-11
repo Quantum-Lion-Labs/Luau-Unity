@@ -604,7 +604,27 @@ internal sealed unsafe class LuauVmContext
         return restored;
     }
 
-    static bool IsAmbient(ScriptOperation active)
+    /// <summary>
+    /// Whether the caller belongs to <paramref name="active"/>. A flow that
+    /// carries a marker belongs to the life the marker names and to no other.
+    /// Without a marker, the thread's slot names the synchronous operation
+    /// running on it. A caller with neither is accepted in one state only:
+    /// the root has a continuation scheduler, the caller is on it
+    /// (<paramref name="onScheduler"/>, checked by the caller), and the
+    /// active operation is suspended waiting for an asynchronous callback.
+    /// </summary>
+    /// <remarks>
+    /// That last case exists for continuations that lost the
+    /// <see cref="ExecutionContext"/>: an async method whose builder does not
+    /// capture it at an await (UniTask's, for example) resumes without the
+    /// marker, though it is the callback's own work. Every VM access and every
+    /// continuation of the operation already runs on the scheduler, and the
+    /// operation's thread stays suspended while it waits, so an access on the
+    /// scheduler is serialized with the operation whoever makes it (maintainer
+    /// guide section 6.8). It costs nothing on the common paths: they return
+    /// before it.
+    /// </remarks>
+    static bool IsAmbient(ScriptOperation active, bool onScheduler)
     {
         var generation = active.Generation;
         var marker = ambientMarker.Value;
@@ -613,7 +633,12 @@ internal sealed unsafe class LuauVmContext
             return ReferenceEquals(marker.Operation, active) && marker.Generation == generation;
         }
 
-        return ReferenceEquals(threadAmbientOperation, active) && threadAmbientGeneration == generation;
+        if (ReferenceEquals(threadAmbientOperation, active) && threadAmbientGeneration == generation)
+        {
+            return true;
+        }
+
+        return onScheduler && active.IsWaitingForAsyncCallback;
     }
 
     /// <summary>
@@ -883,7 +908,9 @@ internal sealed unsafe class LuauVmContext
             return;
         }
 
-        if (!IsAmbient(active))
+        // A caller on the scheduler with no marker is accepted only while
+        // the operation waits for an asynchronous callback (IsAmbient).
+        if (!IsAmbient(active, onScheduler: scheduler != null))
         {
             ThrowHelper.ThrowInvalidOperationException("The Luau VM is executing on another operation.");
         }

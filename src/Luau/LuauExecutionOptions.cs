@@ -105,11 +105,26 @@ public sealed record LuauExecutionOptions
     /// thread affinity is required.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// Unity hosts should normally configure a
     /// <see cref="LuauSynchronizationContextScheduler"/> captured on the Unity
     /// main thread. This controls Luau's own continuation work; an async host
     /// callback that accesses thread-affine APIs after one of its own awaits
     /// must also preserve or explicitly restore the appropriate context.
+    /// </para>
+    /// <para>
+    /// The scheduler also decides which callers an active operation accepts.
+    /// With one, every VM access must be made on it, and while an
+    /// asynchronous operation waits for an asynchronous host callback, any
+    /// access on it is accepted. Without one, an operation recognises its
+    /// callers only by the thread a synchronous operation runs on and by the
+    /// <see cref="ExecutionContext"/> an asynchronous one flows through. A
+    /// host whose async callbacks await methods with a builder that does not
+    /// carry the execution context, such as UniTask's, must configure a
+    /// scheduler: without one, VM access after such an await throws
+    /// <see cref="InvalidOperationException"/> ("The Luau VM is executing on
+    /// another operation.").
+    /// </para>
     /// </remarks>
     public ILuauContinuationScheduler? ContinuationScheduler { get; init; }
 

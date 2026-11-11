@@ -333,6 +333,18 @@ internal sealed unsafe class ScriptOperation : IDisposable
         Volatile.Write(ref asyncCallbackPhase, (int)AsyncCallbackPhase.None);
     }
 
+    /// <summary>
+    /// Whether the operation is suspended waiting for an asynchronous
+    /// callback: from <see cref="MarkAsyncCallbackSuspended"/>, after the VM
+    /// has yielded, until the runner observes the callback's completion
+    /// (<see cref="FinishAsyncCallback"/>). The operation's thread stays
+    /// suspended in that time: Luau code runs only inside a direct operation
+    /// that an access makes, on another thread of the root. Only asynchronous
+    /// operations reach it.
+    /// </summary>
+    internal bool IsWaitingForAsyncCallback =>
+        Volatile.Read(ref asyncCallbackPhase) == (int)AsyncCallbackPhase.Suspended;
+
     internal void ThrowIfAsyncCallbackAccessUnsafe()
     {
         var phase = (AsyncCallbackPhase)Volatile.Read(ref asyncCallbackPhase);
