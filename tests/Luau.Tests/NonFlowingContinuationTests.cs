@@ -1356,7 +1356,7 @@ public sealed class NonFlowingContinuationTests : IDisposable
         public void UnsafeOnCompleted(Action continuation) => ThreadPool.UnsafeQueueUserWorkItem(_ => continuation(), null);
     }
 
-    static async Task<object?[]> ReadAll(ValueTask<LuauResultScope> execution)
+    internal static async Task<object?[]> ReadAll(ValueTask<LuauResultScope> execution)
     {
         using var results = await execution;
         var values = new object?[results.Length];
@@ -1381,7 +1381,7 @@ public sealed class NonFlowingContinuationTests : IDisposable
         return results[0].Read<int>();
     }
 
-    static Exception? Record(Action action)
+    internal static Exception? Record(Action action)
     {
         try
         {

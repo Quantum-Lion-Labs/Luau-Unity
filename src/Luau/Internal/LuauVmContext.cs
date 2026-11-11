@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.Runtime.InteropServices;
 using Luau.Internal.Interop;
 using static Luau.Internal.Interop.NativeMethods;
@@ -612,6 +613,8 @@ internal sealed unsafe class LuauVmContext
     /// the root has a continuation scheduler, the caller is on it
     /// (<paramref name="onScheduler"/>, checked by the caller), and the
     /// active operation is suspended waiting for an asynchronous callback.
+    /// A caller whose marker names another operation, or a finished life of
+    /// this one, is refused in that state too.
     /// </summary>
     /// <remarks>
     /// That last case exists for continuations that lost the
@@ -620,8 +623,12 @@ internal sealed unsafe class LuauVmContext
     /// marker, though it is the callback's own work. Every VM access and every
     /// continuation of the operation already runs on the scheduler, and the
     /// operation's thread stays suspended while it waits, so an access on the
-    /// scheduler is serialized with the operation whoever makes it (maintainer
-    /// guide section 6.8). It costs nothing on the common paths: they return
+    /// scheduler is serialized with the operation whoever makes it. The wait
+    /// ends only between accesses (<see cref="EndAsyncCallbackWait"/>), so an
+    /// access admitted here keeps its admission until its last step; this
+    /// check runs again under the native gate in
+    /// <see cref="EnterNativeAccess"/>, which decides (maintainer guide
+    /// section 6.8). It costs nothing on the common paths: they return
     /// before it.
     /// </remarks>
     static bool IsAmbient(ScriptOperation active, bool onScheduler)
@@ -844,6 +851,43 @@ internal sealed unsafe class LuauVmContext
         // Outside the gates: disposing unregisters from the lifetime tokens
         // and can wait for a cancellation callback that needs them.
         tokenSource?.Dispose();
+    }
+
+    /// <summary>
+    /// Whether the current thread is inside a native access of this root:
+    /// it holds the native gate, which every access holds from its first
+    /// check to its last step. The gate is reentrant, so code that such an
+    /// access runs (a host function a metamethod calls, or a continuation
+    /// that one of them completes inline) is inside it too.
+    /// </summary>
+    internal bool IsInsideNativeAccess => Monitor.IsEntered(nativeGate);
+
+    /// <summary>
+    /// Ends <paramref name="operation"/>'s wait for its asynchronous
+    /// callback and records the callback's failure, if any, for the runner.
+    /// The caller runs on the scheduler, if there is one, outside every
+    /// native access of this root
+    /// (<see cref="LuauContinuationDispatcher.InvokeOutsideNativeAccessAsync{TState}"/>),
+    /// so a single-threaded scheduler runs no admitted access at the same
+    /// time; taking the gate also waits for an access that another thread is
+    /// making. An access that the wait admitted therefore finishes every step
+    /// under that admission, and the next one is checked against the ended
+    /// wait before it begins (maintainer guide section 6.8).
+    /// </summary>
+    internal void EndAsyncCallbackWait(ScriptOperation operation, string? callbackName, Exception? failure)
+    {
+        Debug.Assert(!IsInsideNativeAccess, "The wait for a callback ended inside a native access.");
+        lock (nativeGate)
+        {
+            operation.FinishAsyncCallback();
+            if (failure != null)
+            {
+                // Recorded here, not where the runner caught it: an access
+                // that was still admitted would otherwise take it as its
+                // own callback failure (LuauNativeProtection.ThrowIfFailed).
+                operation.RecordCallbackFailure(callbackName, failure);
+            }
+        }
     }
 
     internal LuauNativeAccess EnterNativeAccess(LuauState state)

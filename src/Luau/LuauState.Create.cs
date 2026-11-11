@@ -172,10 +172,22 @@ unsafe partial class LuauState
     /// <see cref="ExecutionContext"/> flowed from the callback, which ordinary
     /// <see langword="async"/> methods returning <see cref="Task"/> or
     /// <see cref="ValueTask"/> preserve across each await, and, when the state
-    /// has a <see cref="LuauExecutionOptions.ContinuationScheduler"/>, any code
-    /// running on that scheduler. A state with a scheduler accepts access
-    /// only on it, whatever the caller's context. Access from anywhere else
-    /// throws <see cref="InvalidOperationException"/>.
+    /// has a <see cref="LuauExecutionOptions.ContinuationScheduler"/>, code
+    /// running on that scheduler whose context does not belong to another
+    /// operation or to a finished one. A state with a scheduler accepts
+    /// access only on it, whatever the caller's context; a state without one
+    /// accepts the callback's own code on any thread. Access from anywhere
+    /// else throws <see cref="InvalidOperationException"/>.
+    /// </para>
+    /// <para>
+    /// The call resumes only after the returned task has completed and no
+    /// VM access is in progress: when code inside an access completes the
+    /// task (a host function that a metamethod calls sets a result the
+    /// callback awaits), the call continues once that access has returned.
+    /// Luau code that an access runs while the call waits cannot call an
+    /// asynchronous host function, even inside a coroutine it creates; that
+    /// call fails with <see cref="LuauManagedCallbackException"/>, reported to
+    /// the access.
     /// </para>
     /// <para>
     /// An async method whose builder does not carry the execution context

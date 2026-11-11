@@ -67,6 +67,22 @@ internal sealed unsafe class LuauCSharpAsyncFunction : LuauFunction, ILuauManage
                 return YieldFailureIfPossible(l, operation);
             }
 
+            if (!operation.IsResumingNatively)
+            {
+                // Luau code that a direct host operation runs outside the
+                // operation's own resume (a metamethod reached while the
+                // operation waits for a callback, here inside a coroutine it
+                // created). Queuing would end that wait, or replace the
+                // operation's pending work, from inside the access, and the
+                // suspension cannot reach the runner: fail in place, so the
+                // access that ran this code reports it.
+                operation.RecordCallbackFailure(
+                    registration.Name,
+                    new InvalidOperationException(
+                        "An asynchronous managed callback cannot run in Luau code that a direct host operation runs."));
+                return RaiseFailure(l, operation);
+            }
+
             // Do not invoke managed user code while luau_host_resume is still on the
             // native stack. The runner dispatches the delegate only after it has
             // observed LUA_YIELD, so synchronous portions and fast continuations
@@ -85,7 +101,10 @@ internal sealed unsafe class LuauCSharpAsyncFunction : LuauFunction, ILuauManage
 
     static unsafe int YieldFailureIfPossible(LuauHostState* state, ScriptOperation? operation)
     {
-        if (luau_host_is_yieldable(state) != 0)
+        // An asynchronous operation's suspension reaches its runner only
+        // from the runner's own resume (ScriptOperation.IsResumingNatively).
+        if (luau_host_is_yieldable(state) != 0 &&
+            (operation == null || !operation.IsAsync || operation.IsResumingNatively))
         {
             // The runner injects the failure after this suspension. Tell it
             // which thread holds the failed callback's frame.
@@ -98,6 +117,15 @@ internal sealed unsafe class LuauCSharpAsyncFunction : LuauFunction, ILuauManage
             return 0;
         }
 
+        return RaiseFailure(state, operation);
+    }
+
+    /// <summary>
+    /// Raises the recorded failure as a Luau error from the failed
+    /// callback's own frame, without suspending.
+    /// </summary>
+    static unsafe int RaiseFailure(LuauHostState* state, ScriptOperation operation)
+    {
         // This runs inside the failed callback, so the frame is its own.
         var status = LuauNativeProtection.PushCallbackFailure(
             state,

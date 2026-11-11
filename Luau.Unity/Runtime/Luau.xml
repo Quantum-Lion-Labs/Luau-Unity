@@ -47,6 +47,12 @@
             callback-scoped <see cref="T:Luau.LuauCallContext"/> instead of a script argument.
             </summary>
         </member>
+        <member name="M:Luau.LuauCSharpAsyncFunction.RaiseFailure(Luau.Internal.Interop.LuauHostState*,Luau.ScriptOperation)">
+            <summary>
+            Raises the recorded failure as a Luau error from the failed
+            callback's own frame, without suspending.
+            </summary>
+        </member>
         <member name="T:Luau.ILuauCompilationService">
             <summary>
             Compiles owned snapshots of UTF-8 Luau source without requiring the caller
@@ -82,14 +88,23 @@
             A state with a scheduler accepts VM access only where
             <see cref="M:Luau.ILuauContinuationScheduler.CheckAccess"/> returns <see langword="true"/>, and runs its
             own continuations there. While an asynchronous operation waits for an
-            asynchronous host callback, it accepts every access made there, whether
-            or not the caller's <see cref="T:System.Threading.ExecutionContext"/> flowed from the
+            asynchronous host callback, it also accepts an access made there by a
+            caller whose <see cref="T:System.Threading.ExecutionContext"/> did not flow from the
             callback: that is how code after an await in an async method that does
             not carry the context (an <c>async UniTask</c> method, for example) keeps
-            working. Code on the scheduler that is not part of the callback can
-            therefore use the root's tables and globals while a callback is pending.
-            A scheduler is expected to run that work one item at a time, as a
-            single-threaded <see cref="T:System.Threading.SynchronizationContext"/> does.
+            working. A caller whose context belongs to another operation, of this
+            state's root or another, or to a finished operation, is still refused.
+            Code on the scheduler that is not part of the callback can therefore use
+            the root's tables and globals while a callback is pending.
+            </para>
+            <para>
+            A scheduler must run one piece of work at a time, as a single-threaded
+            <see cref="T:System.Threading.SynchronizationContext"/> such as Unity's main thread does:
+            the operation stops accepting such callers in a continuation that runs
+            on the scheduler, between accesses, and relies on no other access running
+            there at the same moment. A scheduler whose <see cref="M:Luau.ILuauContinuationScheduler.CheckAccess"/>
+            returns <see langword="true"/> on more than one thread at once is not
+            supported.
             </para>
             </remarks>
         </member>
@@ -130,6 +145,20 @@
             <summary>
             Converts the host-facing fire-and-forget scheduler contract into awaitable
             operations while keeping exceptions inside the originating execution.
+            </summary>
+        </member>
+        <member name="M:Luau.LuauContinuationDispatcher.InvokeOutsideNativeAccessAsync``1(Luau.ILuauContinuationScheduler,Luau.LuauVmContext,System.Action{``0},``0)">
+            <summary>
+            Runs <paramref name="action"/> as <see cref="M:Luau.LuauContinuationDispatcher.InvokeAsync(Luau.ILuauContinuationScheduler,System.Action)"/>
+            does, and never while the current thread is inside a native access of
+            <paramref name="context"/>. A continuation that code inside an access
+            completes inline (a host function that a metamethod calls completes a
+            source that runs its continuations synchronously) runs nested in that
+            access, on its thread, where the scheduler's check passes and the
+            reentrant gate does not wait; the action then goes to the scheduler,
+            or with none to the thread pool, and runs once that thread has left
+            the access. On the usual path, already on the scheduler and outside
+            any access, it runs inline as before.
             </summary>
         </member>
         <member name="T:Luau.LuauDeadlineWatchdog">
@@ -271,6 +300,8 @@
             the root has a continuation scheduler, the caller is on it
             (<paramref name="onScheduler"/>, checked by the caller), and the
             active operation is suspended waiting for an asynchronous callback.
+            A caller whose marker names another operation, or a finished life of
+            this one, is refused in that state too.
             </summary>
             <remarks>
             That last case exists for continuations that lost the
@@ -279,8 +310,12 @@
             marker, though it is the callback's own work. Every VM access and every
             continuation of the operation already runs on the scheduler, and the
             operation's thread stays suspended while it waits, so an access on the
-            scheduler is serialized with the operation whoever makes it (maintainer
-            guide section 6.8). It costs nothing on the common paths: they return
+            scheduler is serialized with the operation whoever makes it. The wait
+            ends only between accesses (<see cref="M:Luau.LuauVmContext.EndAsyncCallbackWait(Luau.ScriptOperation,System.String,System.Exception)"/>), so an
+            access admitted here keeps its admission until its last step; this
+            check runs again under the native gate in
+            <see cref="M:Luau.LuauVmContext.EnterNativeAccess(Luau.LuauState)"/>, which decides (maintainer guide
+            section 6.8). It costs nothing on the common paths: they return
             before it.
             </remarks>
         </member>
@@ -329,6 +364,29 @@
             outside every lock, since its registrations are host code.
             </summary>
         </member>
+        <member name="P:Luau.LuauVmContext.IsInsideNativeAccess">
+            <summary>
+            Whether the current thread is inside a native access of this root:
+            it holds the native gate, which every access holds from its first
+            check to its last step. The gate is reentrant, so code that such an
+            access runs (a host function a metamethod calls, or a continuation
+            that one of them completes inline) is inside it too.
+            </summary>
+        </member>
+        <member name="M:Luau.LuauVmContext.EndAsyncCallbackWait(Luau.ScriptOperation,System.String,System.Exception)">
+            <summary>
+            Ends <paramref name="operation"/>'s wait for its asynchronous
+            callback and records the callback's failure, if any, for the runner.
+            The caller runs on the scheduler, if there is one, outside every
+            native access of this root
+            (<see cref="M:Luau.LuauContinuationDispatcher.InvokeOutsideNativeAccessAsync``1(Luau.ILuauContinuationScheduler,Luau.LuauVmContext,System.Action{``0},``0)"/>),
+            so a single-threaded scheduler runs no admitted access at the same
+            time; taking the gate also waits for an access that another thread is
+            making. An access that the wait admitted therefore finishes every step
+            under that admission, and the next one is checked against the ended
+            wait before it begins (maintainer guide section 6.8).
+            </summary>
+        </member>
         <member name="P:Luau.LuauVmContext.PooledOperation">
             <summary>The finished synchronous operation kept for reuse, for tests.</summary>
         </member>
@@ -371,15 +429,45 @@
         <member name="P:Luau.ScriptOperation.HasCancelableCallerToken">
             <summary>Whether the caller supplied a token that can be canceled.</summary>
         </member>
+        <member name="M:Luau.ScriptOperation.BeginNativeResume">
+            <summary>
+            Marks the runner's native resume of this asynchronous operation as
+            on the stack, under the native gate. Only Luau code that this resume
+            runs may queue an asynchronous callback; see
+            <see cref="P:Luau.ScriptOperation.IsResumingNatively"/>.
+            </summary>
+        </member>
+        <member name="P:Luau.ScriptOperation.IsResumingNatively">
+            <summary>
+            Whether the runner's native resume is on the stack. Luau code that
+            runs while it is not belongs to a direct host operation (a metamethod
+            that a table or global access reaches while the operation waits for a
+            callback, or between the runner's steps): queuing a callback there
+            would end that wait, or replace the operation's pending work, from
+            inside the access, so such a callback fails in place instead.
+            </summary>
+        </member>
+        <member name="M:Luau.ScriptOperation.FinishAsyncCallback">
+            <summary>
+            Ends the callback's dispatch or the wait for it. Ending the wait
+            (<see cref="P:Luau.ScriptOperation.IsWaitingForAsyncCallback"/>) changes which callers the
+            operation accepts, so it happens only through
+            <see cref="M:Luau.LuauVmContext.EndAsyncCallbackWait(Luau.ScriptOperation,System.String,System.Exception)"/>: on the scheduler,
+            under the native gate, outside every native access. The runner calls
+            this directly only where the wait never began.
+            </summary>
+        </member>
         <member name="P:Luau.ScriptOperation.IsWaitingForAsyncCallback">
             <summary>
             Whether the operation is suspended waiting for an asynchronous
             callback: from <see cref="M:Luau.ScriptOperation.MarkAsyncCallbackSuspended"/>, after the VM
-            has yielded, until the runner observes the callback's completion
-            (<see cref="M:Luau.ScriptOperation.FinishAsyncCallback"/>). The operation's thread stays
-            suspended in that time: Luau code runs only inside a direct operation
-            that an access makes, on another thread of the root. Only asynchronous
-            operations reach it.
+            has yielded, until the runner has observed the callback's completion
+            and ended the wait (<see cref="M:Luau.LuauVmContext.EndAsyncCallbackWait(Luau.ScriptOperation,System.String,System.Exception)"/>).
+            The operation's thread stays suspended in that time: Luau code runs
+            only inside a direct operation that an access makes, on another
+            thread of the root, and cannot queue a callback
+            (<see cref="P:Luau.ScriptOperation.IsResumingNatively"/>), so nothing but that end changes it.
+            Only asynchronous operations reach it.
             </summary>
         </member>
         <member name="M:Luau.ScriptOperation.RequestInterruptAttentionFromOwner">
@@ -508,6 +596,13 @@
             the order the per-value pop used to read them, last result first, and
             a hard stop is still checked after each one. The stack is trimmed to
             the results' base whether or not every value was read.
+            </summary>
+        </member>
+        <member name="M:Luau.ScriptRunner.Resume(Luau.ScriptOperation,System.IntPtr,System.IntPtr,System.Int32)">
+            <summary>
+            The resume of an asynchronous run. Luau code it runs is the only code
+            that may queue an asynchronous callback
+            (<see cref="P:Luau.ScriptOperation.IsResumingNatively"/>).
             </summary>
         </member>
         <member name="M:Luau.ScriptRunner.Enter(Luau.ScriptOperation,System.IntPtr,System.IntPtr,System.Int32,System.Int32,System.Int32@,System.Int32@)">
@@ -1099,8 +1194,12 @@
             <para>
             The scheduler also decides which callers an active operation accepts.
             With one, every VM access must be made on it, and while an
-            asynchronous operation waits for an asynchronous host callback, any
-            access on it is accepted. Without one, an operation recognises its
+            asynchronous operation waits for an asynchronous host callback, an
+            access on it is accepted from a caller without that operation's
+            <see cref="T:System.Threading.ExecutionContext"/> too, though not from one whose context
+            belongs to another operation or to a finished one. The scheduler must
+            run one piece of work at a time (see
+            <see cref="T:Luau.ILuauContinuationScheduler"/>). Without one, an operation recognises its
             callers only by the thread a synchronous operation runs on and by the
             <see cref="T:System.Threading.ExecutionContext"/> an asynchronous one flows through. A
             host whose async callbacks await methods with a builder that does not
@@ -2275,10 +2374,22 @@
             <see cref="T:System.Threading.ExecutionContext"/> flowed from the callback, which ordinary
             <see langword="async"/> methods returning <see cref="T:System.Threading.Tasks.Task"/> or
             <see cref="T:System.Threading.Tasks.ValueTask"/> preserve across each await, and, when the state
-            has a <see cref="P:Luau.LuauExecutionOptions.ContinuationScheduler"/>, any code
-            running on that scheduler. A state with a scheduler accepts access
-            only on it, whatever the caller's context. Access from anywhere else
-            throws <see cref="T:System.InvalidOperationException"/>.
+            has a <see cref="P:Luau.LuauExecutionOptions.ContinuationScheduler"/>, code
+            running on that scheduler whose context does not belong to another
+            operation or to a finished one. A state with a scheduler accepts
+            access only on it, whatever the caller's context; a state without one
+            accepts the callback's own code on any thread. Access from anywhere
+            else throws <see cref="T:System.InvalidOperationException"/>.
+            </para>
+            <para>
+            The call resumes only after the returned task has completed and no
+            VM access is in progress: when code inside an access completes the
+            task (a host function that a metamethod calls sets a result the
+            callback awaits), the call continues once that access has returned.
+            Luau code that an access runs while the call waits cannot call an
+            asynchronous host function, even inside a coroutine it creates; that
+            call fails with <see cref="T:Luau.LuauManagedCallbackException"/>, reported to
+            the access.
             </para>
             <para>
             An async method whose builder does not carry the execution context

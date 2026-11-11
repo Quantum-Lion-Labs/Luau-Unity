@@ -344,7 +344,6 @@ internal static class ScriptRunner
                         () => ThrowIfHardStopped(operation, state)).ConfigureAwait(false);
                     throw new LuauException("Luau execution stopped without a reported cause.", operation.ChunkName);
                 case ScriptYieldReason.AsyncCallback:
-                    operation.MarkAsyncCallbackSuspended();
                     // ValidatePendingCallbackSuspension confirmed this thread is
                     // the resume target, so its frame is the callback's own.
                     var callbackThread = operation.PendingCallbackThread;
@@ -352,16 +351,20 @@ internal static class ScriptRunner
                     var callbackName = operation.TakePendingCallbackName();
                     if (pending?.AsynchronousCallback == null)
                     {
+                        // The wait never begins, so no caller was admitted by
+                        // it and ending the dispatch cuts no access short.
+                        operation.FinishAsyncCallback();
                         operation.RecordCallbackFailure(
                             callbackName,
                             new InvalidOperationException("The pending managed callback was lost."));
                         operation.RecordFailedCallbackSuspension(callbackThread);
                         resumeWithError = true;
                         argumentCount = 0;
-                        operation.FinishAsyncCallback();
                         continue;
                     }
 
+                    operation.MarkAsyncCallbackSuspended();
+                    Exception? callbackFailure = null;
                     try
                     {
                         var callback = pending.AsynchronousCallback;
@@ -374,18 +377,28 @@ internal static class ScriptRunner
                     }
                     catch (Exception exception)
                     {
-                        operation.RecordCallbackFailure(callbackName, exception);
+                        callbackFailure = exception;
                         argumentCount = 0;
                         resumeWithError = true;
                     }
 
-                    // The wait for the callback ends here, before anything
-                    // below can throw: with a scheduler, a caller without
-                    // the operation's marker is accepted only during it.
-                    operation.FinishAsyncCallback();
-                    await LuauContinuationDispatcher.InvokeAsync(
+                    // Until the wait ends, a caller on the scheduler without
+                    // the operation's marker may be inside an access, so the
+                    // runner touches nothing of the operation before it: the
+                    // wait ends, and the callback's failure is recorded, in
+                    // one step on the scheduler, under the native gate, and
+                    // never inside a native access of this root. Everything
+                    // below, the stack reads and the next resume included,
+                    // comes after that step (maintainer guide section 6.8).
+                    await LuauContinuationDispatcher.InvokeOutsideNativeAccessAsync(
                         scheduler,
-                        () => ThrowIfHardStopped(operation, state)).ConfigureAwait(false);
+                        operation.Context,
+                        static wait =>
+                        {
+                            wait.Operation.Context.EndAsyncCallbackWait(wait.Operation, wait.CallbackName, wait.Failure);
+                            ThrowIfHardStopped(wait.Operation, wait.Operation.ThreadPointer);
+                        },
+                        (Operation: operation, CallbackName: callbackName, Failure: callbackFailure)).ConfigureAwait(false);
                     if (!resumeWithError)
                     {
                         try
@@ -785,7 +798,15 @@ internal static class ScriptRunner
             replaceCallbackFrame: failedCallbackThread != IntPtr.Zero && failedCallbackThread == (IntPtr)target);
         if (pushStatus == LuauHostStatus.Ok)
         {
-            return luau_host_resume_error((LuauHostState*)state, (LuauHostState*)from);
+            operation.BeginNativeResume();
+            try
+            {
+                return luau_host_resume_error((LuauHostState*)state, (LuauHostState*)from);
+            }
+            finally
+            {
+                operation.EndNativeResume();
+            }
         }
 
         ExceptionDispatchInfo failure;
@@ -958,6 +979,11 @@ internal static class ScriptRunner
         }
     }
 
+    /// <summary>
+    /// The resume of an asynchronous run. Luau code it runs is the only code
+    /// that may queue an asynchronous callback
+    /// (<see cref="ScriptOperation.IsResumingNatively"/>).
+    /// </summary>
     static unsafe LuauHostStatus Resume(
         ScriptOperation operation,
         IntPtr state,
@@ -966,7 +992,15 @@ internal static class ScriptRunner
     {
         using var access = operation.Context.EnterOperationNativeAccess(operation);
         operation.ArmCoroutineLifecycle();
-        return luau_host_resume((LuauHostState*)state, (LuauHostState*)from, argumentCount);
+        operation.BeginNativeResume();
+        try
+        {
+            return luau_host_resume((LuauHostState*)state, (LuauHostState*)from, argumentCount);
+        }
+        finally
+        {
+            operation.EndNativeResume();
+        }
     }
 
     static unsafe LuauHostStatus Resume(

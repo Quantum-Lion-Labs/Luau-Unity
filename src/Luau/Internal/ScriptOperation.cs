@@ -86,6 +86,10 @@ internal sealed unsafe class ScriptOperation : IDisposable
     Exception? hardStopException;
     int yieldReason;
     int asyncCallbackPhase;
+    // Set while the runner's native resume of an asynchronous operation is
+    // on the stack; read by LuauCSharpAsyncFunction. Both happen under the
+    // native gate.
+    int resumingNatively;
     int hardStopReason;
     int disposeState = 1;
     int coroutineLifecycleArmed;
@@ -151,6 +155,7 @@ internal sealed unsafe class ScriptOperation : IDisposable
         Volatile.Write(ref hardStopException, null);
         Volatile.Write(ref yieldReason, (int)ScriptYieldReason.None);
         Volatile.Write(ref asyncCallbackPhase, (int)AsyncCallbackPhase.None);
+        Volatile.Write(ref resumingNatively, 0);
         Volatile.Write(ref hardStopReason, (int)ScriptHardStopReason.None);
         Volatile.Write(ref coroutineLifecycleArmed, 0);
         Volatile.Write(ref coroutineCompletion, 0);
@@ -294,9 +299,33 @@ internal sealed unsafe class ScriptOperation : IDisposable
 
     internal void PrepareResume()
     {
+        // The runner ends every wait for a callback before it resumes
+        // (LuauVmContext.EndAsyncCallbackWait), so this never ends one: the
+        // phase is None, or PendingDispatch when a failure is injected.
+        Debug.Assert(!IsWaitingForAsyncCallback, "A resume began while the operation waited for its callback.");
         Volatile.Write(ref yieldReason, (int)ScriptYieldReason.None);
         Volatile.Write(ref asyncCallbackPhase, (int)AsyncCallbackPhase.None);
     }
+
+    /// <summary>
+    /// Marks the runner's native resume of this asynchronous operation as
+    /// on the stack, under the native gate. Only Luau code that this resume
+    /// runs may queue an asynchronous callback; see
+    /// <see cref="IsResumingNatively"/>.
+    /// </summary>
+    internal void BeginNativeResume() => Volatile.Write(ref resumingNatively, 1);
+
+    internal void EndNativeResume() => Volatile.Write(ref resumingNatively, 0);
+
+    /// <summary>
+    /// Whether the runner's native resume is on the stack. Luau code that
+    /// runs while it is not belongs to a direct host operation (a metamethod
+    /// that a table or global access reaches while the operation waits for a
+    /// callback, or between the runner's steps): queuing a callback there
+    /// would end that wait, or replace the operation's pending work, from
+    /// inside the access, so such a callback fails in place instead.
+    /// </summary>
+    internal bool IsResumingNatively => Volatile.Read(ref resumingNatively) != 0;
 
     internal IntPtr PendingCallbackThread => pendingCallbackThread;
 
@@ -328,6 +357,14 @@ internal sealed unsafe class ScriptOperation : IDisposable
         Volatile.Write(ref yieldReason, (int)ScriptYieldReason.None);
     }
 
+    /// <summary>
+    /// Ends the callback's dispatch or the wait for it. Ending the wait
+    /// (<see cref="IsWaitingForAsyncCallback"/>) changes which callers the
+    /// operation accepts, so it happens only through
+    /// <see cref="LuauVmContext.EndAsyncCallbackWait"/>: on the scheduler,
+    /// under the native gate, outside every native access. The runner calls
+    /// this directly only where the wait never began.
+    /// </summary>
     internal void FinishAsyncCallback()
     {
         Volatile.Write(ref asyncCallbackPhase, (int)AsyncCallbackPhase.None);
@@ -336,11 +373,13 @@ internal sealed unsafe class ScriptOperation : IDisposable
     /// <summary>
     /// Whether the operation is suspended waiting for an asynchronous
     /// callback: from <see cref="MarkAsyncCallbackSuspended"/>, after the VM
-    /// has yielded, until the runner observes the callback's completion
-    /// (<see cref="FinishAsyncCallback"/>). The operation's thread stays
-    /// suspended in that time: Luau code runs only inside a direct operation
-    /// that an access makes, on another thread of the root. Only asynchronous
-    /// operations reach it.
+    /// has yielded, until the runner has observed the callback's completion
+    /// and ended the wait (<see cref="LuauVmContext.EndAsyncCallbackWait"/>).
+    /// The operation's thread stays suspended in that time: Luau code runs
+    /// only inside a direct operation that an access makes, on another
+    /// thread of the root, and cannot queue a callback
+    /// (<see cref="IsResumingNatively"/>), so nothing but that end changes it.
+    /// Only asynchronous operations reach it.
     /// </summary>
     internal bool IsWaitingForAsyncCallback =>
         Volatile.Read(ref asyncCallbackPhase) == (int)AsyncCallbackPhase.Suspended;
