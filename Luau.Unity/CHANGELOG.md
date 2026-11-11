@@ -324,9 +324,11 @@ API or ABI breaks.
   builder, unlike the `Task` and `ValueTask` builders, does not carry across
   an await. On a state with a continuation scheduler, which
   `LuauUnity.CreateState` configures by default, a call waiting for an async
-  callback now accepts every VM access made on the scheduler, so such
-  helpers work. As a consequence, other code on the scheduler, such as
-  another component's `Update` on the main thread, can now read and write the
+  callback now also accepts VM access made on the scheduler by code that
+  carries no call's execution context, so such helpers work; code that
+  carries another call's context, or a finished call's, is still refused.
+  As a consequence, other code on the scheduler, such as another
+  component's `Update` on the main thread, can now read and write the
   root's tables and globals while a script awaits an async callback; Luau
   code that this reaches counts toward the waiting call's budgets. Starting
   another call on the root still fails, and nothing changes while the VM runs
@@ -335,6 +337,28 @@ API or ABI breaks.
   `CaptureUnitySynchronizationContext = false` and no scheduler must give
   them one to await such helpers. See
   [Exposing C# to Luau](Documentation~/capability-bindings.md#async-callbacks-and-unitask).
+  Such an access always finishes as it began: the waiting call resumes only
+  once the callback has completed and no access is in progress. A
+  continuation scheduler must run one piece of work at a time; one whose
+  `CheckAccess` is true on several threads at once is not supported.
+- An async host callback whose own code completed the callback's task from
+  inside a VM access of its root (a host function that a metamethod calls
+  sets the result of a source the callback awaits, on a thread where
+  continuations run inline, such as a thread-pool thread of a state without a
+  continuation scheduler) resumed the waiting script inside that access. The
+  script's call returned normally, but the access then put back a stack top
+  that no longer existed and left a value on the root's stack for good. The
+  call now resumes once that access has returned.
+- An async host function called from Luau code that an async host callback's
+  own table or global access ran while its script waited, inside a coroutine
+  that code created (`coroutine.wrap` in a `__index` metamethod), ended the
+  script's wait from inside the access. The access failed partway with
+  `InvalidOperationException` (`A managed async callback cannot access its
+  Luau state until the VM has yielded.`), and the script's call failed with
+  `LuauManagedCallbackException` for the access's call. The access now fails
+  with `LuauManagedCallbackException` (`An asynchronous managed callback
+  cannot run in Luau code that a direct host operation runs.`), as such a call
+  outside a coroutine already did, and the script's call is unaffected.
 
 ### Compatibility
 

@@ -768,7 +768,8 @@ which decides:
      scheduler (and step 1 passed) and the active operation is waiting for an
      asynchronous callback (`ScriptOperation.IsWaitingForAsyncCallback`: from
      `MarkAsyncCallbackSuspended`, after native resume has returned with the
-     callback queued, until the runner observes that the callback completed).
+     callback queued, until the runner ends the wait after the callback's
+     task has completed; see "When the wait ends" below).
    Anything else is refused: "The Luau VM is executing on another operation."
 4. `ThrowIfAsyncCallbackAccessUnsafe` still refuses an accepted caller while a
    callback is queued and the runner has not yet acted on the VM's yield: "A
@@ -803,27 +804,118 @@ operation) can read and write the root's tables and globals, create values,
 open libraries, and run any other direct operation while a script's
 asynchronous callback is pending. That is exactly what the callback itself may
 do at the same moment, and it is safe for the same reasons: the operation's
-thread is suspended, each access holds the native gate for its whole duration
-and leaves the stack as it found it, and a direct operation that reaches Luau
+thread is suspended; each access holds the native gate from its first check
+to its last step and leaves the suspended thread's stack as it found it (the
+rules below are what make that hold); and a direct operation that reaches Luau
 code runs it on the host operation thread (section 6.7) under the pending
-operation, so that operation's hard stops and interrupt budget apply to it, and
-each failure is reported to the code that caused it. Starting a top-level
+operation, so that operation's hard stops and interrupt budget apply to it,
+and each failure is reported to the code that caused it. Starting a top-level
 operation (`Invoke`, `DoString`, `Resume`, a script phase) still fails, and a
 wrapper that code disposes is released when the operation ends, as during any
 operation, so per-frame work that creates and drops wrappers while a callback
-waits keeps their values in the registry until then. A
-scheduler is expected to run its work one item at a time; with one that runs
-several at once, the native gate still serializes each access, but an access
-that spans several calls (such as `CreateTable` from a collection) can be
-refused partway when the operation resumes.
+waits keeps their values in the registry until then.
+
+**When the wait ends.** An access makes several checked steps (push, call,
+read the result, restore the stack), and each passes
+`ThrowIfNativeAccessDenied` again. If the wait ended between two of them, the
+later ones, the restore among them, would be refused, and what the access left
+on the suspended thread's stack would become the callback's result; if the
+runner went on, it would resume the VM from inside the access. So an access
+admitted by the wait keeps that admission to its last step, and the operation
+neither resumes, nor validates the callback's results, nor is torn down while
+one is in progress:
+
+1. The wait ends in one engine step, `LuauVmContext.EndAsyncCallbackWait`,
+   which the runner dispatches with
+   `LuauContinuationDispatcher.InvokeOutsideNativeAccessAsync`. The step runs
+   on the scheduler, under the native gate, and never while the current
+   thread is inside a native access of the root (`IsInsideNativeAccess`, which
+   is `Monitor.IsEntered` on the gate). A single-threaded scheduler runs no
+   admitted access at the same time, and the gate also waits for one that
+   another thread is making. The callback's completion can also arrive inline,
+   nested in an access on the scheduler's own thread: a host function that a
+   metamethod calls completes a source that runs its continuations
+   synchronously, so the callback, its invoker, and the runner continue there,
+   where `CheckAccess()` is true and the reentrant gate does not wait. The
+   step is then posted, and runs once that thread has left the access; a
+   delivery that still finds the thread inside one (a nested message loop)
+   posts it again. Without a scheduler it goes to the thread pool and takes
+   the gate there, which covers the same nesting by the callback's own flow.
+   On the usual path, where the runner continues on the scheduler outside any
+   access, the step runs inline: it adds no post, and it replaces the hard-stop
+   check the runner already made at that point. (The runner awaits the
+   callback as a task, and a task completed on a thread whose
+   `SynchronizationContext` is not the default one, such as Unity's main
+   thread, queues that continuation to the thread pool instead of running it
+   inline. There a callback that completes after an await always reaches the
+   step through a post, as it reached the check before.)
+2. Until that step the runner changes nothing of the operation. The
+   callback's exception is recorded in the step, under the gate, not where the
+   runner caught it: an access still admitted would otherwise take it as its
+   own callback failure (`LuauNativeProtection.ThrowIfFailed`). Everything
+   after it follows it in program order: the hard-stop check and an abort,
+   `ValidateResultCount` and the other stack reads, `PrepareResume`, the next
+   resume, and `EndOperation`.
+3. Nothing else ends the wait while it lasts. `QueueAsyncCallback` sets the
+   phase to `PendingDispatch`, so Luau code that an access runs must not reach
+   it. That code cannot yield, but inside a coroutine it creates
+   (`coroutine.wrap` in a metamethod) an asynchronous host function is
+   yieldable. Only Luau code that the runner's own native resume runs may
+   queue a callback (`ScriptOperation.IsResumingNatively`); anywhere else
+   `LuauCSharpAsyncFunction` raises the failure in place, without suspending
+   ("An asynchronous managed callback cannot run in Luau code that a direct
+   host operation runs."), and the access reports it. The same holds for the
+   callback's own accesses, which could end the wait this way before the
+   scheduler rule existed, and for accesses between the runner's steps.
+4. Every other change of the phase cannot overlap an admitted access:
+   - the missing-callback branch of `RunAsyncCore` and
+     `ValidatePendingCallbackSuspension` end a dispatch whose wait never
+     began (`PendingDispatch` to `None`), so nothing was admitted by it;
+   - `PrepareResume` comes after the step in 1, so it finds the phase `None`
+     (it asserts that the wait is over), or `PendingDispatch` when a failure
+     is injected;
+   - `MarkAsyncCallbackSuspended` begins the wait, which only adds callers;
+   - `Activate` runs under both gates with no operation active, and an
+     asynchronous instance is never reused, so no later life meets a wait;
+   - `EndOperation` is reached only after the step in 1, so the wait is over
+     and no access it admitted is in progress. Root disposal does not end the
+     operation: it makes the rest of an access in progress fail with
+     `ObjectDisposedException` (section 5), and the root closes in
+     `EndOperation`, after the access.
+
+Between the callback's return and that step, an unrelated caller is still
+admitted while the callback's results sit on the suspended thread's stack.
+Such an access only works above the stack top and restores the top before it
+returns (the `LuauStackBoundary` each direct operation owns, section 6.1); the
+Luau code it runs cannot resume the suspended thread (`coroutine.resume`
+reports a thread suspended by a host callback as normal and refuses it) or
+queue a callback (3); and a failure it causes stays with it (2). After the step
+the runner therefore reads exactly the values the callback returned. The
+guarantee is per access: a call made of several accesses (`CreateTable` from a
+collection sets each entry in an access of its own, and runs the enumerator
+between them) can be refused between two of them if code it runs there
+completes the callback, and it leaves nothing on the stack when it is.
+
+**The scheduler must run one piece of work at a time**, as Unity's main thread
+does. Rule 1 depends on it, and a scheduler whose `CheckAccess()` is true on
+several threads at once is not supported with this rule: the gate still keeps
+a gate-held access from being overtaken, but scheduler threads could run the
+operation's own steps and unrelated work at the same time.
 
 The new case is checked only after the marker and the thread slot have
-failed, so the per-frame paths (`entry-*` benchmarks) do not reach it.
+failed, so the per-frame paths (`entry-*` benchmarks) do not reach it, and
+ending the wait costs an uncontended lock where the runner already made a
+step (`entry-invoke-void-async-callback`).
 `NonFlowingContinuationTests` maps every kind of access in both
 configurations, pins each refusal above with a test that fails without it, and
 runs unrelated work, cancellation, the wall-clock limit, and disposal against
-a pending callback; `LuauNonFlowingContinuationTests` runs the case on a
-default Unity state.
+a pending callback. `AsyncCallbackWaitTests` completes the callback from
+inside an admitted access, on another thread and inline, from unrelated code
+and from the callback's own flow, with and without a scheduler; brings
+cancellation, the wall-clock limit, and disposal in while an access is in
+progress; races the completion against accesses from the thread pool; and
+pins that the usual path adds no post. `LuauNonFlowingContinuationTests` runs
+the case on a default Unity state.
 
 ## 7. Managed callbacks
 
@@ -1216,6 +1308,11 @@ one compatibility unit.
   whose marker names its life, the thread running it synchronously, or, with
   a continuation scheduler, code on the scheduler while it waits for an
   asynchronous callback. A marker that names anything else is refused.
+- The wait for an asynchronous callback ends only in
+  `EndAsyncCallbackWait`: on the scheduler, under the native gate, outside
+  every native access. Only the runner's own native resume queues a callback.
+  The runner changes nothing of the operation between the callback's
+  completion and that step.
 - The steady-state synchronous call allocates nothing: no per-operation
   timer, token source, options record, or execution-context write.
 - Only `Resume` continues a suspended thread; every other entry rejects a
@@ -1293,6 +1390,12 @@ direct operations in section 6.7; do not weaken the native check.
 
 Direct host operations cannot suspend. Move asynchronous behavior into a normal
 Luau execution/callback flow instead of weakening the direct-operation mode.
+
+"An asynchronous managed callback cannot run in Luau code that a direct host
+operation runs." is the same rule reached from inside a coroutine that such
+Luau code created, where the async host function was yieldable but its
+suspension could only have ended the waiting operation's wait from inside the
+access (section 6.8). Do not let it queue.
 
 ### Root is disposed after a failure
 

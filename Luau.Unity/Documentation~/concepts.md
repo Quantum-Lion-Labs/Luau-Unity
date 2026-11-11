@@ -37,8 +37,9 @@ continuation is left untouched.
 
 **Continuation scheduler** — where a root's asynchronous work continues. A
 state from `LuauUnity.CreateState` uses the Unity main thread, and every access
-to its VM must happen there. While a script waits for an async callback, code
-on the scheduler counts as that callback's own, which is what lets callbacks
+to its VM must happen there, one piece of work at a time. While a script
+waits for an async callback, code on the scheduler counts as that callback's
+own unless it carries another call's context, which is what lets callbacks
 await UniTask helpers; see
 [async callbacks and UniTask](capability-bindings.md#async-callbacks-and-unitask).
 

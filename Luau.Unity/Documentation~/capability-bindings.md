@@ -277,7 +277,9 @@ The root recognises the callback's code in two ways:
   `ValueTask` carry across every `await`;
 - on a state with a continuation scheduler, by running on that scheduler. A
   state from `LuauUnity.CreateState` has one, the Unity main thread, unless you
-  turn off `CaptureUnitySynchronizationContext` and supply none.
+  turn off `CaptureUnitySynchronizationContext` and supply none. Code whose
+  execution context belongs to another call, of this root or another, or to
+  an earlier call that has finished, is still refused there.
 
 UniTask's async methods do not carry the execution context across an `await`,
 so code after the first `await` inside an `async UniTask` helper is recognised
@@ -301,9 +303,14 @@ state["load"] = state.CreateAsyncFunction("load", async context =>
 On a state without a scheduler the same `table["loaded"] = true` throws the
 exception above, and the script's call fails with
 `LuauManagedCallbackException`. Give such a state a scheduler, or touch the VM
-only in the callback itself, after the helper returns. Code that leaves the
-main thread (`UniTask.SwitchToThreadPool`, `ConfigureAwait(false)`) cannot use
-the VM in either case: a state with a scheduler accepts access only on it.
+only in the callback itself, after the helper returns.
+
+Which thread the code runs on matters only with a scheduler. A state with one
+accepts access only on it, so code that has left the main thread
+(`UniTask.SwitchToThreadPool`, `ConfigureAwait(false)`) must return to it
+before it touches the VM. A state without one has no such rule: an ordinary
+`Task` or `ValueTask` callback keeps its execution context across
+`ConfigureAwait(false)` and may use the VM from whatever thread it resumes on.
 
 Recognising the callback's code by the scheduler means that, while a script
 waits for an async callback, other main-thread code can use the root too: a
@@ -313,7 +320,19 @@ create values. It cannot start another call on the root (`Invoke`, `DoString`,
 Luau VM is already executing.` Luau code that such access runs, a metamethod
 for example, runs under the waiting call: it counts toward that call's
 interrupt budget, and it stops if that call is canceled, runs out of time, or
-its root is disposed.
+its root is disposed. It cannot call an async host function either, even
+inside a coroutine it creates: that call fails with
+`LuauManagedCallbackException` (`An asynchronous managed callback cannot run in
+Luau code that a direct host operation runs.`), reported to the access.
+
+Each access finishes as it began. The script's call resumes only after the
+callback has completed and no access is in progress, even when code inside an
+access is what completes the callback (a host function that a metamethod calls
+sets the result of a source the callback awaits, for example); the call then
+continues once that access has returned. This relies on the scheduler running
+one piece of work at a time, as the Unity main thread does. A custom
+`ILuauContinuationScheduler` whose `CheckAccess` returns `true` on more than one
+thread at once is not supported.
 
 ## Calling Luau from C#
 
