@@ -139,6 +139,7 @@ sealed class Stage6BenchmarkSuite(BenchmarkConfiguration configuration)
         cases.Add(Entry("entry-yielded-thread-global-write-default", () => CreateThreadGlobalWrite(defaults, yielded: true)));
         cases.Add(Entry("entry-invoke-void-callback-default", () => CreateHookWithCallback(defaults)));
         cases.Add(Entry("entry-invoke-void-async-default", () => CreateHookInvokeAsync(defaults)));
+        cases.Add(Entry("entry-invoke-void-async-callback-default", () => CreateHookWithAsyncCallback(defaults)));
     }
 
     static BenchmarkCase Entry(string name, Func<BenchmarkLease> create) =>
@@ -463,6 +464,33 @@ sealed class Stage6BenchmarkSuite(BenchmarkConfiguration configuration)
                 for (var i = 0; i < EntryCallsPerSample; i++)
                 {
                     function.InvokeVoid(arguments);
+                }
+            },
+            () =>
+            {
+                function.Dispose();
+                callback.Dispose();
+                state.Dispose();
+            });
+    }
+
+    // An asynchronous hook that awaits a host callback which completes at
+    // once: the cost of the callback protocol itself (suspend, dispatch, end
+    // the wait, resume) without any thread switch.
+    static BenchmarkLease CreateHookWithAsyncCallback(LuauExecutionOptions options)
+    {
+        var state = CreateEntryState(options);
+        var callback = state.CreateAsyncFunction("hostWait", static _ => default);
+        state["hostWait"] = callback;
+        using var owner = state.DoString("return function(dt) hostWait() end");
+        var function = owner[0].Read<LuauFunction>().Retain();
+        var arguments = new[] { LuauValue.FromNumber(1d / 72) };
+        return new BenchmarkLease(
+            () =>
+            {
+                for (var i = 0; i < EntryCallsPerSample; i++)
+                {
+                    function.InvokeVoidAsync(arguments).AsTask().GetAwaiter().GetResult();
                 }
             },
             () =>
