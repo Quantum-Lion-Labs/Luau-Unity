@@ -99,7 +99,7 @@ jobs:
         run: dotnet run --project tools/Luau.Tooling --configuration Release -- host-soak --configuration Release --iterations 25 --native-host "$GITHUB_WORKSPACE/native/luau-host/out/shipping/linux-x64/libluau_host.so"
 
       - name: Upload unstripped host, audited shipping output, and symbols
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: luau-host-linux-x64-release
           if-no-files-found: error
